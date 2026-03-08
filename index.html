@@ -513,13 +513,71 @@ function Dashboard({ accounts, txs }){
   );
 }
 
+// ─── Auth ─────────────────────────────────────────────
+const PW_HASH='3fe2da8dc9784ce81067508c60f7fd8e7ff4ac18cd7b1df2cf9ce21dd036a826';
+const AUTH_KEY='cf_auth';
+
+async function sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function LoginScreen({ onLogin }){
+  const [pw,setPw]=useState('');
+  const [err,setErr]=useState(false);
+  const [loading,setLoading]=useState(false);
+
+  async function submit(e){
+    e.preventDefault();
+    setLoading(true);
+    const hash=await sha256(pw);
+    if(hash===PW_HASH){
+      sessionStorage.setItem(AUTH_KEY,'1');
+      onLogin();
+    } else {
+      setErr(true);
+      setPw('');
+    }
+    setLoading(false);
+  }
+
+  return h('div',{className:'min-h-screen bg-gray-50 flex items-center justify-center'},
+    h('div',{className:'bg-white rounded-2xl shadow-lg border p-8 w-full max-w-sm'},
+      h('div',{className:'text-center mb-6'},
+        h('span',{className:'text-4xl'},'💰'),
+        h('h1',{className:'text-xl font-bold text-gray-800 mt-2'},'資金管理'),
+        h('p',{className:'text-sm text-gray-400 mt-1'},'パスワードを入力してください')
+      ),
+      h('form',{onSubmit:submit,className:'space-y-4'},
+        h('input',{
+          type:'password',
+          autoFocus:true,
+          className:'w-full border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',
+          placeholder:'パスワード',
+          value:pw,
+          onChange:e=>{setPw(e.target.value);setErr(false);}
+        }),
+        err&&h('p',{className:'text-red-500 text-xs text-center'},'パスワードが違います'),
+        h('button',{
+          type:'submit',
+          disabled:loading||!pw,
+          className:'w-full bg-blue-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50'
+        },loading?'確認中...':'ログイン')
+      )
+    )
+  );
+}
+
 // ─── App ─────────────────────────────────────────────
 const TABS=['ダッシュボード','口座管理','取引管理'];
 
 function App(){
+  const [authed,setAuthed]=useState(()=>sessionStorage.getItem(AUTH_KEY)==='1');
   const [tab,setTab]=useState(0);
   const [accounts,setAccounts]=useState(()=>getAccounts());
   const [txs,setTxs]=useState(()=>getTxs());
+
+  if(!authed) return h(LoginScreen,{onLogin:()=>setAuthed(true)});
 
   function updAcc(next){ setAccounts(next); saveAccounts(next); }
   function updTxs(next){ setTxs(next); saveTxs(next); }
