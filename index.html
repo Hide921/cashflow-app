@@ -28,6 +28,34 @@ function addMonths(d,n){
 }
 function isAfter(a,b){ return a.getTime()>b.getTime(); }
 function isBefore(a,b){ return a.getTime()<b.getTime(); }
+// 日本の祝日リスト（2025〜2027年）
+const JP_HOLIDAYS=new Set([
+  // 2025
+  '2025-01-01','2025-01-13','2025-02-11','2025-02-23','2025-02-24',
+  '2025-03-20','2025-04-29','2025-05-03','2025-05-04','2025-05-05',
+  '2025-07-21','2025-08-11','2025-09-15','2025-09-23','2025-10-13',
+  '2025-11-03','2025-11-23','2025-11-24',
+  // 2026
+  '2026-01-01','2026-01-12','2026-02-11','2026-02-23',
+  '2026-03-20','2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
+  '2026-07-20','2026-08-11','2026-09-21','2026-09-23','2026-10-12',
+  '2026-11-03','2026-11-23',
+  // 2027
+  '2027-01-01','2027-01-11','2027-02-11','2027-02-23',
+  '2027-03-21','2027-04-29','2027-05-03','2027-05-04','2027-05-05',
+  '2027-07-19','2027-08-11','2027-09-20','2027-09-23','2027-10-11',
+  '2027-11-03','2027-11-23'
+]);
+// 土日・祝日なら直前の営業日に戻す
+function prevBizDay(d){
+  let x=new Date(d);
+  while(true){
+    const dow=x.getDay(), ds=fmt(x);
+    if(dow!==0 && dow!==6 && !JP_HOLIDAYS.has(ds)) break;
+    x.setDate(x.getDate()-1);
+  }
+  return x;
+}
 function todayStr(){ return fmt(sod(new Date())); }
 function todayD(){ return sod(new Date()); }
 
@@ -54,7 +82,8 @@ function expandRec(tx, startD, endD){
     else break;
     cur=sod(cur);
     if(isAfter(cur,lim)) break;
-    if(!isBefore(cur,startD)) evts.push({date:cur,amt});
+    const adj=tx.adjustBizDay ? sod(prevBizDay(cur)) : cur;
+    if(!isBefore(adj,startD)) evts.push({date:adj,amt});
   }
   return evts;
 }
@@ -263,7 +292,7 @@ function AccountManager({ accounts, onChange }){
 
 // ─── Transaction Manager ──────────────────────────────
 function TxManager({ accounts, txs, onChange }){
-  const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',recurring:false,frequency:'monthly',startDate:todayStr(),endDate:''};
+  const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:false};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
   const [err,setErr]=useState('');
@@ -281,7 +310,7 @@ function TxManager({ accounts, txs, onChange }){
     setForm({...DEF,accountId:form.accountId});
   }
 
-  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category,accountId:tx.accountId,recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||''}); }
+  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category,accountId:tx.accountId,recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay||false}); }
   function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
 
   const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
@@ -322,6 +351,10 @@ function TxManager({ accounts, txs, onChange }){
         h('div',{className:'col-span-2 flex items-center gap-2'},
           h('input',{type:'checkbox',id:'rec',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'w-4 h-4'}),
           h('label',{htmlFor:'rec',className:'text-sm text-gray-600'},'定期取引')
+        ),
+        form.recurring&&h('div',{className:'col-span-2 flex items-center gap-2'},
+          h('input',{type:'checkbox',id:'bizday',checked:form.adjustBizDay,onChange:e=>sf('adjustBizDay',e.target.checked),className:'w-4 h-4'}),
+          h('label',{htmlFor:'bizday',className:'text-sm text-gray-600'},'土日祝は前営業日に調整')
         ),
         form.recurring&&h('div',null,
           h('label',{className:'block text-sm text-gray-600 mb-1'},'頻度'),
@@ -366,7 +399,10 @@ function TxManager({ accounts, txs, onChange }){
                 h('td',{className:'px-4 py-3 text-gray-600'},
                   acc?h('span',{className:'flex items-center gap-1'},
                     h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:acc.color}}),acc.name):'—'),
-                h('td',{className:'px-4 py-3 text-gray-500'},tx.recurring?FREQS[tx.frequency]:'単発'),
+                h('td',{className:'px-4 py-3 text-gray-500'},
+                  tx.recurring?FREQS[tx.frequency]:'単発',
+                  tx.adjustBizDay&&h('span',{className:'ml-1 text-xs text-blue-500 font-medium'},'(営)')
+                ),
                 h('td',{className:'px-4 py-3 text-gray-500'},fmtDisp(tx.startDate)),
                 h('td',{className:'px-4 py-3'},
                   h('div',{className:'flex gap-2 justify-end'},
