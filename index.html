@@ -545,19 +545,22 @@ function BalanceTable({ accounts, fData }){
         h('tbody',null,
           accounts.map((a,ai)=>{
             const prev=cols.map(col=>col[a.id]??0);
+            const hasNeg=cols.some(col=>(col[a.id]??0)<0);
             return h('tr',{key:a.id,className:`${ai%2===0?'bg-white':'bg-gray-50'} hover:bg-blue-50 transition-colors`},
               h('td',{className:`px-4 py-2.5 whitespace-nowrap border-r sticky left-0 z-10 ${ai%2===0?'bg-white':'bg-gray-50'}`},
                 h('span',{className:'flex items-center gap-2'},
                   h('span',{className:'w-2.5 h-2.5 rounded-full flex-shrink-0',style:{backgroundColor:a.color}}),
                   h('span',{className:'font-medium text-gray-800'},a.name),
-                  a.bankName&&h('span',{className:'text-xs text-gray-400 ml-1'},a.bankName)
+                  a.bankName&&h('span',{className:'text-xs text-gray-400 ml-1'},a.bankName),
+                  hasNeg&&h('span',{className:'text-xs text-red-500 ml-1',title:'マイナス残高あり'},'⚠️')
                 )
               ),
               cols.map((col,ci)=>{
                 const val=col[a.id]??0;
                 const diff=ci>0?(val-(prev[ci-1]??val)):0;
-                return h('td',{key:col.date,className:'px-3 py-2.5 text-right whitespace-nowrap'},
-                  h('span',{className:'font-semibold text-gray-800'},`¥${fmtYen(val)}`),
+                const neg=val<0;
+                return h('td',{key:col.date,className:`px-3 py-2.5 text-right whitespace-nowrap${neg?' bg-red-50':''}`},
+                  h('span',{className:`font-semibold ${neg?'text-red-600':'text-gray-800'}`},`¥${fmtYen(val)}`),
                   ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500':'text-red-400'}`},
                     `${diff>=0?'+':''}${fmtYen(diff)}`)
                 );
@@ -565,14 +568,15 @@ function BalanceTable({ accounts, fData }){
             );
           }),
           // 合計行
-          h('tr',{className:'bg-blue-50 font-bold border-t-2 border-blue-200'},
-            h('td',{className:'px-4 py-2.5 whitespace-nowrap border-r sticky left-0 bg-blue-50 z-10 text-blue-800'},'合計'),
+          h('tr',{className:'font-bold border-t-2 border-blue-200'},
+            h('td',{className:'px-4 py-2.5 whitespace-nowrap border-r sticky left-0 z-10 text-blue-800 bg-blue-50'},'合計'),
             cols.map((col,ci)=>{
               const val=col.total??0;
               const prevVal=ci>0?(cols[ci-1].total??val):val;
               const diff=ci>0?(val-prevVal):0;
-              return h('td',{key:col.date,className:'px-3 py-2.5 text-right whitespace-nowrap'},
-                h('span',{className:'text-blue-800'},`¥${fmtYen(val)}`),
+              const neg=val<0;
+              return h('td',{key:col.date,className:`px-3 py-2.5 text-right whitespace-nowrap ${neg?'bg-red-100':'bg-blue-50'}`},
+                h('span',{className:`${neg?'text-red-700':'text-blue-800'}`},`¥${fmtYen(val)}`),
                 ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-600':'text-red-500'}`},
                   `${diff>=0?'+':''}${fmtYen(diff)}`)
               );
