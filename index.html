@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>資金管理アプリ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div id="root"></div>
+<script>
+const { useState, useEffect, useMemo, useRef, createElement: h } = React;
+
+// ─── Date helpers ─────────────────────────────────────
+function sod(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
+function parseISO(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
+function fmt(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function fmtDisp(s){ const [y,m,d]=s.split('-'); return y+'/'+m+'/'+d; }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+function addMonths(d,n){ const x=new Date(d); x.setMonth(x.getMonth()+n); return x; }
+function isAfter(a,b){ return a.getTime()>b.getTime(); }
+function isBefore(a,b){ return a.getTime()<b.getTime(); }
+function todayStr(){ return fmt(sod(new Date())); }
+function todayD(){ return sod(new Date()); }
+
+// ─── Storage ──────────────────────────────────────────
+function getAccounts(){ try{ return JSON.parse(localStorage.getItem('cf_acc')||'[]'); }catch{ return []; } }
+function saveAccounts(v){ localStorage.setItem('cf_acc',JSON.stringify(v)); }
+function getTxs(){ try{ return JSON.parse(localStorage.getItem('cf_txs')||'[]'); }catch{ return []; } }
+function saveTxs(v){ localStorage.setItem('cf_txs',JSON.stringify(v)); }
+function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
+
+// ─── Forecast ─────────────────────────────────────────
+function expandRec(tx, startD, endD){
+  const evts=[];
+  let cur=sod(parseISO(tx.startDate));
+  const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),endD)) : endD;
+  let n=0;
+  while(!isAfter(cur,lim) && n<600){
+    if(!isBefore(cur,startD)) evts.push({date:new Date(cur), amt:tx.type==='income'?tx.amount:-tx.amount});
+    if(tx.frequency==='daily') cur=addDays(cur,1);
+    else if(tx.frequency==='weekly') cur=addDays(cur,7);
+    else if(tx.frequency==='monthly') cur=addMonths(cur,1);
+    else if(tx.frequency==='yearly') cur=addMonths(cur,12);
+    else break;
+    n++;
+  }
+  return evts;
+}
+
+function buildForecast(accounts, txs, endD){
+  const today=todayD();
+  const bal={};
+  accounts.forEach(a=>{ bal[a.id]=a.balance; });
+  const evts=[];
+  txs.forEach(tx=>{
+    if(tx.recurring){
+      expandRec(tx,today,endD).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+    } else {
+      const d=sod(parseISO(tx.startDate));
+      if(!isBefore(d,today)&&!isAfter(d,endD))
+        evts.push({date:d,amt:tx.type==='income'?tx.amount:-tx.amount,aid:tx.accountId});
+    }
+  });
+  evts.sort((a,b)=>a.date-b.date);
+  const res=[];
+  const cur={...bal};
+  let ei=0;
+  let cursor=new Date(today);
+  while(!isAfter(cursor,endD)){
+    const ds=fmt(cursor);
+    while(ei<evts.length&&!isAfter(evts[ei].date,cursor)){
+      const ev=evts[ei]; if(cur[ev.aid]!==undefined) cur[ev.aid]+=ev.amt; ei++;
+    }
+    const row={date:ds};
+    let tot=0;
+    accounts.forEach(a=>{ row[a.id]=Math.round(cur[a.id]); tot+=cur[a.id]; });
+    row.total=Math.round(tot);
+    res.push(row);
+    cursor=addDays(cursor,1);
+  }
+  return res;
+}
+
+// ─── Constants ────────────────────────────────────────
+const COLORS=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
+const CATS=['給与','家賃','食費','交通費','光熱費','保険','娯楽','その他'];
+const FREQS={daily:'毎日',weekly:'毎週',monthly:'毎月',yearly:'毎年'};
+const PERIODS=[{label:'1ヶ月',months:1},{label:'3ヶ月',months:3},{label:'6ヶ月',months:6},{label:'1年',months:12}];
+
+// ─── SVG Line Chart ───────────────────────────────────
+function SvgChart({ data, accounts }){
+  const W=700, H=260, PL=72, PR=20, PT=16, PB=40;
+  const iW=W-PL-PR, iH=H-PT-PB;
+
+  if(!data.length) return h('div',{className:'flex items-center justify-center h-48 text-gray-400 text-sm'},'口座を追加するとグラフが表示されます');
+
+  // collect all series keys
+  const keys=['total',...accounts.map(a=>a.id)];
+  const colorMap={total:'#1e40af'};
+  accounts.forEach(a=>{ colorMap[a.id]=a.color; });
+  const nameMap={total:'合計'};
+  accounts.forEach(a=>{ nameMap[a.id]=a.name; });
+
+  const allVals=data.flatMap(d=>keys.map(k=>d[k]??0));
+  let minV=Math.min(...allVals), maxV=Math.max(...allVals);
+  if(minV===maxV){ minV-=10000; maxV+=10000; }
+  const pad=(maxV-minV)*0.08;
+  const yMin=minV-pad, yMax=maxV+pad;
+
+  function xp(i){ return PL+i/(data.length-1||1)*iW; }
+  function yp(v){ return PT+iH-(v-yMin)/(yMax-yMin)*iH; }
+  function fmtY(v){ if(Math.abs(v)>=10000000) return (v/10000000).toFixed(1)+'千万'; if(Math.abs(v)>=10000) return Math.round(v/10000)+'万'; return Math.round(v/1000)+'k'; }
+
+  // Y grid / ticks
+  const ticks=[];
+  const step=Math.pow(10,Math.floor(Math.log10(Math.max(1,yMax-yMin)/5)));
+  const tickStep=Math.ceil((yMax-yMin)/5/step)*step;
+  let tv=Math.ceil(yMin/tickStep)*tickStep;
+  while(tv<=yMax){ ticks.push(tv); tv+=tickStep; }
+
+  // X ticks: ~6 labels
+  const xTicks=[];
+  const xi=Math.max(1,Math.floor(data.length/6));
+  data.forEach((d,i)=>{ if(i%xi===0||i===data.length-1) xTicks.push({i,label:d.date.slice(5)}); });
+
+  // Tooltip state
+  const [tip,setTip]=useState(null);
+
+  function onMouseMove(e){
+    const rect=e.currentTarget.getBoundingClientRect();
+    const mx=e.clientX-rect.left;
+    const ix=Math.round((mx-PL)/iW*(data.length-1));
+    if(ix>=0&&ix<data.length) setTip({i:ix,x:xp(ix),d:data[ix]});
+  }
+
+  return h('div',{className:'relative'},
+    h('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{fontFamily:'inherit'},onMouseMove,onMouseLeave:()=>setTip(null)},
+      // grid lines
+      ticks.map(v=>h('line',{key:v,x1:PL,y1:yp(v),x2:W-PR,y2:yp(v),stroke:'#f0f0f0',strokeWidth:1})),
+      // Y axis ticks
+      ticks.map(v=>h('g',{key:'yt'+v},
+        h('line',{x1:PL-4,y1:yp(v),x2:PL,y2:yp(v),stroke:'#d1d5db',strokeWidth:1}),
+        h('text',{x:PL-6,y:yp(v)+4,textAnchor:'end',fontSize:10,fill:'#6b7280'},fmtY(v))
+      )),
+      // X axis ticks
+      xTicks.map(({i,label})=>h('g',{key:'xt'+i},
+        h('line',{x1:xp(i),y1:PT+iH,x2:xp(i),y2:PT+iH+4,stroke:'#d1d5db',strokeWidth:1}),
+        h('text',{x:xp(i),y:PT+iH+16,textAnchor:'middle',fontSize:10,fill:'#6b7280'},label)
+      )),
+      // axes
+      h('line',{x1:PL,y1:PT,x2:PL,y2:PT+iH,stroke:'#d1d5db',strokeWidth:1}),
+      h('line',{x1:PL,y1:PT+iH,x2:W-PR,y2:PT+iH,stroke:'#d1d5db',strokeWidth:1}),
+      // lines (accounts first, total on top)
+      [...accounts.map(a=>a.id),'total'].map((k,ki)=>{
+        const pts=data.map((d,i)=>`${xp(i)},${yp(d[k]??0)}`).join(' ');
+        return h('polyline',{key:k,points:pts,fill:'none',stroke:colorMap[k],strokeWidth:k==='total'?2.5:1.5,strokeDasharray:k==='total'?undefined:'5,3',opacity:0.9});
+      }),
+      // tooltip crosshair
+      tip && h('line',{x1:tip.x,y1:PT,x2:tip.x,y2:PT+iH,stroke:'#94a3b8',strokeWidth:1,strokeDasharray:'3,2'}),
+      // dots at tooltip position
+      tip && keys.map(k=>h('circle',{key:k,cx:tip.x,cy:yp(tip.d[k]??0),r:4,fill:colorMap[k],stroke:'#fff',strokeWidth:1.5}))
+    ),
+    // Tooltip box
+    tip && h('div',{
+      className:'absolute bg-white border rounded-lg shadow-lg p-2 text-xs pointer-events-none z-10',
+      style:{top:'4px',left:Math.min(tip.x/W*100,65)+'%'}
+    },
+      h('p',{className:'font-semibold text-gray-700 mb-1'},tip.d.date.replace(/-/g,'/')),
+      keys.map(k=>h('p',{key:k,style:{color:colorMap[k]}},`${nameMap[k]}: ¥${(tip.d[k]??0).toLocaleString()}`))
+    ),
+    // Legend
+    h('div',{className:'flex flex-wrap gap-3 mt-2 pl-16'},
+      keys.map(k=>h('span',{key:k,className:'flex items-center gap-1 text-xs text-gray-600'},
+        h('span',{className:'inline-block w-6',style:{height:'2px',backgroundColor:colorMap[k],borderRadius:'1px'}}),
+        nameMap[k]
+      ))
+    )
+  );
+}
+
+// ─── Account Manager ─────────────────────────────────
+function AccountManager({ accounts, onChange }){
+  const DEF={name:'',bankName:'',balance:'',color:COLORS[0]};
+  const [form,setForm]=useState(DEF);
+  const [editId,setEditId]=useState(null);
+  const [err,setErr]=useState('');
+  const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
+
+  function submit(e){
+    e.preventDefault();
+    if(!form.name.trim()){setErr('口座名を入力してください');return;}
+    if(form.balance===''){setErr('残高を入力してください');return;}
+    setErr('');
+    const item={...form,balance:Number(form.balance)};
+    if(editId){ onChange(accounts.map(a=>a.id===editId?{...a,...item}:a)); setEditId(null); }
+    else onChange([...accounts,{...item,id:genId()}]);
+    setForm(DEF);
+  }
+
+  function startEdit(a){ setEditId(a.id); setForm({name:a.name,bankName:a.bankName,balance:String(a.balance),color:a.color}); }
+  function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
+
+  return h('div',{className:'space-y-6'},
+    h('div',{className:'bg-white rounded-xl shadow-sm border p-5'},
+      h('h2',{className:'text-lg font-semibold text-gray-700 mb-4'},editId?'口座を編集':'口座を追加'),
+      h('form',{onSubmit:submit,className:'grid grid-cols-2 gap-3'},
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'口座名 *'),
+          h('input',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'例: 普通預金',value:form.name,onChange:e=>sf('name',e.target.value)})
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'銀行名'),
+          h('input',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'例: 三菱UFJ銀行',value:form.bankName,onChange:e=>sf('bankName',e.target.value)})
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'現在残高 (円) *'),
+          h('input',{type:'number',className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'0',value:form.balance,onChange:e=>sf('balance',e.target.value)})
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'カラー'),
+          h('div',{className:'flex gap-2 flex-wrap'},
+            COLORS.map(c=>h('button',{key:c,type:'button',onClick:()=>sf('color',c),
+              className:`w-7 h-7 rounded-full border-2 transition-all ${form.color===c?'border-gray-800 scale-110':'border-transparent'}`,
+              style:{backgroundColor:c}}))
+          )
+        ),
+        err&&h('p',{className:'col-span-2 text-red-500 text-sm'},err),
+        h('div',{className:'col-span-2 flex gap-2'},
+          h('button',{type:'submit',className:'bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700'},editId?'更新':'追加'),
+          editId&&h('button',{type:'button',onClick:cancel,className:'border px-5 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100'},'キャンセル')
+        )
+      )
+    ),
+    h('div',{className:'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'},
+      accounts.length===0&&h('p',{className:'text-gray-400 text-sm col-span-full'},'口座がまだ登録されていません'),
+      accounts.map(a=>h('div',{key:a.id,className:'bg-white rounded-xl shadow-sm border p-4 flex flex-col gap-2'},
+        h('div',{className:'flex items-center gap-2'},
+          h('span',{className:'w-3 h-3 rounded-full',style:{backgroundColor:a.color}}),
+          h('span',{className:'font-semibold text-gray-800'},a.name)
+        ),
+        a.bankName&&h('p',{className:'text-xs text-gray-400'},a.bankName),
+        h('p',{className:'text-2xl font-bold text-gray-900'},`¥${a.balance.toLocaleString()}`),
+        h('div',{className:'flex gap-2 mt-1'},
+          h('button',{onClick:()=>startEdit(a),className:'text-xs text-blue-600 hover:underline'},'編集'),
+          h('button',{onClick:()=>onChange(accounts.filter(x=>x.id!==a.id)),className:'text-xs text-red-500 hover:underline'},'削除')
+        )
+      ))
+    )
+  );
+}
+
+// ─── Transaction Manager ──────────────────────────────
+function TxManager({ accounts, txs, onChange }){
+  const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',recurring:false,frequency:'monthly',startDate:todayStr(),endDate:''};
+  const [form,setForm]=useState(DEF);
+  const [editId,setEditId]=useState(null);
+  const [err,setErr]=useState('');
+  const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
+
+  function submit(e){
+    e.preventDefault();
+    if(!form.label.trim()){setErr('名前を入力してください');return;}
+    if(!form.amount||Number(form.amount)<=0){setErr('金額を入力してください');return;}
+    if(!form.accountId){setErr('口座を選択してください');return;}
+    setErr('');
+    const tx={...form,amount:Number(form.amount),endDate:form.endDate||null};
+    if(editId){ onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t)); setEditId(null); }
+    else onChange([...txs,{...tx,id:genId()}]);
+    setForm({...DEF,accountId:form.accountId});
+  }
+
+  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category,accountId:tx.accountId,recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||''}); }
+  function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
+
+  const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
+
+  return h('div',{className:'space-y-6'},
+    h('div',{className:'bg-white rounded-xl shadow-sm border p-5'},
+      h('h2',{className:'text-lg font-semibold text-gray-700 mb-4'},editId?'取引を編集':'取引を追加'),
+      accounts.length===0&&h('p',{className:'text-amber-600 text-sm mb-3'},'先に「口座管理」タブで口座を追加してください'),
+      h('form',{onSubmit:submit,className:'grid grid-cols-2 gap-3'},
+        h('div',{className:'col-span-2'},
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'名前 *'),
+          h('input',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'例: 月給、家賃',value:form.label,onChange:e=>sf('label',e.target.value)})
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'種別'),
+          h('div',{className:'flex gap-2'},
+            ['income','expense'].map(t=>h('button',{key:t,type:'button',onClick:()=>sf('type',t),
+              className:`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.type===t?(t==='income'?'bg-emerald-500 text-white border-emerald-500':'bg-red-500 text-white border-red-500'):'text-gray-600 border-gray-300 hover:bg-gray-50'}`},
+              t==='income'?'収入':'支出'))
+          )
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'金額 (円) *'),
+          h('input',{type:'number',min:'1',className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'0',value:form.amount,onChange:e=>sf('amount',e.target.value)})
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'口座 *'),
+          h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.accountId,onChange:e=>sf('accountId',e.target.value)},
+            h('option',{value:''},'選択してください'),
+            accounts.map(a=>h('option',{key:a.id,value:a.id},`${a.name}${a.bankName?` (${a.bankName})`:''}`)
+          ))
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'カテゴリ'),
+          h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.category,onChange:e=>sf('category',e.target.value)},
+            CATS.map(c=>h('option',{key:c},c)))
+        ),
+        h('div',{className:'col-span-2 flex items-center gap-2'},
+          h('input',{type:'checkbox',id:'rec',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'w-4 h-4'}),
+          h('label',{htmlFor:'rec',className:'text-sm text-gray-600'},'定期取引')
+        ),
+        form.recurring&&h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'頻度'),
+          h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.frequency,onChange:e=>sf('frequency',e.target.value)},
+            Object.entries(FREQS).map(([v,l])=>h('option',{key:v,value:v},l)))
+        ),
+        h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},form.recurring?'開始日':'日付'),
+          h('input',{type:'date',className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
+        ),
+        form.recurring&&h('div',null,
+          h('label',{className:'block text-sm text-gray-600 mb-1'},'終了日（任意）'),
+          h('input',{type:'date',className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
+        ),
+        err&&h('p',{className:'col-span-2 text-red-500 text-sm'},err),
+        h('div',{className:'col-span-2 flex gap-2'},
+          h('button',{type:'submit',className:'bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700'},editId?'更新':'追加'),
+          editId&&h('button',{type:'button',onClick:cancel,className:'border px-5 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100'},'キャンセル')
+        )
+      )
+    ),
+    h('div',{className:'bg-white rounded-xl shadow-sm border overflow-hidden'},
+      h('div',{className:'overflow-x-auto'},
+        h('table',{className:'w-full text-sm'},
+          h('thead',{className:'bg-gray-50 text-gray-500 text-xs uppercase tracking-wider'},
+            h('tr',null,
+              ['名前','種別','金額','口座','頻度','開始日',''].map((col,i)=>
+                h('th',{key:i,className:`text-left px-4 py-3 ${i===2?'text-right':''}`},col))
+            )
+          ),
+          h('tbody',{className:'divide-y'},
+            txs.length===0&&h('tr',null,h('td',{colSpan:7,className:'text-center py-8 text-gray-400'},'取引がまだ登録されていません')),
+            txs.map(tx=>{
+              const acc=accMap[tx.accountId];
+              return h('tr',{key:tx.id,className:'hover:bg-gray-50'},
+                h('td',{className:'px-4 py-3 font-medium text-gray-800'},tx.label),
+                h('td',{className:'px-4 py-3'},
+                  h('span',{className:`px-2 py-0.5 rounded-full text-xs font-medium ${tx.type==='income'?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-700'}`},tx.type==='income'?'収入':'支出')
+                ),
+                h('td',{className:`px-4 py-3 text-right font-semibold ${tx.type==='income'?'text-emerald-600':'text-red-600'}`},
+                  `${tx.type==='income'?'+':'-'}¥${tx.amount.toLocaleString()}`),
+                h('td',{className:'px-4 py-3 text-gray-600'},
+                  acc?h('span',{className:'flex items-center gap-1'},
+                    h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:acc.color}}),acc.name):'—'),
+                h('td',{className:'px-4 py-3 text-gray-500'},tx.recurring?FREQS[tx.frequency]:'単発'),
+                h('td',{className:'px-4 py-3 text-gray-500'},fmtDisp(tx.startDate)),
+                h('td',{className:'px-4 py-3'},
+                  h('div',{className:'flex gap-2 justify-end'},
+                    h('button',{onClick:()=>startEdit(tx),className:'text-blue-600 hover:underline text-xs'},'編集'),
+                    h('button',{onClick:()=>onChange(txs.filter(t=>t.id!==tx.id)),className:'text-red-500 hover:underline text-xs'},'削除')
+                  )
+                )
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
+// ─── Balance Table ────────────────────────────────────
+function BalanceTable({ accounts, fData }){
+  if(!accounts.length) return null;
+
+  const cols=fData;
+
+  const fmtCol=s=>{
+    const [,mo,d]=s.split('-');
+    return (mo.startsWith('0')?mo.slice(1):mo)+'/'+d;
+  };
+  const fmtYen=v=>{
+    const abs=Math.abs(v);
+    if(abs>=100000000) return (v/100000000).toFixed(1)+'億';
+    if(abs>=10000) return Math.round(v/10000)+'万';
+    return v.toLocaleString();
+  };
+
+  return h('div',{className:'bg-white rounded-xl border shadow-sm overflow-hidden'},
+    h('div',{className:'px-5 py-3 border-b'},
+      h('h2',{className:'text-lg font-semibold text-gray-700'},'口座別 残高推移')
+    ),
+    h('div',{className:'overflow-x-auto'},
+      h('table',{className:'text-sm border-collapse w-full'},
+        h('thead',null,
+          h('tr',{className:'bg-gray-50'},
+            h('th',{className:'text-left px-4 py-2.5 font-medium text-gray-500 whitespace-nowrap border-b border-r sticky left-0 bg-gray-50 z-10'},'口座'),
+            cols.map(col=>
+              h('th',{key:col.date,className:'px-3 py-2.5 font-medium text-gray-500 whitespace-nowrap border-b text-right min-w-[80px]'},
+                fmtCol(col.date))
+            )
+          )
+        ),
+        h('tbody',null,
+          accounts.map((a,ai)=>{
+            const prev=cols.map(col=>col[a.id]??0);
+            return h('tr',{key:a.id,className:`${ai%2===0?'bg-white':'bg-gray-50'} hover:bg-blue-50 transition-colors`},
+              h('td',{className:`px-4 py-2.5 whitespace-nowrap border-r sticky left-0 z-10 ${ai%2===0?'bg-white':'bg-gray-50'}`},
+                h('span',{className:'flex items-center gap-2'},
+                  h('span',{className:'w-2.5 h-2.5 rounded-full flex-shrink-0',style:{backgroundColor:a.color}}),
+                  h('span',{className:'font-medium text-gray-800'},a.name),
+                  a.bankName&&h('span',{className:'text-xs text-gray-400 ml-1'},a.bankName)
+                )
+              ),
+              cols.map((col,ci)=>{
+                const val=col[a.id]??0;
+                const diff=ci>0?(val-(prev[ci-1]??val)):0;
+                return h('td',{key:col.date,className:'px-3 py-2.5 text-right whitespace-nowrap'},
+                  h('span',{className:'font-semibold text-gray-800'},`¥${fmtYen(val)}`),
+                  ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500':'text-red-400'}`},
+                    `${diff>=0?'+':''}${fmtYen(diff)}`)
+                );
+              })
+            );
+          }),
+          // 合計行
+          h('tr',{className:'bg-blue-50 font-bold border-t-2 border-blue-200'},
+            h('td',{className:'px-4 py-2.5 whitespace-nowrap border-r sticky left-0 bg-blue-50 z-10 text-blue-800'},'合計'),
+            cols.map((col,ci)=>{
+              const val=col.total??0;
+              const prevVal=ci>0?(cols[ci-1].total??val):val;
+              const diff=ci>0?(val-prevVal):0;
+              return h('td',{key:col.date,className:'px-3 py-2.5 text-right whitespace-nowrap'},
+                h('span',{className:'text-blue-800'},`¥${fmtYen(val)}`),
+                ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-600':'text-red-500'}`},
+                  `${diff>=0?'+':''}${fmtYen(diff)}`)
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
+// ─── Dashboard ───────────────────────────────────────
+function Dashboard({ accounts, txs }){
+  const [pIdx,setPIdx]=useState(1);
+  const endD=useMemo(()=>addMonths(todayD(),PERIODS[pIdx].months),[pIdx]);
+  const fullData=useMemo(()=>{
+    if(!accounts.length) return [];
+    return buildForecast(accounts,txs,endD);
+  },[accounts,txs,endD,pIdx]);
+  const fData=useMemo(()=>{
+    const step=PERIODS[pIdx].months<=1?1:7;
+    return fullData.filter((_,i)=>i%step===0);
+  },[fullData,pIdx]);
+
+  const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
+  const monthly=useMemo(()=>{
+    let inc=0,exp=0;
+    txs.filter(tx=>tx.recurring).forEach(tx=>{
+      const m=tx.frequency==='monthly'?1:tx.frequency==='yearly'?1/12:tx.frequency==='weekly'?4:30;
+      if(tx.type==='income') inc+=Math.round(tx.amount*m);
+      else exp+=Math.round(tx.amount*m);
+    });
+    return {inc,exp};
+  },[txs]);
+
+  return h('div',{className:'space-y-6'},
+    h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-4'},
+      h('div',{className:'bg-white rounded-xl border shadow-sm p-5'},
+        h('p',{className:'text-sm text-gray-500 mb-1'},'総資産'),
+        h('p',{className:'text-3xl font-bold text-gray-900'},`¥${totalBal.toLocaleString()}`),
+        h('p',{className:'text-xs text-gray-400 mt-1'},`${accounts.length}口座`)
+      ),
+      h('div',{className:'bg-white rounded-xl border shadow-sm p-5'},
+        h('p',{className:'text-sm text-gray-500 mb-1'},'月間収入（定期）'),
+        h('p',{className:'text-2xl font-bold text-emerald-600'},`+¥${monthly.inc.toLocaleString()}`)
+      ),
+      h('div',{className:'bg-white rounded-xl border shadow-sm p-5'},
+        h('p',{className:'text-sm text-gray-500 mb-1'},'月間支出（定期）'),
+        h('p',{className:'text-2xl font-bold text-red-500'},`-¥${monthly.exp.toLocaleString()}`),
+        h('p',{className:`text-xs mt-1 ${monthly.inc-monthly.exp>=0?'text-emerald-600':'text-red-500'}`},
+          `月次収支: ${monthly.inc-monthly.exp>=0?'+':''}¥${(monthly.inc-monthly.exp).toLocaleString()}`)
+      )
+    ),
+    accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
+      accounts.map(a=>h('div',{key:a.id,className:'bg-white rounded-lg border shadow-sm p-3'},
+        h('div',{className:'flex items-center gap-1.5 mb-1'},
+          h('span',{className:'w-2.5 h-2.5 rounded-full',style:{backgroundColor:a.color}}),
+          h('span',{className:'text-xs text-gray-500 truncate'},a.name)
+        ),
+        h('p',{className:'font-bold text-gray-800'},`¥${a.balance.toLocaleString()}`)
+      ))
+    ),
+    h('div',{className:'bg-white rounded-xl border shadow-sm p-5'},
+      h('div',{className:'flex items-center justify-between mb-4'},
+        h('h2',{className:'text-lg font-semibold text-gray-700'},'将来の残高予測'),
+        h('div',{className:'flex gap-1'},
+          PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
+            className:`px-3 py-1 rounded-full text-xs font-medium transition-colors ${pIdx===i?'bg-blue-600 text-white':'text-gray-500 hover:bg-gray-100'}`},p.label))
+        )
+      ),
+      h(SvgChart,{data:fData,accounts})
+    ),
+    h(BalanceTable,{accounts,fData:fullData})
+  );
+}
+
+// ─── App ─────────────────────────────────────────────
+const TABS=['ダッシュボード','口座管理','取引管理'];
+
+function App(){
+  const [tab,setTab]=useState(0);
+  const [accounts,setAccounts]=useState(()=>getAccounts());
+  const [txs,setTxs]=useState(()=>getTxs());
+
+  function updAcc(next){ setAccounts(next); saveAccounts(next); }
+  function updTxs(next){ setTxs(next); saveTxs(next); }
+
+  return h('div',{className:'min-h-screen bg-gray-50'},
+    h('header',{className:'bg-white border-b shadow-sm'},
+      h('div',{className:'max-w-5xl mx-auto px-4 py-3 flex items-center justify-between'},
+        h('div',{className:'flex items-center gap-2'},
+          h('span',{className:'text-2xl'},'💰'),
+          h('h1',{className:'text-xl font-bold text-gray-800'},'資金管理')
+        ),
+        h('nav',{className:'flex gap-1'},
+          TABS.map((label,i)=>h('button',{key:i,onClick:()=>setTab(i),
+            className:`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${tab===i?'bg-blue-600 text-white':'text-gray-600 hover:bg-gray-100'}`},label))
+        )
+      )
+    ),
+    h('main',{className:'max-w-5xl mx-auto px-4 py-6'},
+      tab===0&&h(Dashboard,{accounts,txs}),
+      tab===1&&h(AccountManager,{accounts,onChange:updAcc}),
+      tab===2&&h(TxManager,{accounts,txs,onChange:updTxs})
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(React.StrictMode,null,h(App)));
+</script>
+</body>
+</html>
