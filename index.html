@@ -151,6 +151,36 @@ function buildForecast(accounts, txs, endD){
   return res;
 }
 
+// ─── Transaction List for Details ─────────────────────
+function buildTxList(txs, endD) {
+  const today=todayD();
+  const evts=[];
+  txs.forEach(tx=>{
+    if(tx.recurring){
+      if(tx.type==='transfer'){
+        expandRec(tx,today,endD).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        });
+      } else {
+        expandRec(tx,today,endD).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        });
+      }
+    } else {
+      const d=sod(parseISO(tx.startDate));
+      if(!isBefore(d,today)&&!isAfter(d,endD)){
+        if(tx.type==='transfer'){
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        } else {
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        }
+      }
+    }
+  });
+  evts.sort((a,b)=>a.date.localeCompare(b.date));
+  return evts;
+}
+
 // ─── Constants ────────────────────────────────────────
 const COLORS=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
 const CATS=['給与','家賃','食費','交通費','光熱費','保険','娯楽','その他'];
@@ -588,6 +618,86 @@ function BalanceTable({ accounts, fData }){
   );
 }
 
+// ─── Transaction Details ──────────────────────────────
+const TX_PAGE=20;
+function TxDetails({ txs, endD, accounts }){
+  const [show,setShow]=useState(false);
+  const [page,setPage]=useState(0);
+  const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.id,a])),[accounts]);
+  const list=useMemo(()=>{
+    if(!txs.length||!accounts.length) return [];
+    return buildTxList(txs,endD);
+  },[txs,endD,accounts]);
+
+  if(!accounts.length) return null;
+  const shown=(page+1)*TX_PAGE;
+
+  return h('div',{className:'bg-white rounded-xl border shadow-sm'},
+    h('button',{
+      onClick:()=>{setShow(v=>!v);setPage(0);},
+      className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors rounded-xl'
+    },
+      h('span',{className:'text-lg font-semibold text-gray-700 flex items-center gap-2'},
+        '予定明細',
+        list.length>0&&h('span',{className:'text-xs font-normal text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full'},`${list.length}件`)
+      ),
+      h('span',{className:'text-gray-400 text-sm select-none'},show?'▲':'▼')
+    ),
+    show&&h('div',null,
+      list.length===0
+        ?h('div',{className:'text-center py-8 text-gray-400 text-sm border-t'},'この期間に予定された取引はありません')
+        :h('div',null,
+            h('div',{className:'overflow-x-auto border-t'},
+              h('table',{className:'w-full text-sm'},
+                h('thead',{className:'bg-gray-50 text-gray-500 text-xs uppercase tracking-wider'},
+                  h('tr',null,
+                    ['日付','名前','カテゴリ','口座','金額'].map((col,i)=>
+                      h('th',{key:i,className:`px-4 py-3 font-medium ${i===4?'text-right':'text-left'}`},col))
+                  )
+                ),
+                h('tbody',{className:'divide-y'},
+                  list.slice(0,shown).map((ev,i)=>{
+                    const acc=accMap[ev.accountId];
+                    const fromAcc=accMap[ev.fromAccountId];
+                    const toAcc=accMap[ev.toAccountId];
+                    const isIncome=ev.type==='income';
+                    const isTransfer=ev.type==='transfer';
+                    return h('tr',{key:i,className:'hover:bg-gray-50'},
+                      h('td',{className:'px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs'},fmtDisp(ev.date)),
+                      h('td',{className:'px-4 py-2.5 font-medium text-gray-800'},ev.label),
+                      h('td',{className:'px-4 py-2.5 text-gray-500 text-xs'},ev.category||'—'),
+                      h('td',{className:'px-4 py-2.5'},
+                        isTransfer
+                          ?h('span',{className:'flex items-center gap-1 flex-wrap text-xs'},
+                              fromAcc&&h('span',{className:'flex items-center gap-1'},
+                                h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:fromAcc.color}}),
+                                h('span',null,fromAcc.name)),
+                              h('span',{className:'text-gray-400 mx-0.5'},'→'),
+                              toAcc&&h('span',{className:'flex items-center gap-1'},
+                                h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:toAcc.color}}),
+                                h('span',null,toAcc.name)))
+                          :acc
+                            ?h('span',{className:'flex items-center gap-1 text-xs text-gray-600'},
+                                h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
+                                acc.name)
+                            :h('span',{className:'text-gray-400'},'—')
+                      ),
+                      h('td',{className:`px-4 py-2.5 text-right font-semibold whitespace-nowrap ${isIncome?'text-emerald-600':isTransfer?'text-purple-600':'text-red-600'}`},
+                        `${isIncome?'+':isTransfer?'':'-'}¥${ev.amount.toLocaleString()}`)
+                    );
+                  })
+                )
+              )
+            ),
+            list.length>shown&&h('div',{className:'px-5 py-3 border-t text-center'},
+              h('button',{onClick:()=>setPage(p=>p+1),className:'text-sm text-blue-600 hover:underline'},
+                `もっと見る（残り ${list.length-shown} 件）`)
+            )
+          )
+    )
+  );
+}
+
 // ─── Dashboard ───────────────────────────────────────
 function Dashboard({ accounts, txs }){
   const [pIdx,setPIdx]=useState(1);
@@ -649,7 +759,8 @@ function Dashboard({ accounts, txs }){
       ),
       h(SvgChart,{data:fData,accounts})
     ),
-    h(BalanceTable,{accounts,fData:fullData})
+    h(BalanceTable,{accounts,fData:fullData}),
+    h(TxDetails,{txs,endD:endD,accounts})
   );
 }
 
