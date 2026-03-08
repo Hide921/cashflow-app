@@ -82,7 +82,7 @@ function expandRec(tx, startD, endD){
   const evts=[];
   const base=sod(parseISO(tx.startDate));
   const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),endD)) : endD;
-  const amt=tx.type==='income'?tx.amount:-tx.amount;
+  const amt=tx.type==='income'?tx.amount:tx.type==='transfer'?tx.amount:-tx.amount;
   // 前の日付からチェーンせず、常に base から n 番目を計算（月末ズレ防止）
   for(let n=0;n<1500;n++){
     let cur;
@@ -107,11 +107,24 @@ function buildForecast(accounts, txs, endD){
   const evts=[];
   txs.forEach(tx=>{
     if(tx.recurring){
-      expandRec(tx,today,endD).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+      if(tx.type==='transfer'){
+        expandRec(tx,today,endD).forEach(e=>{
+          evts.push({date:e.date,amt:-e.amt,aid:tx.fromAccountId});
+          evts.push({date:e.date,amt:e.amt,aid:tx.toAccountId});
+        });
+      } else {
+        expandRec(tx,today,endD).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+      }
     } else {
       const d=sod(parseISO(tx.startDate));
-      if(!isBefore(d,today)&&!isAfter(d,endD))
-        evts.push({date:d,amt:tx.type==='income'?tx.amount:-tx.amount,aid:tx.accountId});
+      if(!isBefore(d,today)&&!isAfter(d,endD)){
+        if(tx.type==='transfer'){
+          evts.push({date:d,amt:-tx.amount,aid:tx.fromAccountId});
+          evts.push({date:d,amt:tx.amount,aid:tx.toAccountId});
+        } else {
+          evts.push({date:d,amt:tx.type==='income'?tx.amount:-tx.amount,aid:tx.accountId});
+        }
+      }
     }
   });
   evts.sort((a,b)=>a.date-b.date);
@@ -304,7 +317,7 @@ function AccountManager({ accounts, onChange }){
 
 // ─── Transaction Manager ──────────────────────────────
 function TxManager({ accounts, txs, onChange }){
-  const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
+  const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',fromAccountId:'',toAccountId:'',recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
   const [err,setErr]=useState('');
@@ -314,7 +327,12 @@ function TxManager({ accounts, txs, onChange }){
     e.preventDefault();
     if(!form.label.trim()){setErr('名前を入力してください');return;}
     if(!form.amount||Number(form.amount)<=0){setErr('金額を入力してください');return;}
-    if(!form.accountId){setErr('口座を選択してください');return;}
+    if(form.type==='transfer'){
+      if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
+      if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
+    } else {
+      if(!form.accountId){setErr('口座を選択してください');return;}
+    }
     setErr('');
     const tx={...form,amount:Number(form.amount),endDate:form.endDate||null};
     if(editId){ onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t)); setEditId(null); }
@@ -322,7 +340,7 @@ function TxManager({ accounts, txs, onChange }){
     setForm({...DEF,accountId:form.accountId});
   }
 
-  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category,accountId:tx.accountId,recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); }
+  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); }
   function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
 
   const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
@@ -339,27 +357,44 @@ function TxManager({ accounts, txs, onChange }){
         h('div',null,
           h('label',{className:'block text-sm text-gray-600 mb-1'},'種別'),
           h('div',{className:'flex gap-2'},
-            ['income','expense'].map(t=>h('button',{key:t,type:'button',onClick:()=>sf('type',t),
-              className:`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.type===t?(t==='income'?'bg-emerald-500 text-white border-emerald-500':'bg-red-500 text-white border-red-500'):'text-gray-600 border-gray-300 hover:bg-gray-50'}`},
-              t==='income'?'収入':'支出'))
+            [['income','収入','bg-emerald-500 border-emerald-500'],['expense','支出','bg-red-500 border-red-500'],['transfer','振替','bg-purple-500 border-purple-500']].map(([t,label,sel])=>
+              h('button',{key:t,type:'button',onClick:()=>sf('type',t),
+                className:`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.type===t?sel+' text-white':'text-gray-600 border-gray-300 hover:bg-gray-50'}`},
+                label))
           )
         ),
         h('div',null,
           h('label',{className:'block text-sm text-gray-600 mb-1'},'金額 (円) *'),
           h('input',{type:'number',min:'1',className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',placeholder:'0',value:form.amount,onChange:e=>sf('amount',e.target.value)})
         ),
-        h('div',null,
-          h('label',{className:'block text-sm text-gray-600 mb-1'},'口座 *'),
-          h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.accountId,onChange:e=>sf('accountId',e.target.value)},
-            h('option',{value:''},'選択してください'),
-            accounts.map(a=>h('option',{key:a.id,value:a.id},`${a.name}${a.bankName?` (${a.bankName})`:''}`)
-          ))
-        ),
-        h('div',null,
-          h('label',{className:'block text-sm text-gray-600 mb-1'},'カテゴリ'),
-          h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.category,onChange:e=>sf('category',e.target.value)},
-            CATS.map(c=>h('option',{key:c},c)))
-        ),
+        form.type==='transfer'
+          ? h('div',{className:'col-span-2 grid grid-cols-2 gap-3'},
+              h('div',null,
+                h('label',{className:'block text-sm text-gray-600 mb-1'},'振替元口座 *'),
+                h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400',value:form.fromAccountId,onChange:e=>sf('fromAccountId',e.target.value)},
+                  h('option',{value:''},'選択してください'),
+                  accounts.map(a=>h('option',{key:a.id,value:a.id},`${a.name}${a.bankName?` (${a.bankName})`:''}`)))
+              ),
+              h('div',null,
+                h('label',{className:'block text-sm text-gray-600 mb-1'},'振替先口座 *'),
+                h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400',value:form.toAccountId,onChange:e=>sf('toAccountId',e.target.value)},
+                  h('option',{value:''},'選択してください'),
+                  accounts.map(a=>h('option',{key:a.id,value:a.id},`${a.name}${a.bankName?` (${a.bankName})`:''}`)))
+              )
+            )
+          : h(React.Fragment,null,
+              h('div',null,
+                h('label',{className:'block text-sm text-gray-600 mb-1'},'口座 *'),
+                h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.accountId,onChange:e=>sf('accountId',e.target.value)},
+                  h('option',{value:''},'選択してください'),
+                  accounts.map(a=>h('option',{key:a.id,value:a.id},`${a.name}${a.bankName?` (${a.bankName})`:''}`)))
+              ),
+              h('div',null,
+                h('label',{className:'block text-sm text-gray-600 mb-1'},'カテゴリ'),
+                h('select',{className:'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400',value:form.category,onChange:e=>sf('category',e.target.value)},
+                  CATS.map(c=>h('option',{key:c},c)))
+              )
+            ),
         h('div',{className:'col-span-2 flex items-center gap-2'},
           h('input',{type:'checkbox',id:'rec',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'w-4 h-4'}),
           h('label',{htmlFor:'rec',className:'text-sm text-gray-600'},'定期取引')
@@ -410,13 +445,23 @@ function TxManager({ accounts, txs, onChange }){
               return h('tr',{key:tx.id,className:'hover:bg-gray-50'},
                 h('td',{className:'px-4 py-3 font-medium text-gray-800'},tx.label),
                 h('td',{className:'px-4 py-3'},
-                  h('span',{className:`px-2 py-0.5 rounded-full text-xs font-medium ${tx.type==='income'?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-700'}`},tx.type==='income'?'収入':'支出')
+                  h('span',{className:`px-2 py-0.5 rounded-full text-xs font-medium ${tx.type==='income'?'bg-emerald-100 text-emerald-700':tx.type==='transfer'?'bg-purple-100 text-purple-700':'bg-red-100 text-red-700'}`},
+                    tx.type==='income'?'収入':tx.type==='transfer'?'振替':'支出')
                 ),
-                h('td',{className:`px-4 py-3 text-right font-semibold ${tx.type==='income'?'text-emerald-600':'text-red-600'}`},
-                  `${tx.type==='income'?'+':'-'}¥${tx.amount.toLocaleString()}`),
+                h('td',{className:`px-4 py-3 text-right font-semibold ${tx.type==='income'?'text-emerald-600':tx.type==='transfer'?'text-purple-600':'text-red-600'}`},
+                  `${tx.type==='income'?'+':tx.type==='transfer'?'':'-'}¥${tx.amount.toLocaleString()}`),
                 h('td',{className:'px-4 py-3 text-gray-600'},
-                  acc?h('span',{className:'flex items-center gap-1'},
-                    h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:acc.color}}),acc.name):'—'),
+                  tx.type==='transfer'
+                    ? h('span',{className:'flex items-center gap-1 flex-wrap text-xs'},
+                        accMap[tx.fromAccountId]&&h('span',{className:'flex items-center gap-1'},
+                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap[tx.fromAccountId].color}}),
+                          accMap[tx.fromAccountId].name),
+                        h('span',{className:'text-gray-400 mx-0.5'},'→'),
+                        accMap[tx.toAccountId]&&h('span',{className:'flex items-center gap-1'},
+                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap[tx.toAccountId].color}}),
+                          accMap[tx.toAccountId].name))
+                    : acc?h('span',{className:'flex items-center gap-1'},
+                        h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:acc.color}}),acc.name):'—'),
                 h('td',{className:'px-4 py-3 text-gray-500'},
                   tx.recurring?FREQS[tx.frequency]:'単発',
                   (tx.adjustBizDay==='prev'||tx.adjustBizDay===true)&&h('span',{className:'ml-1 text-xs text-blue-500 font-medium'},'(前営)'),
@@ -525,7 +570,7 @@ function Dashboard({ accounts, txs }){
   const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
   const monthly=useMemo(()=>{
     let inc=0,exp=0;
-    txs.filter(tx=>tx.recurring).forEach(tx=>{
+    txs.filter(tx=>tx.recurring&&tx.type!=='transfer').forEach(tx=>{
       const m=tx.frequency==='monthly'?1:tx.frequency==='yearly'?1/12:tx.frequency==='weekly'?4:30;
       if(tx.type==='income') inc+=Math.round(tx.amount*m);
       else exp+=Math.round(tx.amount*m);
