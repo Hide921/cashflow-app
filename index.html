@@ -19,7 +19,13 @@ function parseISO(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,
 function fmt(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function fmtDisp(s){ const [y,m,d]=s.split('-'); return y+'/'+m+'/'+d; }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
-function addMonths(d,n){ const x=new Date(d); x.setMonth(x.getMonth()+n); return x; }
+function addMonths(d,n){
+  // 基準日の「日」を保持しつつ月を加算（月末オーバーフロー対策）
+  const day=d.getDate();
+  const x=new Date(d); x.setDate(1); x.setMonth(x.getMonth()+n);
+  const last=new Date(x.getFullYear(),x.getMonth()+1,0).getDate();
+  x.setDate(Math.min(day,last)); return x;
+}
 function isAfter(a,b){ return a.getTime()>b.getTime(); }
 function isBefore(a,b){ return a.getTime()<b.getTime(); }
 function todayStr(){ return fmt(sod(new Date())); }
@@ -35,17 +41,20 @@ function genId(){ return Date.now().toString(36)+Math.random().toString(36).slic
 // ─── Forecast ─────────────────────────────────────────
 function expandRec(tx, startD, endD){
   const evts=[];
-  let cur=sod(parseISO(tx.startDate));
+  const base=sod(parseISO(tx.startDate));
   const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),endD)) : endD;
-  let n=0;
-  while(!isAfter(cur,lim) && n<600){
-    if(!isBefore(cur,startD)) evts.push({date:new Date(cur), amt:tx.type==='income'?tx.amount:-tx.amount});
-    if(tx.frequency==='daily') cur=addDays(cur,1);
-    else if(tx.frequency==='weekly') cur=addDays(cur,7);
-    else if(tx.frequency==='monthly') cur=addMonths(cur,1);
-    else if(tx.frequency==='yearly') cur=addMonths(cur,12);
+  const amt=tx.type==='income'?tx.amount:-tx.amount;
+  // 前の日付からチェーンせず、常に base から n 番目を計算（月末ズレ防止）
+  for(let n=0;n<1500;n++){
+    let cur;
+    if(tx.frequency==='daily') cur=addDays(base,n);
+    else if(tx.frequency==='weekly') cur=addDays(base,n*7);
+    else if(tx.frequency==='monthly') cur=addMonths(base,n);
+    else if(tx.frequency==='yearly') cur=addMonths(base,n*12);
     else break;
-    n++;
+    cur=sod(cur);
+    if(isAfter(cur,lim)) break;
+    if(!isBefore(cur,startD)) evts.push({date:cur,amt});
   }
   return evts;
 }
