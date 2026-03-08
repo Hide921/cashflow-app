@@ -17,7 +17,8 @@ const { useState, useEffect, useMemo, useRef, createElement: h } = React;
 function sod(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
 function parseISO(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function fmt(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
-function fmtDisp(s){ const [y,m,d]=s.split('-'); return y+'/'+m+'/'+d; }
+const DOW=['日','月','火','水','木','金','土'];
+function fmtDisp(s){ const [y,m,d]=s.split('-'); const dt=new Date(Number(y),Number(m)-1,Number(d)); return `${y}/${m}/${d}(${DOW[dt.getDay()]})`; }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
 function addMonths(d,n){
   // 基準日の「日」を保持しつつ月を加算（月末オーバーフロー対策）
@@ -206,7 +207,7 @@ function SvgChart({ data, accounts }){
       className:'absolute bg-white border rounded-lg shadow-lg p-2 text-xs pointer-events-none z-10',
       style:{top:'4px',left:Math.min(tip.x/W*100,65)+'%'}
     },
-      h('p',{className:'font-semibold text-gray-700 mb-1'},tip.d.date.replace(/-/g,'/')),
+      h('p',{className:'font-semibold text-gray-700 mb-1'},(()=>{const [y,m,d]=tip.d.date.split('-');const dt=new Date(Number(y),Number(m)-1,Number(d));return `${y}/${m}/${d}(${DOW[dt.getDay()]})`;})()),
       keys.map(k=>h('p',{key:k,style:{color:colorMap[k]}},`${nameMap[k]}: ¥${(tip.d[k]??0).toLocaleString()}`))
     ),
     // Legend
@@ -426,15 +427,12 @@ function BalanceTable({ accounts, fData }){
   const cols=fData;
 
   const fmtCol=s=>{
-    const [,mo,d]=s.split('-');
-    return (mo.startsWith('0')?mo.slice(1):mo)+'/'+d;
+    const [y,mo,d]=s.split('-');
+    const dt=new Date(Number(y),Number(mo)-1,Number(d));
+    const m=mo.startsWith('0')?mo.slice(1):mo;
+    return `${m}/${d}(${DOW[dt.getDay()]})`;
   };
-  const fmtYen=v=>{
-    const abs=Math.abs(v);
-    if(abs>=100000000) return (v/100000000).toFixed(1)+'億';
-    if(abs>=10000) return Math.round(v/10000)+'万';
-    return v.toLocaleString();
-  };
+  const fmtYen=v=>v.toLocaleString();
 
   return h('div',{className:'bg-white rounded-xl border shadow-sm overflow-hidden'},
     h('div',{className:'px-5 py-3 border-b'},
