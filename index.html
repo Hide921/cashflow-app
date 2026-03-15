@@ -185,10 +185,10 @@ const FREQS={daily:'毎日',weekly:'毎週',monthly:'毎月',yearly:'毎年'};
 const PERIODS=[{label:'1ヶ月',months:1},{label:'3ヶ月',months:3},{label:'6ヶ月',months:6},{label:'1年',months:12}];
 
 // ─── Reusable class strings ────────────────────────────
-const inputCls='w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-400 dark:focus:ring-indigo-500';
-const selectCls='w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-400';
+const inputCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-300 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
+const selectCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
 const labelCls='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1';
-const cardCls='bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700';
+const cardCls='bg-white dark:bg-gray-800 rounded-2xl shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none border border-gray-100 dark:border-gray-700/60';
 
 // ─── SVG Line Chart ───────────────────────────────────
 function SvgChart({ data, accounts, dark }){
@@ -324,8 +324,8 @@ function AccountManager({ accounts, onChange }){
         ),
         err&&h('p',{className:'col-span-2 text-red-500 dark:text-red-400 text-sm'},err),
         h('div',{className:'col-span-2 flex gap-2'},
-          h('button',{type:'submit',className:'bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors'},editId?'更新':'追加'),
-          editId&&h('button',{type:'button',onClick:cancel,className:'border border-gray-300 dark:border-gray-600 px-5 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
+          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'更新':'追加'),
+          editId&&h('button',{type:'button',onClick:cancel,className:'border border-gray-200 dark:border-gray-600 px-5 py-2.5 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
         )
       )
     ),
@@ -533,8 +533,8 @@ function TxManager({ accounts, txs, onChange }){
         ),
         err&&h('p',{className:'col-span-2 text-red-500 dark:text-red-400 text-sm'},err),
         h('div',{className:'col-span-2 flex gap-2'},
-          h('button',{type:'submit',className:'bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors'},editId?'更新':'追加'),
-          editId&&h('button',{type:'button',onClick:cancel,className:'border border-gray-300 dark:border-gray-600 px-5 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
+          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'更新':'追加'),
+          editId&&h('button',{type:'button',onClick:cancel,className:'border border-gray-200 dark:border-gray-600 px-5 py-2.5 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
         )
       )
     ),
@@ -777,49 +777,20 @@ function Dashboard({ accounts, txs, dark }){
 
   return h('div',{className:'space-y-5'},
     h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-4'},
-      h('div',{className:'relative overflow-hidden rounded-xl shadow-sm border border-indigo-100 dark:border-indigo-900/50 bg-gradient-to-br from-indigo-50 to-white dark:from-indigo-950/60 dark:to-gray-800 p-5'},
-        h('div',{className:'absolute -right-4 -top-4 w-24 h-24 rounded-full bg-indigo-500/10 dark:bg-indigo-400/10'}),
-        h('div',{className:'flex items-start justify-between mb-3'},
-          h('p',{className:'text-xs font-semibold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider'},'総資産'),
-          h('div',{className:'w-9 h-9 rounded-lg bg-indigo-100 dark:bg-indigo-900/60 flex items-center justify-center flex-shrink-0'},
-            h('svg',{className:'w-5 h-5 text-indigo-600 dark:text-indigo-400',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-              h('rect',{x:'2',y:'7',width:'20',height:'14',rx:'2'}),
-              h('path',{d:'M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16'})
-            )
-          )
-        ),
-        h('p',{className:'text-3xl font-bold text-gray-900 dark:text-gray-100 tabular-nums'},`¥${totalBal.toLocaleString()}`),
-        h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-1.5'},`${accounts.length}口座`)
+      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'総資産'),
+        h('p',{className:'text-5xl font-bold text-gray-900 dark:text-gray-100 tabular-nums tracking-tight leading-none'},`¥${totalBal.toLocaleString()}`),
+        h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-3'},`${accounts.length}口座`)
       ),
-      h('div',{className:'relative overflow-hidden rounded-xl shadow-sm border border-emerald-100 dark:border-emerald-900/50 bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/60 dark:to-gray-800 p-5'},
-        h('div',{className:'absolute -right-4 -top-4 w-24 h-24 rounded-full bg-emerald-500/10 dark:bg-emerald-400/10'}),
-        h('div',{className:'flex items-start justify-between mb-3'},
-          h('p',{className:'text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider'},'月間収入（定期）'),
-          h('div',{className:'w-9 h-9 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 flex items-center justify-center flex-shrink-0'},
-            h('svg',{className:'w-5 h-5 text-emerald-600 dark:text-emerald-400',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-              h('polyline',{points:'23 6 13.5 15.5 8.5 10.5 1 18'}),
-              h('polyline',{points:'17 6 23 6 23 12'})
-            )
-          )
-        ),
-        h('p',{className:'text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums'},`+¥${monthly.inc.toLocaleString()}`)
+      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'月間収入（定期）'),
+        h('p',{className:'text-4xl font-bold text-emerald-500 dark:text-emerald-400 tabular-nums tracking-tight leading-none'},`+¥${monthly.inc.toLocaleString()}`)
       ),
-      h('div',{className:'relative overflow-hidden rounded-xl shadow-sm border border-rose-100 dark:border-rose-900/50 bg-gradient-to-br from-rose-50 to-white dark:from-rose-950/60 dark:to-gray-800 p-5'},
-        h('div',{className:'absolute -right-4 -top-4 w-24 h-24 rounded-full bg-rose-500/10 dark:bg-rose-400/10'}),
-        h('div',{className:'flex items-start justify-between mb-3'},
-          h('p',{className:'text-xs font-semibold text-rose-500 dark:text-rose-400 uppercase tracking-wider'},'月間支出（定期）'),
-          h('div',{className:'w-9 h-9 rounded-lg bg-rose-100 dark:bg-rose-900/60 flex items-center justify-center flex-shrink-0'},
-            h('svg',{className:'w-5 h-5 text-rose-500 dark:text-rose-400',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-              h('polyline',{points:'23 18 13.5 8.5 8.5 13.5 1 6'}),
-              h('polyline',{points:'17 18 23 18 23 12'})
-            )
-          )
-        ),
-        h('p',{className:'text-2xl font-bold text-rose-500 dark:text-rose-400 tabular-nums'},`-¥${monthly.exp.toLocaleString()}`),
-        h('div',{className:'mt-1.5'},
-          h('span',{className:`text-xs font-semibold ${net>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},
-            `月次収支: ${net>=0?'+':''}¥${net.toLocaleString()}`)
-        )
+      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'月間支出（定期）'),
+        h('p',{className:'text-4xl font-bold text-rose-500 dark:text-rose-400 tabular-nums tracking-tight leading-none'},`-¥${monthly.exp.toLocaleString()}`),
+        h('p',{className:`text-xs font-medium mt-3 ${net>=0?'text-emerald-500 dark:text-emerald-400':'text-rose-400'}`},
+          `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
     h(BalanceTable,{accounts,fData:fullData}),
@@ -838,7 +809,7 @@ function Dashboard({ accounts, txs, dark }){
         h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'将来の残高予測'),
         h('div',{className:'flex gap-1'},
           PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
-            className:`px-3 py-1 rounded-full text-xs font-medium transition-colors ${pIdx===i?'bg-indigo-600 text-white':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}`},p.label))
+            className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?'bg-gray-900 dark:bg-white text-white dark:text-gray-900':'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`},p.label))
         )
       ),
       h(SvgChart,{data:fData,accounts,dark})
@@ -1030,8 +1001,8 @@ function App(){
   function updTxs(next){ setTxs(next); saveTxs(next); }
   function handleGistLoad(accs,txList){ updAcc(accs); updTxs(txList); }
 
-  return h('div',{className:'min-h-screen bg-gray-50 dark:bg-gray-950'},
-    h('header',{className:'bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-30'},
+  return h('div',{className:'min-h-screen bg-[#f7f8fc] dark:bg-gray-950'},
+    h('header',{className:'bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl border-b border-gray-100 dark:border-gray-800/60 sticky top-0 z-30'},
       h('div',{className:'max-w-5xl mx-auto px-4 py-3 flex items-center justify-between'},
         h('div',{className:'flex items-center gap-2.5'},
           h('div',{className:'w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-sm'},
@@ -1058,7 +1029,7 @@ function App(){
           h('div',{className:'w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1'}),
           h('nav',{className:'hidden sm:flex gap-1'},
             TABS.map((label,i)=>h('button',{key:i,onClick:()=>setTab(i),
-              className:`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${tab===i?'bg-indigo-600 text-white shadow-sm':'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`},label))
+              className:`px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-150 ${tab===i?'bg-gray-900 dark:bg-white text-white dark:text-gray-900 shadow-sm':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`},label))
           )
         )
       )
