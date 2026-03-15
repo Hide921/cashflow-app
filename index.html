@@ -1009,69 +1009,12 @@ function UpcomingPayments({txs,accounts}){
   );
 }
 
-// ─── Auth ─────────────────────────────────────────────
-const PW_HASH='3fe2da8dc9784ce81067508c60f7fd8e7ff4ac18cd7b1df2cf9ce21dd036a826';
-const AUTH_KEY='cf_auth';
-
-async function sha256(str){
-  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-
-function LoginScreen({ onLogin }){
-  const [pw,setPw]=useState('');
-  const [err,setErr]=useState(false);
-  const [loading,setLoading]=useState(false);
-
-  async function submit(e){
-    e.preventDefault();
-    setLoading(true);
-    const hash=await sha256(pw);
-    if(hash===PW_HASH){
-      sessionStorage.setItem(AUTH_KEY,'1');
-      onLogin();
-    } else {
-      setErr(true);
-      setPw('');
-    }
-    setLoading(false);
-  }
-
-  return h('div',{className:'min-h-screen bg-gradient-to-br from-indigo-50 via-white to-blue-50 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950 flex items-center justify-center p-4'},
-    h('div',{className:'bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-100 dark:border-gray-700 p-8 w-full max-w-sm'},
-      h('div',{className:'text-center mb-8'},
-        h('div',{className:'w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-lg shadow-indigo-200 dark:shadow-indigo-900'},
-          h('span',{className:'text-3xl'},'💰')
-        ),
-        h('h1',{className:'text-2xl font-bold text-gray-900 dark:text-gray-100'},'資金管理'),
-        h('p',{className:'text-sm text-gray-500 dark:text-gray-400 mt-1.5'},'パスワードを入力してください')
-      ),
-      h('form',{onSubmit:submit,className:'space-y-4'},
-        h('input',{
-          type:'password',
-          autoFocus:true,
-          className:inputCls+' py-3',
-          placeholder:'パスワード',
-          value:pw,
-          onChange:e=>{setPw(e.target.value);setErr(false);}
-        }),
-        err&&h('p',{className:'text-red-500 dark:text-red-400 text-xs text-center'},'パスワードが違います'),
-        h('button',{
-          type:'submit',
-          disabled:loading||!pw,
-          className:'w-full bg-indigo-600 text-white py-3 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm'
-        },loading?'確認中...':'ログイン')
-      )
-    )
-  );
-}
 
 // ─── App ─────────────────────────────────────────────
 const TABS=['ダッシュボード','口座管理','取引管理'];
 const LS_DARK='cf_dark';
 
 function App(){
-  const [authed,setAuthed]=useState(()=>sessionStorage.getItem(AUTH_KEY)==='1');
   const [tab,setTab]=useState(0);
   const [accounts,setAccounts]=useState(()=>getAccounts());
   const [txs,setTxs]=useState(()=>getTxs());
@@ -1082,8 +1025,6 @@ function App(){
     else { document.documentElement.classList.remove('dark'); }
     localStorage.setItem(LS_DARK,dark?'1':'0');
   },[dark]);
-
-  if(!authed) return h(LoginScreen,{onLogin:()=>setAuthed(true)});
 
   function updAcc(next){ setAccounts(next); saveAccounts(next); }
   function updTxs(next){ setTxs(next); saveTxs(next); }
