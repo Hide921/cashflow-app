@@ -10,20 +10,43 @@ export default function App() {
   const [tab, setTab] = useState(0)
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    setAccounts(getAccounts())
-    setTransactions(getTransactions())
+    Promise.all([getAccounts(), getTransactions()])
+      .then(([accs, txs]) => {
+        setAccounts(accs)
+        setTransactions(txs)
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false))
   }, [])
 
-  function updateAccounts(next) {
+  async function updateAccounts(next) {
     setAccounts(next)
-    saveAccounts(next)
+    try {
+      await saveAccounts(next)
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
-  function updateTransactions(next) {
+  async function updateTransactions(next) {
     setTransactions(next)
-    saveTransactions(next)
+    try {
+      await saveTransactions(next)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <p className="text-gray-400 text-sm">読み込み中...</p>
+      </div>
+    )
   }
 
   return (
@@ -48,6 +71,15 @@ export default function App() {
           </nav>
         </div>
       </header>
+
+      {error && (
+        <div className="max-w-5xl mx-auto px-4 pt-4">
+          <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 flex justify-between">
+            <span>エラー: {error}</span>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">✕</button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 0 && (
