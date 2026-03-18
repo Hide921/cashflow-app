@@ -621,7 +621,7 @@ function TxManager({ accounts, txs, onChange }){
 }
 
 // ─── Balance Table ────────────────────────────────────
-function BalanceTable({ accounts, fData }){
+function BalanceTable({ accounts, fData, onCellClick }){
   if(!accounts.length) return null;
   const cols=fData;
   const fmtCol=s=>{
@@ -633,8 +633,9 @@ function BalanceTable({ accounts, fData }){
   const fmtYen=v=>v.toLocaleString();
 
   return h('div',{className:cardCls+' overflow-hidden'},
-    h('div',{className:'px-5 py-3 border-b border-gray-200 dark:border-gray-700'},
-      h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'口座別 残高推移')
+    h('div',{className:'px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between'},
+      h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'口座別 残高推移'),
+      onCellClick&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500'},'セルをクリックして取引を追加')
     ),
     h('div',{className:'overflow-x-auto'},
       h('table',{className:'text-sm border-collapse w-full'},
@@ -666,10 +667,14 @@ function BalanceTable({ accounts, fData }){
                 const val=col[a.id]??0;
                 const diff=ci>0?(val-(prev[ci-1]??val)):0;
                 const neg=val<0;
-                return h('td',{key:col.date,className:`px-3 py-2.5 text-right whitespace-nowrap${neg?' bg-red-50 dark:bg-red-950/20':''}`},
+                return h('td',{key:col.date,
+                  className:`px-3 py-2.5 text-right whitespace-nowrap${neg?' bg-red-50 dark:bg-red-950/20':''}${onCellClick?' cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20 group':''}`,
+                  onClick:onCellClick?()=>onCellClick(col.date,a.id):undefined
+                },
                   h('span',{className:`font-semibold ${neg?'text-red-600 dark:text-red-400':'text-gray-800 dark:text-gray-200'}`},`¥${fmtYen(val)}`),
                   ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500 dark:text-emerald-400':'text-red-400'}`},
-                    `${diff>=0?'+':''}${fmtYen(diff)}`)
+                    `${diff>=0?'+':''}${fmtYen(diff)}`),
+                  onCellClick&&h('span',{className:'block text-[10px] text-indigo-400 opacity-0 group-hover:opacity-100 leading-none mt-0.5'},'+取引')
                 );
               })
             );
@@ -775,8 +780,8 @@ function TxDetails({ txs, endD, accounts }){
 }
 
 // ─── Add Transaction Modal ────────────────────────────
-function AddTxModal({ date, accounts, dark, onSave, onClose }){
-  const [form,setForm]=useState({label:'',type:'expense',amount:'',category:'その他',accountId:accounts[0]?.id||''});
+function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
+  const [form,setForm]=useState({label:'',type:'expense',amount:'',category:'その他',accountId:initAccountId||accounts[0]?.id||''});
   const [err,setErr]=useState('');
   function submit(e){
     e.preventDefault();
@@ -833,6 +838,7 @@ function AddTxModal({ date, accounts, dark, onSave, onClose }){
 function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
   const [pIdx,setPIdx]=useState(1);
   const [addDate,setAddDate]=useState(null);
+  const [addAccId,setAddAccId]=useState(null);
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
   const endD=useMemo(()=>addMonths(todayD(),PERIODS[pIdx].months),[pIdx]);
@@ -859,7 +865,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
   const net=monthly.inc-monthly.exp;
 
   return h('div',{className:'space-y-5'},
-    addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,onClose:()=>setAddDate(null),onSave:tx=>{onAddTx(tx);setAddDate(null);}}),
+    addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
     h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-4'},
       h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
         h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'総資産'),
@@ -877,7 +883,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
-    h(BalanceTable,{accounts,fData:fullData}),
+    h(BalanceTable,{accounts,fData:fullData,onCellClick:onAddTx?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined}),
     accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
       accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
         onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
