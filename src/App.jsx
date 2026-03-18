@@ -83,7 +83,12 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 0 && (
-          <Dashboard accounts={accounts} transactions={transactions} />
+          <Dashboard
+            accounts={accounts}
+            transactions={transactions}
+            onTransactionAdd={tx => updateTransactions([...transactions, tx])}
+            onAccountUpdate={updated => updateAccounts(accounts.map(a => a.id === updated.id ? updated : a))}
+          />
         )}
         {tab === 1 && (
           <AccountManager accounts={accounts} onChange={updateAccounts} />
