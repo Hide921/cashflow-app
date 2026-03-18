@@ -415,10 +415,28 @@ function TxManager({ accounts, txs, onChange }){
     setShowSugs(false);
   }
 
-  const [ovDate,setOvDate]=useState('');
-  const [ovAmt,setOvAmt]=useState('');
-  function addOverride(){ if(!ovDate||!ovAmt||Number(ovAmt)<=0) return; sf('overrides',{...(form.overrides||{}),[ovDate]:Number(ovAmt)}); setOvDate(''); setOvAmt(''); }
-  function removeOverride(ds){ const n={...(form.overrides||{})}; delete n[ds]; sf('overrides',n); }
+  function getOccurrences(f,maxN){
+    if(!f.startDate) return [];
+    const base=sod(parseISO(f.startDate));
+    const today2=todayD();
+    const cap=f.endDate?new Date(Math.min(sod(parseISO(f.endDate)).getTime(),addMonths(today2,24).getTime())):addMonths(today2,24);
+    const max=maxN||(f.frequency==='daily'?31:f.frequency==='weekly'?16:f.frequency==='yearly'?5:13);
+    const res=[];
+    for(let n=0;n<1500&&res.length<max;n++){
+      let cur;
+      if(f.frequency==='daily') cur=addDays(base,n);
+      else if(f.frequency==='weekly') cur=addDays(base,n*7);
+      else if(f.frequency==='monthly') cur=addMonths(base,n);
+      else if(f.frequency==='yearly') cur=addMonths(base,n*12);
+      else break;
+      cur=sod(cur);
+      if(isAfter(cur,cap)) break;
+      const biz=f.adjustBizDay;
+      const adj=biz==='prev'||biz===true?sod(prevBizDay(cur)):biz==='next'?sod(nextBizDay(cur)):cur;
+      if(!isBefore(adj,today2)) res.push(fmt(adj));
+    }
+    return res;
+  }
 
   function submit(e){
     e.preventDefault();
@@ -525,24 +543,41 @@ function TxManager({ accounts, txs, onChange }){
             )
           )
         ),
-        form.recurring&&h('div',{className:'col-span-2 border border-amber-200 dark:border-amber-800/60 rounded-lg p-3 bg-amber-50 dark:bg-amber-900/10'},
-          h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'},'月別確定額の上書き（概算→確定）'),
-          Object.keys(form.overrides||{}).length>0&&h('div',{className:'mb-2 space-y-1'},
-            Object.entries(form.overrides||{}).sort().map(([ds,amt])=>
-              h('div',{key:ds,className:'flex items-center justify-between bg-white dark:bg-gray-700 rounded px-3 py-1.5 text-sm border border-amber-200 dark:border-amber-700/60'},
-                h('span',{className:'text-gray-800 dark:text-gray-200'},`${fmtDisp(ds)}: ¥${Number(amt).toLocaleString()}`),
-                h('button',{type:'button',onClick:()=>removeOverride(ds),className:'text-red-400 hover:text-red-600 text-xs ml-2'},'削除')
-              )
+        form.recurring&&(()=>{
+          const occs=getOccurrences(form);
+          const estAmt=parseJpAmt(form.amount)||0;
+          return h('div',{className:'col-span-2 border border-amber-200 dark:border-amber-800/60 rounded-lg p-3 bg-amber-50 dark:bg-amber-900/10'},
+            h('div',{className:'flex items-center justify-between mb-1'},
+              h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-300'},'確定金額の上書き'),
+              Object.keys(form.overrides||{}).length>0&&h('span',{className:'text-xs bg-amber-200 dark:bg-amber-800/60 text-amber-700 dark:text-amber-300 rounded-full px-2 py-0.5'},`${Object.keys(form.overrides).length}件確定済`)
+            ),
+            h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-2.5'},'各回の金額欄に入力すると概算を上書き。空欄は概算額を使用します。'),
+            occs.length===0&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 italic'},'開始日を設定すると予定一覧が表示されます'),
+            occs.length>0&&h('div',{className:'space-y-1 max-h-52 overflow-y-auto pr-0.5'},
+              h('div',{className:'grid text-xs text-gray-400 dark:text-gray-500 px-2 pb-1',style:{gridTemplateColumns:'7rem 1fr 7.5rem 3rem'}},
+                h('span',null,'日付'),h('span',{className:'text-right'},'概算'),h('span',{className:'text-right'},'確定金額'),h('span',null)
+              ),
+              occs.map(ds=>{
+                const ov=form.overrides?.[ds];
+                const confirmed=ov!==undefined;
+                return h('div',{key:ds,className:`grid items-center gap-1 rounded-lg px-2 py-1.5 text-sm ${confirmed?'bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700/50':'bg-white dark:bg-gray-700/80'}`,style:{gridTemplateColumns:'7rem 1fr 7.5rem 3rem'}},
+                  h('span',{className:'text-xs font-medium text-gray-700 dark:text-gray-200'},fmtDisp(ds)),
+                  h('span',{className:'text-xs text-gray-400 dark:text-gray-500 text-right'},`¥${estAmt.toLocaleString()}`),
+                  h('input',{type:'number',min:'1',placeholder:'概算のまま',value:ov!==undefined?ov:'',
+                    onChange:e=>{
+                      const val=e.target.value;
+                      const next={...(form.overrides||{})};
+                      if(val&&Number(val)>0) next[ds]=Number(val);
+                      else delete next[ds];
+                      sf('overrides',next);
+                    },
+                    className:`text-right text-xs rounded px-2 py-1 w-full border focus:outline-none focus:ring-1 focus:ring-amber-400 ${confirmed?'border-amber-400 dark:border-amber-600 bg-white dark:bg-gray-700 text-amber-700 dark:text-amber-300 font-semibold':'border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-400'}`}),
+                  confirmed?h('span',{className:'text-xs text-amber-600 dark:text-amber-400 font-medium text-center'},'確定'):h('span',{className:'text-xs text-gray-300 dark:text-gray-600 text-center'},'概算')
+                );
+              })
             )
-          ),
-          h('div',{className:'flex gap-2'},
-            h('input',{type:'date',value:ovDate,onChange:e=>setOvDate(e.target.value),className:dateCls}),
-            h('input',{type:'number',min:'1',placeholder:'確定金額',value:ovAmt,onChange:e=>setOvAmt(e.target.value),
-              className:'border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm w-28 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-400'}),
-            h('button',{type:'button',onClick:addOverride,
-              className:'bg-amber-500 text-white px-3 py-1.5 rounded-lg text-sm hover:bg-amber-600 whitespace-nowrap transition-colors'},'追加')
-          )
-        ),
+          );
+        })(),
         form.recurring&&h('div',null,
           h('label',{className:labelCls},'頻度'),
           h('select',{className:selectCls,value:form.frequency,onChange:e=>sf('frequency',e.target.value)},
