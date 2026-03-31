@@ -194,11 +194,93 @@ function buildTxList(txs, endD) {
   return evts;
 }
 
+// ─── Historical Forecast (past) ───────────────────────
+function buildHistoricalForecast(accounts, txs, startD){
+  const today=todayD();
+  const evts=[];
+  txs.forEach(tx=>{
+    if(tx.recurring){
+      if(tx.type==='transfer'){
+        expandRec(tx,startD,today).forEach(e=>{
+          evts.push({date:e.date,amt:-e.amt,aid:tx.fromAccountId});
+          evts.push({date:e.date,amt:e.amt,aid:tx.toAccountId});
+        });
+      } else {
+        expandRec(tx,startD,today).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+      }
+    } else {
+      const d=sod(parseISO(tx.startDate));
+      if(!isBefore(d,startD)&&!isAfter(d,today)){
+        if(tx.type==='transfer'){
+          evts.push({date:d,amt:-tx.amount,aid:tx.fromAccountId});
+          evts.push({date:d,amt:tx.amount,aid:tx.toAccountId});
+        } else {
+          evts.push({date:d,amt:tx.type==='income'?tx.amount:-tx.amount,aid:tx.accountId});
+        }
+      }
+    }
+  });
+  const evtsByDate={};
+  evts.forEach(ev=>{const ds=fmt(ev.date);if(!evtsByDate[ds])evtsByDate[ds]=[];evtsByDate[ds].push(ev);});
+  const cur={};
+  accounts.forEach(a=>{cur[a.id]=a.balance;});
+  const rows=[];
+  let cursor=new Date(today);
+  while(!isBefore(cursor,startD)){
+    const ds=fmt(cursor);
+    const row={date:ds};let tot=0;
+    accounts.forEach(a=>{row[a.id]=Math.round(cur[a.id]);tot+=cur[a.id];});
+    row.total=Math.round(tot);
+    rows.unshift(row);
+    if(evtsByDate[ds]) evtsByDate[ds].forEach(ev=>{if(cur[ev.aid]!==undefined)cur[ev.aid]-=ev.amt;});
+    cursor=addDays(cursor,-1);
+  }
+  return rows;
+}
+
+// ─── Past Transaction List ─────────────────────────────
+function buildPastTxList(txs, startD){
+  const today=todayD();
+  const evts=[];
+  txs.forEach(tx=>{
+    if(tx.recurring){
+      if(tx.type==='transfer'){
+        expandRec(tx,startD,today).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        });
+      } else {
+        expandRec(tx,startD,today).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        });
+      }
+    } else {
+      const d=sod(parseISO(tx.startDate));
+      if(!isBefore(d,startD)&&!isAfter(d,today)){
+        if(tx.type==='transfer'){
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        } else {
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        }
+      }
+    }
+  });
+  evts.sort((a,b)=>b.date.localeCompare(a.date));
+  return evts;
+}
+
 // ─── Constants ────────────────────────────────────────
 const COLORS=['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
 const CATS=['給与','家賃','食費','交通費','光熱費','保険','娯楽','その他'];
 const FREQS={daily:'毎日',weekly:'毎週',monthly:'毎月',yearly:'毎年'};
-const PERIODS=[{label:'1ヶ月',months:1},{label:'3ヶ月',months:3},{label:'6ヶ月',months:6},{label:'1年',months:12}];
+const PERIODS=[
+  {label:'過去6ヶ月',months:-6},
+  {label:'過去3ヶ月',months:-3},
+  {label:'過去1ヶ月',months:-1},
+  {label:'1ヶ月',months:1},
+  {label:'3ヶ月',months:3},
+  {label:'6ヶ月',months:6},
+  {label:'1年',months:12}
+];
 
 // ─── Reusable class strings ────────────────────────────
 const inputCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-300 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
@@ -747,14 +829,15 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
 
 // ─── Transaction Details ──────────────────────────────
 const TX_PAGE=20;
-function TxDetails({ txs, endD, accounts }){
+function TxDetails({ txs, endD, startD, isPast, accounts }){
   const [show,setShow]=useState(false);
   const [page,setPage]=useState(0);
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.id,a])),[accounts]);
   const list=useMemo(()=>{
     if(!txs.length||!accounts.length) return [];
+    if(isPast) return buildPastTxList(txs,startD);
     return buildTxList(txs,endD);
-  },[txs,endD,accounts]);
+  },[txs,endD,startD,isPast,accounts]);
 
   if(!accounts.length) return null;
   const shown=(page+1)*TX_PAGE;
@@ -765,14 +848,14 @@ function TxDetails({ txs, endD, accounts }){
       className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors rounded-xl'
     },
       h('span',{className:'text-base font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2'},
-        '予定明細',
+        isPast?'過去の取引':'予定明細',
         list.length>0&&h('span',{className:'text-xs font-normal text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full'},`${list.length}件`)
       ),
       h('span',{className:'text-gray-400 dark:text-gray-500 text-sm select-none'},show?'▲':'▼')
     ),
     show&&h('div',null,
       list.length===0
-        ?h('div',{className:'text-center py-8 text-gray-400 dark:text-gray-500 text-sm border-t border-gray-100 dark:border-gray-700'},'この期間に予定された取引はありません')
+        ?h('div',{className:'text-center py-8 text-gray-400 dark:text-gray-500 text-sm border-t border-gray-100 dark:border-gray-700'},isPast?'この期間に記録された取引はありません':'この期間に予定された取引はありません')
         :h('div',null,
             h('div',{className:'overflow-x-auto border-t border-gray-100 dark:border-gray-700'},
               h('table',{className:'w-full text-sm'},
@@ -882,21 +965,29 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
 
 // ─── Dashboard ───────────────────────────────────────
 function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
-  const [pIdx,setPIdx]=useState(1);
+  const [pIdx,setPIdx]=useState(4);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
-  const endD=useMemo(()=>addMonths(todayD(),PERIODS[pIdx].months),[pIdx]);
+  const isPast=PERIODS[pIdx].months<0;
+  const {startD,endD}=useMemo(()=>{
+    const t=todayD();
+    if(isPast) return {startD:addMonths(t,PERIODS[pIdx].months),endD:t};
+    return {startD:t,endD:addMonths(t,PERIODS[pIdx].months)};
+  },[pIdx,isPast]);
   const fullData=useMemo(()=>{
     if(!accounts.length) return [];
+    if(isPast) return buildHistoricalForecast(accounts,txs,startD);
     return buildForecast(accounts,txs,endD);
-  },[accounts,txs,endD,pIdx]);
+  },[accounts,txs,startD,endD,isPast]);
   const fData=useMemo(()=>{
-    const step=PERIODS[pIdx].months<=1?1:7;
+    const absMons=Math.abs(PERIODS[pIdx].months);
+    const step=absMons<=1?1:absMons<=3?3:7;
     return fullData.filter((_,i)=>i%step===0);
   },[fullData,pIdx]);
   const txEventMap=useMemo(()=>{
+    if(isPast) return {};
     const map={};
     const today=todayD();
     const add=(ds,aid,label,amt)=>{if(!map[ds])map[ds]={};if(!map[ds][aid])map[ds][aid]=[];map[ds][aid].push({label,amt});};
@@ -917,7 +1008,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
       }
     });
     return map;
-  },[txs,endD]);
+  },[txs,endD,isPast]);
 
   const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
   const monthly=useMemo(()=>{
@@ -951,7 +1042,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
-    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:onAddTx?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined}),
+    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined}),
     accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
       accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
         onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
@@ -980,17 +1071,19 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
     ),
     h(UpcomingPayments,{txs,accounts}),
     h('div',{className:cardCls+' p-5'},
-      h('div',{className:'flex items-center justify-between mb-4'},
-        h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'将来の残高予測'),
-        h('div',{className:'flex gap-1'},
+      h('div',{className:'flex items-center justify-between mb-4 flex-wrap gap-2'},
+        h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},isPast?'過去の残高推移':'将来の残高予測'),
+        h('div',{className:'flex gap-1 flex-wrap'},
           PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
-            className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?'bg-gray-900 dark:bg-white text-white dark:text-gray-900':'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`},p.label))
+            className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
         )
       ),
-      onAddTx&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'グラフをクリックするとその日付で取引を追加できます'),
-      h(SvgChart,{data:fData,accounts,dark,onDateClick:onAddTx?setAddDate:undefined})
+      isPast
+        ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'定期取引から逆算した過去の残高推移です')
+        :onAddTx&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'グラフをクリックするとその日付で取引を追加できます'),
+      h(SvgChart,{data:fData,accounts,dark,onDateClick:(!isPast&&onAddTx)?setAddDate:undefined})
     ),
-    h(TxDetails,{txs,endD,accounts})
+    h(TxDetails,{txs,endD,startD,isPast,accounts})
   );
 }
 

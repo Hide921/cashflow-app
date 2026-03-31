@@ -2,16 +2,20 @@ import React, { useState, useMemo } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
-import { buildForecast, buildTransactionList } from '../utils/forecast.js'
+import { buildForecast, buildTransactionList, buildHistoricalForecast, buildPastTransactionList } from '../utils/forecast.js'
 import { addMonths, today } from '../utils/dateHelpers.js'
 import { generateId } from '../utils/storage.js'
 
 const PERIODS = [
+  { label: '過去6ヶ月', months: -6 },
+  { label: '過去3ヶ月', months: -3 },
+  { label: '過去1ヶ月', months: -1 },
   { label: '1ヶ月', months: 1 },
   { label: '3ヶ月', months: 3 },
   { label: '6ヶ月', months: 6 },
   { label: '1年', months: 12 },
 ]
+const DEFAULT_PERIOD_IDX = 4 // 3ヶ月（未来）
 
 const CATEGORIES = ['給与', '家賃', '食費', '交通費', '光熱費', '保険', '娯楽', 'その他']
 
@@ -165,29 +169,40 @@ function AddTransactionModal({ date, accounts, onSave, onClose }) {
 const PAGE_SIZE = 20
 
 export default function Dashboard({ accounts, transactions, onTransactionAdd, onAccountUpdate }) {
-  const [periodIdx, setPeriodIdx] = useState(1)
+  const [periodIdx, setPeriodIdx] = useState(DEFAULT_PERIOD_IDX)
   const [showDetails, setShowDetails] = useState(false)
   const [detailPage, setDetailPage] = useState(0)
   const [addModalDate, setAddModalDate] = useState(null)
   const [editingAccountId, setEditingAccountId] = useState(null)
   const [editingBalance, setEditingBalance] = useState('')
 
-  const endDate = useMemo(() => {
+  const isPast = PERIODS[periodIdx].months < 0
+
+  const { startDate, endDate } = useMemo(() => {
     const t = today()
-    return addMonths(t, PERIODS[periodIdx].months)
-  }, [periodIdx])
+    if (isPast) {
+      return { startDate: addMonths(t, PERIODS[periodIdx].months), endDate: t }
+    }
+    return { startDate: t, endDate: addMonths(t, PERIODS[periodIdx].months) }
+  }, [periodIdx, isPast])
 
   const txList = useMemo(() => {
     if (accounts.length === 0 || transactions.length === 0) return []
+    if (isPast) return buildPastTransactionList(transactions, startDate)
     return buildTransactionList(transactions, endDate)
-  }, [accounts, transactions, endDate])
+  }, [accounts, transactions, startDate, endDate, isPast])
 
   const forecastData = useMemo(() => {
     if (accounts.length === 0) return []
+    const absMons = Math.abs(PERIODS[periodIdx].months)
+    const step = absMons <= 1 ? 1 : absMons <= 3 ? 3 : 7
+    if (isPast) {
+      const full = buildHistoricalForecast(accounts, transactions, startDate)
+      return full.filter((_, i) => i % step === 0)
+    }
     const full = buildForecast(accounts, transactions, endDate)
-    const step = PERIODS[periodIdx].months <= 1 ? 1 : 7
     return full.filter((_, i) => i % step === 0)
-  }, [accounts, transactions, endDate, periodIdx])
+  }, [accounts, transactions, startDate, endDate, periodIdx, isPast])
 
   const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
 
@@ -216,7 +231,7 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
   }, [transactions])
 
   function handleChartClick(data) {
-    if (!data?.activeLabel || accounts.length === 0) return
+    if (isPast || !data?.activeLabel || accounts.length === 0) return
     // activeLabel は "MM-DD" 形式なので今年と組み合わせる
     const year = new Date().getFullYear()
     const fullDate = `${year}-${data.activeLabel}`
@@ -316,22 +331,29 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
       {/* 将来予測グラフ */}
       <div className="bg-white rounded-xl border shadow-sm p-5">
         <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-gray-700">口座別残高推移</h2>
-          <div className="flex gap-1">
+          <h2 className="text-lg font-semibold text-gray-700">
+            口座別残高推移
+            {isPast && <span className="ml-2 text-xs font-normal text-gray-400">（過去実績）</span>}
+          </h2>
+          <div className="flex gap-1 flex-wrap justify-end">
             {PERIODS.map((p, i) => (
               <button
                 key={i}
                 onClick={() => setPeriodIdx(i)}
                 className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  periodIdx === i ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'
-                }`}
+                  periodIdx === i
+                    ? p.months < 0 ? 'bg-gray-600 text-white' : 'bg-blue-600 text-white'
+                    : 'text-gray-500 hover:bg-gray-100'
+                } ${i === 2 ? 'mr-2' : ''}`}
               >
                 {p.label}
               </button>
             ))}
           </div>
         </div>
-        <p className="text-xs text-gray-400 mb-4">グラフをクリックするとその日付で取引を追加できます</p>
+        <p className="text-xs text-gray-400 mb-4">
+          {isPast ? '過去の残高推移を表示しています（定期取引から逆算）' : 'グラフをクリックするとその日付で取引を追加できます'}
+        </p>
 
         {accounts.length === 0 ? (
           <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
@@ -393,7 +415,7 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
             className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors"
           >
             <span className="text-lg font-semibold text-gray-700">
-              予定明細
+              {isPast ? '過去の取引' : '予定明細'}
               {txList.length > 0 && (
                 <span className="ml-2 text-xs font-normal text-gray-400">
                   {PERIODS[periodIdx].label}間 {txList.length}件
@@ -406,7 +428,9 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
           {showDetails && (
             <>
               {txList.length === 0 ? (
-                <p className="text-center py-8 text-gray-400 text-sm">この期間に予定された取引はありません</p>
+                <p className="text-center py-8 text-gray-400 text-sm">
+                  {isPast ? 'この期間に記録された取引はありません' : 'この期間に予定された取引はありません'}
+                </p>
               ) : (
                 <>
                   <div className="overflow-x-auto">

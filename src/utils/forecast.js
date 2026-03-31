@@ -139,3 +139,111 @@ export function buildTransactionList(transactions, endDate) {
   events.sort((a, b) => a.date.localeCompare(b.date))
   return events
 }
+
+/**
+ * startDate〜今日 までに発生した取引の明細リストを生成する（過去分）
+ * @returns {Array} - [{ date: 'YYYY-MM-DD', label, category, type, amount, accountId }] 新しい順
+ */
+export function buildPastTransactionList(transactions, startDate) {
+  const todayDate = startOfDay(new Date())
+  const events = []
+
+  for (const tx of transactions) {
+    if (tx.recurring) {
+      const expanded = expandRecurring(tx, startDate, todayDate)
+      for (const e of expanded) {
+        events.push({
+          date: format(e.date),
+          label: tx.label,
+          category: tx.category,
+          type: tx.type,
+          amount: tx.amount,
+          accountId: tx.accountId,
+        })
+      }
+    } else {
+      const d = startOfDay(parseISO(tx.startDate))
+      if (!isBefore(d, startDate) && !isAfter(d, todayDate)) {
+        events.push({
+          date: format(d),
+          label: tx.label,
+          category: tx.category,
+          type: tx.type,
+          amount: tx.amount,
+          accountId: tx.accountId,
+        })
+      }
+    }
+  }
+
+  events.sort((a, b) => b.date.localeCompare(a.date)) // 新しい順
+  return events
+}
+
+/**
+ * startDate〜今日 の日次残高データを生成する（過去分）
+ * 今日の残高から逆算して各日の残高を復元する
+ * @returns {Array} - [{ date: 'YYYY-MM-DD', total: number, [accountId]: number, ... }]
+ */
+export function buildHistoricalForecast(accounts, transactions, startDate) {
+  const todayDate = startOfDay(new Date())
+
+  // startDate〜今日 のイベントを収集
+  const events = []
+  for (const tx of transactions) {
+    if (tx.recurring) {
+      const expanded = expandRecurring(tx, startDate, todayDate)
+      for (const e of expanded) {
+        events.push({ date: e.date, amount: e.amount, accountId: tx.accountId })
+      }
+    } else {
+      const d = startOfDay(parseISO(tx.startDate))
+      if (!isBefore(d, startDate) && !isAfter(d, todayDate)) {
+        events.push({ date: d, amount: tx.type === 'income' ? tx.amount : -tx.amount, accountId: tx.accountId })
+      }
+    }
+  }
+
+  // 日付文字列でイベントをグループ化
+  const eventsByDate = {}
+  for (const ev of events) {
+    const dateStr = format(ev.date)
+    if (!eventsByDate[dateStr]) eventsByDate[dateStr] = []
+    eventsByDate[dateStr].push(ev)
+  }
+
+  // 今日の残高からスタートして過去方向に逆算
+  const workingBalances = {}
+  for (const acc of accounts) {
+    workingBalances[acc.id] = acc.balance
+  }
+
+  const rows = []
+  let cursor = new Date(todayDate)
+
+  while (!isBefore(cursor, startDate)) {
+    const dateStr = format(cursor)
+
+    const row = { date: dateStr }
+    let total = 0
+    for (const acc of accounts) {
+      row[acc.id] = Math.round(workingBalances[acc.id])
+      total += workingBalances[acc.id]
+    }
+    row.total = Math.round(total)
+    rows.unshift(row) // 時系列順になるよう先頭に追加
+
+    // この日のイベントを逆算適用（今日→過去方向）
+    if (eventsByDate[dateStr]) {
+      for (const ev of eventsByDate[dateStr]) {
+        if (workingBalances[ev.accountId] !== undefined) {
+          workingBalances[ev.accountId] -= ev.amount
+        }
+      }
+    }
+
+    cursor = addDays(cursor, -1)
+  }
+
+  return rows
+}
