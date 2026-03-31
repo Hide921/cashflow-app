@@ -830,7 +830,6 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
 // ─── Transaction Details ──────────────────────────────
 const TX_PAGE=20;
 function TxDetails({ txs, endD, startD, isPast, accounts }){
-  const [show,setShow]=useState(false);
   const [page,setPage]=useState(0);
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.id,a])),[accounts]);
   const list=useMemo(()=>{
@@ -843,21 +842,16 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
   const shown=(page+1)*TX_PAGE;
 
   return h('div',{className:cardCls},
-    h('button',{
-      onClick:()=>{setShow(v=>!v);setPage(0);},
-      className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors rounded-xl'
-    },
+    h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700'},
       h('span',{className:'text-base font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2'},
         isPast?'過去の取引':'予定明細',
         list.length>0&&h('span',{className:'text-xs font-normal text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full'},`${list.length}件`)
-      ),
-      h('span',{className:'text-gray-400 dark:text-gray-500 text-sm select-none'},show?'▲':'▼')
+      )
     ),
-    show&&h('div',null,
-      list.length===0
-        ?h('div',{className:'text-center py-8 text-gray-400 dark:text-gray-500 text-sm border-t border-gray-100 dark:border-gray-700'},isPast?'この期間に記録された取引はありません':'この期間に予定された取引はありません')
+    list.length===0
+      ?h('div',{className:'text-center py-8 text-gray-400 dark:text-gray-500 text-sm'},isPast?'この期間に記録された取引はありません':'この期間に予定された取引はありません')
         :h('div',null,
-            h('div',{className:'overflow-x-auto border-t border-gray-100 dark:border-gray-700'},
+            h('div',{className:'overflow-x-auto'},
               h('table',{className:'w-full text-sm'},
                 h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider'},
                   h('tr',null,
@@ -904,7 +898,6 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
                 `もっと見る（残り ${list.length-shown} 件）`)
             )
           )
-    )
   );
 }
 
@@ -964,12 +957,13 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
+function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
   const [pIdx,setPIdx]=useState(4);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
+  const [fabOpen,setFabOpen]=useState(false);
   const isPast=PERIODS[pIdx].months<0;
   const {startD,endD}=useMemo(()=>{
     const t=todayD();
@@ -1042,6 +1036,11 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
+    h('div',{className:'flex items-center gap-1.5 flex-wrap'},
+      h('span',{className:'text-xs font-medium text-gray-400 dark:text-gray-500 mr-0.5'},'表示期間:'),
+      PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
+        className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
+    ),
     h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined}),
     accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
       accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
@@ -1071,19 +1070,38 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc }){
     ),
     h(UpcomingPayments,{txs,accounts}),
     h('div',{className:cardCls+' p-5'},
-      h('div',{className:'flex items-center justify-between mb-4 flex-wrap gap-2'},
+      h('div',{className:'flex items-center mb-4'},
         h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},isPast?'過去の残高推移':'将来の残高予測'),
-        h('div',{className:'flex gap-1 flex-wrap'},
-          PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
-            className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
-        )
       ),
       isPast
         ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'定期取引から逆算した過去の残高推移です')
         :onAddTx&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'グラフをクリックするとその日付で取引を追加できます'),
       h(SvgChart,{data:fData,accounts,dark,onDateClick:(!isPast&&onAddTx)?setAddDate:undefined})
     ),
-    h(TxDetails,{txs,endD,startD,isPast,accounts})
+    h(TxDetails,{txs,endD,startD,isPast,accounts}),
+    fabOpen&&h('div',{className:'fixed inset-0 z-30',onClick:()=>setFabOpen(false)}),
+    h('div',{className:'fixed bottom-6 right-4 z-40 flex flex-col items-end gap-2'},
+      fabOpen&&h('div',{className:'flex flex-col items-end gap-2 mb-1'},
+        h('button',{
+          className:'flex items-center gap-2.5 bg-white dark:bg-gray-800 shadow-lg rounded-full pl-4 pr-3 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-200 border border-gray-100 dark:border-gray-700 whitespace-nowrap hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors',
+          onClick:()=>{setFabOpen(false);onOpenSettings&&onOpenSettings('account');}
+        },
+          '口座を追加',
+          h('span',{className:'w-7 h-7 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center text-sm'},'🏦')
+        ),
+        h('button',{
+          className:'flex items-center gap-2.5 bg-white dark:bg-gray-800 shadow-lg rounded-full pl-4 pr-3 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-200 border border-gray-100 dark:border-gray-700 whitespace-nowrap hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors',
+          onClick:()=>{setFabOpen(false);setAddDate(todayStr());}
+        },
+          '取引を追加',
+          h('span',{className:'w-7 h-7 bg-indigo-100 dark:bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold text-lg'},'+')
+        )
+      ),
+      h('button',{
+        onClick:()=>setFabOpen(v=>!v),
+        className:`w-14 h-14 text-white rounded-full shadow-xl flex items-center justify-center text-2xl font-light transition-all duration-200 ${fabOpen?'bg-gray-500 hover:bg-gray-600 rotate-45':'bg-indigo-600 hover:bg-indigo-700'}`
+      },'+')
+    )
   );
 }
 
@@ -1155,15 +1173,15 @@ function UpcomingPayments({txs,accounts}){
 
 
 // ─── App ─────────────────────────────────────────────
-const TABS=['ダッシュボード','口座管理','取引管理'];
 const LS_DARK='cf_dark';
 
 function App(){
-  const [tab,setTab]=useState(0);
   const [accounts,setAccounts]=useState([]);
   const [txs,setTxs]=useState([]);
   const [loading,setLoading]=useState(true);
   const [dark,setDark]=useState(()=>localStorage.getItem(LS_DARK)==='1');
+  const [showSettings,setShowSettings]=useState(false);
+  const [settingsTab,setSettingsTab]=useState(0); // 0=取引管理 1=口座管理
 
   useEffect(()=>{
     loadAllData().then(({accounts:a,txs:t})=>{ setAccounts(a); setTxs(t); })
@@ -1209,40 +1227,49 @@ function App(){
                 )
           ),
           h('div',{className:'w-px h-5 bg-gray-200 dark:bg-gray-700 mx-1'}),
-          h('nav',{className:'hidden sm:flex gap-1'},
-            TABS.map((label,i)=>h('button',{key:i,onClick:()=>setTab(i),
-              className:`px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-150 ${tab===i?'bg-gray-900 dark:bg-white text-white dark:text-gray-900 shadow-sm':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`},label))
+          h('button',{
+            onClick:()=>setShowSettings(true),
+            className:'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors'
+          },
+            h('svg',{className:'w-4 h-4',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
+              h('circle',{cx:'12',cy:'12',r:'3'}),
+              h('path',{d:'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'})
+            ),
+            '設定'
           )
         )
       )
     ),
-    h('main',{className:'max-w-5xl mx-auto px-4 py-6 pb-24 sm:pb-6'},
-      tab===0&&h(Dashboard,{accounts,txs,dark,
+    h('main',{className:'max-w-5xl mx-auto px-4 py-6 pb-28'},
+      h(Dashboard,{accounts,txs,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
-        onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a))
-      }),
-      tab===1&&h(AccountManager,{accounts,onChange:updAcc}),
-      tab===2&&h(TxManager,{accounts,txs,onChange:updTxs})
+        onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a)),
+        onOpenSettings:(section)=>{ setSettingsTab(section==='account'?1:0); setShowSettings(true); }
+      })
     ),
-    h('nav',{className:'sm:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 z-30 flex'},
-      TABS.map((label,i)=>h('button',{key:i,onClick:()=>setTab(i),
-        className:`flex-1 flex flex-col items-center justify-center py-3 gap-1 transition-colors ${tab===i?'text-indigo-600 dark:text-indigo-400':'text-gray-400 dark:text-gray-500'}`},
-        i===0?h('svg',{className:'w-5 h-5',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-          h('path',{d:'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'}),
-          h('polyline',{points:'9 22 9 12 15 12 15 22'})
-        ):i===1?h('svg',{className:'w-5 h-5',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-          h('rect',{x:'2',y:'5',width:'20',height:'14',rx:'2'}),
-          h('line',{x1:'2',y1:'10',x2:'22',y2:'10'})
-        ):h('svg',{className:'w-5 h-5',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2'},
-          h('line',{x1:'8',y1:'6',x2:'21',y2:'6'}),
-          h('line',{x1:'8',y1:'12',x2:'21',y2:'12'}),
-          h('line',{x1:'8',y1:'18',x2:'21',y2:'18'}),
-          h('line',{x1:'3',y1:'6',x2:'3.01',y2:'6'}),
-          h('line',{x1:'3',y1:'12',x2:'3.01',y2:'12'}),
-          h('line',{x1:'3',y1:'18',x2:'3.01',y2:'18'})
+    showSettings&&h('div',{
+      className:'fixed inset-0 bg-black/50 dark:bg-black/70 z-50 flex items-end sm:items-center justify-center sm:p-4',
+      onClick:e=>{if(e.target===e.currentTarget)setShowSettings(false);}
+    },
+      h('div',{className:'bg-white dark:bg-gray-900 rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-2xl flex flex-col overflow-hidden',style:{maxHeight:'90vh'}},
+        h('div',{className:'flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0'},
+          h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100'},'設定'),
+          h('button',{
+            onClick:()=>setShowSettings(false),
+            className:'w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 text-xl leading-none'
+          },'✕')
         ),
-        h('span',{className:'text-xs leading-none'},label)
-      ))
+        h('div',{className:'flex border-b border-gray-100 dark:border-gray-800 flex-shrink-0'},
+          ['取引管理','口座管理'].map((label,i)=>
+            h('button',{key:i,onClick:()=>setSettingsTab(i),
+              className:`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${settingsTab===i?'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}`
+            },label)
+          )
+        ),
+        h('div',{className:'overflow-y-auto flex-1 p-5'},
+          settingsTab===0?h(TxManager,{accounts,txs,onChange:updTxs}):h(AccountManager,{accounts,onChange:updAcc})
+        )
+      )
     )
   );
 }
