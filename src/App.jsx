@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react'
 import Dashboard from './components/Dashboard.jsx'
 import AccountManager from './components/AccountManager.jsx'
 import TransactionManager from './components/TransactionManager.jsx'
+import ReportView from './components/ReportView.jsx'
+import { ToastContainer, useToast } from './components/Toast.jsx'
 import { getAccounts, saveAccounts, getTransactions, saveTransactions } from './utils/storage.js'
 
-const TABS = ['ダッシュボード', '口座管理', '取引管理']
+const TABS = ['ダッシュボード', '口座管理', '取引管理', 'レポート']
 
 export default function App() {
   const [tab, setTab] = useState(0)
@@ -12,6 +14,7 @@ export default function App() {
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const { toasts, addToast } = useToast()
 
   useEffect(() => {
     Promise.all([getAccounts(), getTransactions()])
@@ -23,21 +26,25 @@ export default function App() {
       .finally(() => setLoading(false))
   }, [])
 
-  async function updateAccounts(next) {
+  async function updateAccounts(next, successMsg) {
     setAccounts(next)
     try {
       await saveAccounts(next)
+      if (successMsg) addToast(successMsg)
     } catch (e) {
       setError(e.message)
+      addToast(e.message, 'error')
     }
   }
 
-  async function updateTransactions(next) {
+  async function updateTransactions(next, successMsg) {
     setTransactions(next)
     try {
       await saveTransactions(next)
+      if (successMsg) addToast(successMsg)
     } catch (e) {
       setError(e.message)
+      addToast(e.message, 'error')
     }
   }
 
@@ -54,7 +61,7 @@ export default function App() {
       <header className="bg-white border-b shadow-sm">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-gray-800">資金管理</h1>
-          <nav className="flex gap-1">
+          <nav className="flex gap-1 flex-wrap justify-end">
             {TABS.map((label, i) => (
               <button
                 key={i}
@@ -86,21 +93,37 @@ export default function App() {
           <Dashboard
             accounts={accounts}
             transactions={transactions}
-            onTransactionAdd={tx => updateTransactions([...transactions, tx])}
-            onAccountUpdate={updated => updateAccounts(accounts.map(a => a.id === updated.id ? updated : a))}
+            onTransactionAdd={tx => updateTransactions([...transactions, tx], '取引を追加しました')}
+            onAccountUpdate={updated => updateAccounts(
+              accounts.map(a => a.id === updated.id ? updated : a),
+              '残高を更新しました'
+            )}
           />
         )}
         {tab === 1 && (
-          <AccountManager accounts={accounts} onChange={updateAccounts} />
+          <AccountManager
+            accounts={accounts}
+            onChange={updateAccounts}
+            addToast={addToast}
+          />
         )}
         {tab === 2 && (
           <TransactionManager
             accounts={accounts}
             transactions={transactions}
             onChange={updateTransactions}
+            addToast={addToast}
+          />
+        )}
+        {tab === 3 && (
+          <ReportView
+            accounts={accounts}
+            transactions={transactions}
           />
         )}
       </main>
+
+      <ToastContainer toasts={toasts} />
     </div>
   )
 }

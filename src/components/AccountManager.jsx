@@ -1,14 +1,16 @@
 import React, { useState } from 'react'
 import { generateId } from '../utils/storage.js'
+import ConfirmDialog from './ConfirmDialog.jsx'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
 
 const DEFAULT_FORM = { name: '', bankName: '', balance: '', color: COLORS[0] }
 
-export default function AccountManager({ accounts, onChange }) {
+export default function AccountManager({ accounts, onChange, addToast }) {
   const [form, setForm] = useState(DEFAULT_FORM)
   const [editId, setEditId] = useState(null)
   const [error, setError] = useState('')
+  const [confirmTarget, setConfirmTarget] = useState(null) // 削除確認対象
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -17,21 +19,23 @@ export default function AccountManager({ accounts, onChange }) {
     setError('')
 
     if (editId) {
-      onChange(accounts.map(a => a.id === editId ? { ...a, ...form, balance: Number(form.balance) } : a))
+      onChange(accounts.map(a => a.id === editId ? { ...a, ...form, balance: Number(form.balance) } : a), '口座を更新しました')
       setEditId(null)
     } else {
-      onChange([...accounts, { id: generateId(), ...form, balance: Number(form.balance) }])
+      onChange([...accounts, { id: generateId(), ...form, balance: Number(form.balance) }], '口座を追加しました')
     }
     setForm(DEFAULT_FORM)
   }
 
   function handleEdit(acc) {
     setEditId(acc.id)
-    setForm({ name: acc.name, bankName: acc.bankName, balance: String(acc.balance), color: acc.color })
+    setForm({ name: acc.name, bankName: acc.bankName || '', balance: String(acc.balance), color: acc.color })
   }
 
-  function handleDelete(id) {
-    onChange(accounts.filter(a => a.id !== id))
+  function handleDeleteConfirmed() {
+    if (!confirmTarget) return
+    onChange(accounts.filter(a => a.id !== confirmTarget.id), `「${confirmTarget.name}」を削除しました`)
+    setConfirmTarget(null)
   }
 
   function handleCancel() {
@@ -42,6 +46,15 @@ export default function AccountManager({ accounts, onChange }) {
 
   return (
     <div className="space-y-6">
+      {confirmTarget && (
+        <ConfirmDialog
+          title="口座を削除"
+          message={`「${confirmTarget.name}」を削除しますか？この操作は取り消せません。`}
+          onConfirm={handleDeleteConfirmed}
+          onCancel={() => setConfirmTarget(null)}
+        />
+      )}
+
       <div className="bg-white rounded-xl shadow-sm border p-5">
         <h2 className="text-lg font-semibold text-gray-700 mb-4">
           {editId ? '口座を編集' : '口座を追加'}
@@ -93,7 +106,7 @@ export default function AccountManager({ accounts, onChange }) {
           <div className="col-span-2 flex gap-2">
             <button
               type="submit"
-              className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+              className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
             >
               {editId ? '更新' : '追加'}
             </button>
@@ -101,7 +114,7 @@ export default function AccountManager({ accounts, onChange }) {
               <button
                 type="button"
                 onClick={handleCancel}
-                className="border px-5 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100"
+                className="border px-5 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100 transition-colors"
               >
                 キャンセル
               </button>
@@ -117,7 +130,7 @@ export default function AccountManager({ accounts, onChange }) {
         {accounts.map(acc => (
           <div key={acc.id} className="bg-white rounded-xl shadow-sm border p-4 flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: acc.color }} />
+              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: acc.color }} />
               <span className="font-semibold text-gray-800">{acc.name}</span>
             </div>
             {acc.bankName && <p className="text-xs text-gray-400">{acc.bankName}</p>}
@@ -132,7 +145,7 @@ export default function AccountManager({ accounts, onChange }) {
                 編集
               </button>
               <button
-                onClick={() => handleDelete(acc.id)}
+                onClick={() => setConfirmTarget(acc)}
                 className="text-xs text-red-500 hover:underline"
               >
                 削除
