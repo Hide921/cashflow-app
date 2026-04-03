@@ -288,6 +288,58 @@ const selectCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl p
 const labelCls='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1';
 const cardCls='bg-white dark:bg-gray-800 rounded-2xl shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none border border-gray-100 dark:border-gray-700/60';
 
+// ─── Toast notification system ────────────────────────
+function Toast({ toasts }){
+  if(!toasts.length) return null;
+  return h('div',{className:'fixed bottom-24 right-4 z-[100] space-y-2 pointer-events-none'},
+    toasts.map(t=>h('div',{key:t.id,
+      className:`px-4 py-3 rounded-xl shadow-xl text-sm font-semibold text-white flex items-center gap-2 ${t.type==='error'?'bg-red-600':'bg-emerald-600'}`},
+      t.type==='error'
+        ? h('svg',{className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+            h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M6 18L18 6M6 6l12 12'}))
+        : h('svg',{className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+            h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M5 13l4 4L19 7'})),
+      t.message
+    ))
+  );
+}
+
+// ─── Confirm Dialog ────────────────────────────────────
+function ConfirmDialog({ title, message, onConfirm, onCancel }){
+  return h('div',{className:'fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-[200] px-4',onClick:e=>{if(e.target===e.currentTarget)onCancel();}},
+    h('div',{className:'bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6'},
+      title&&h('h3',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-2'},title),
+      h('p',{className:'text-sm text-gray-500 dark:text-gray-400 mb-5'},message),
+      h('div',{className:'flex gap-3'},
+        h('button',{onClick:onConfirm,className:'flex-1 bg-red-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-red-700 active:bg-red-800 transition-colors shadow-sm'},'削除する'),
+        h('button',{onClick:onCancel,className:'flex-1 border border-gray-200 dark:border-gray-600 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors'},'キャンセル')
+      )
+    )
+  );
+}
+
+// ─── CSV export ────────────────────────────────────────
+function downloadTxCsv(txs, accounts){
+  const aMap=Object.fromEntries(accounts.map(a=>[a.id,a.name]));
+  const header=['名前','種別','カテゴリ','口座','金額','頻度','開始日','終了日'];
+  const rows=txs.map(tx=>[
+    `"${(tx.label||'').replace(/"/g,'""')}"`,
+    tx.type==='income'?'収入':tx.type==='transfer'?'振替':'支出',
+    tx.category||'',
+    aMap[tx.accountId]||aMap[tx.fromAccountId]||'',
+    tx.type==='income'?tx.amount:-tx.amount,
+    tx.recurring?(FREQS[tx.frequency]||tx.frequency):'単発',
+    tx.startDate||'',
+    tx.endDate||'',
+  ]);
+  const csv=[header,...rows].map(r=>r.join(',')).join('\n');
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`transactions_${fmt(new Date())}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── SVG Line Chart ───────────────────────────────────
 function SvgChart({ data, accounts, dark, onDateClick }){
   const W=700, H=260, PL=72, PR=20, PT=16, PB=40;
@@ -384,11 +436,12 @@ function SvgChart({ data, accounts, dark, onDateClick }){
 }
 
 // ─── Account Manager ─────────────────────────────────
-function AccountManager({ accounts, onChange }){
+function AccountManager({ accounts, onChange, addToast }){
   const DEF={name:'',bankName:'',balance:'',color:COLORS[0]};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
   const [err,setErr]=useState('');
+  const [confirmTarget,setConfirmTarget]=useState(null);
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
 
   function submit(e){
@@ -397,15 +450,35 @@ function AccountManager({ accounts, onChange }){
     if(form.balance===''){setErr('残高を入力してください');return;}
     setErr('');
     const item={...form,balance:Number(form.balance)};
-    if(editId){ onChange(accounts.map(a=>a.id===editId?{...a,...item}:a)); setEditId(null); }
-    else onChange([...accounts,{...item,id:genId()}]);
+    if(editId){
+      onChange(accounts.map(a=>a.id===editId?{...a,...item}:a));
+      setEditId(null);
+      addToast&&addToast('口座を更新しました');
+    } else {
+      onChange([...accounts,{...item,id:genId()}]);
+      addToast&&addToast('口座を追加しました');
+    }
     setForm(DEF);
   }
 
   function startEdit(a){ setEditId(a.id); setForm({name:a.name,bankName:a.bankName,balance:String(a.balance),color:a.color}); }
   function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
 
+  function confirmDelete(a){ setConfirmTarget(a); }
+  function doDelete(){
+    if(!confirmTarget) return;
+    onChange(accounts.filter(x=>x.id!==confirmTarget.id));
+    addToast&&addToast(`「${confirmTarget.name}」を削除しました`);
+    setConfirmTarget(null);
+  }
+
   return h('div',{className:'space-y-6'},
+    confirmTarget&&h(ConfirmDialog,{
+      title:'口座を削除',
+      message:`「${confirmTarget.name}」を削除しますか？この操作は取り消せません。`,
+      onConfirm:doDelete,
+      onCancel:()=>setConfirmTarget(null)
+    }),
     h('div',{className:cardCls+' p-5'},
       h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-4'},editId?'口座を編集':'口座を追加'),
       h('form',{onSubmit:submit,className:'grid grid-cols-2 gap-3'},
@@ -447,7 +520,7 @@ function AccountManager({ accounts, onChange }){
         h('p',{className:'text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1'},`¥${a.balance.toLocaleString()}`),
         h('div',{className:'flex gap-3 pt-2 border-t border-gray-100 dark:border-gray-700 mt-1'},
           h('button',{onClick:()=>startEdit(a),className:'text-xs text-indigo-600 dark:text-indigo-400 hover:underline font-medium'},'編集'),
-          h('button',{onClick:()=>onChange(accounts.filter(x=>x.id!==a.id)),className:'text-xs text-red-500 dark:text-red-400 hover:underline font-medium'},'削除')
+          h('button',{onClick:()=>confirmDelete(a),className:'text-xs text-red-500 dark:text-red-400 hover:underline font-medium'},'削除')
         )
       ))
     )
@@ -468,13 +541,16 @@ function parseJpAmt(s){
 }
 
 // ─── Transaction Manager ──────────────────────────────
-function TxManager({ accounts, txs, onChange }){
+function TxManager({ accounts, txs, onChange, addToast }){
   const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',fromAccountId:'',toAccountId:'',overrides:{},recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
   const [err,setErr]=useState('');
   const [sugs,setSugs]=useState([]);
   const [showSugs,setShowSugs]=useState(false);
+  const [confirmTarget,setConfirmTarget]=useState(null);
+  const [searchText,setSearchText]=useState('');
+  const [filterType,setFilterType]=useState('all');
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
 
   function handleLabelChange(val){
@@ -533,9 +609,23 @@ function TxManager({ accounts, txs, onChange }){
     }
     setErr('');
     const tx={...form,amount:parsedAmt,endDate:form.endDate||null};
-    if(editId){ onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t)); setEditId(null); }
-    else onChange([...txs,{...tx,id:genId()}]);
+    if(editId){
+      onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t));
+      setEditId(null);
+      addToast&&addToast('取引を更新しました');
+    } else {
+      onChange([...txs,{...tx,id:genId()}]);
+      addToast&&addToast('取引を追加しました');
+    }
     setForm({...DEF,accountId:form.accountId});
+  }
+
+  function confirmDelete(tx){ setConfirmTarget(tx); }
+  function doDelete(){
+    if(!confirmTarget) return;
+    onChange(txs.filter(t=>t.id!==confirmTarget.id));
+    addToast&&addToast(`「${confirmTarget.label}」を削除しました`);
+    setConfirmTarget(null);
   }
 
   function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); }
@@ -544,7 +634,22 @@ function TxManager({ accounts, txs, onChange }){
   const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
   const dateCls='border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm flex-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-400';
 
+  const accMap2=Object.fromEntries(accounts.map(a=>[a.id,a]));
+  const filteredTxs=useMemo(()=>{
+    return txs.filter(tx=>{
+      if(filterType!=='all'&&tx.type!==filterType) return false;
+      if(searchText.trim()&&!tx.label.toLowerCase().includes(searchText.trim().toLowerCase())) return false;
+      return true;
+    });
+  },[txs,filterType,searchText]);
+
   return h('div',{className:'space-y-6'},
+    confirmTarget&&h(ConfirmDialog,{
+      title:'取引を削除',
+      message:`「${confirmTarget.label}」を削除しますか？この操作は取り消せません。`,
+      onConfirm:doDelete,
+      onCancel:()=>setConfirmTarget(null)
+    }),
     h('div',{className:cardCls+' p-5'},
       h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-4'},editId?'取引を編集':'取引を追加'),
       accounts.length===0&&h('p',{className:'text-amber-600 dark:text-amber-400 text-sm mb-3'},'先に「口座管理」タブで口座を追加してください'),
@@ -681,6 +786,34 @@ function TxManager({ accounts, txs, onChange }){
       )
     ),
     h('div',{className:cardCls+' overflow-hidden'},
+      h('div',{className:'px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-center gap-2'},
+        h('div',{className:'relative flex-1 min-w-36'},
+          h('svg',{className:'absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+            h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z'})),
+          h('input',{className:'w-full border border-gray-200 dark:border-gray-600 rounded-lg pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-400',
+            placeholder:'取引名を検索…',value:searchText,onChange:e=>setSearchText(e.target.value)})
+        ),
+        h('select',{className:'border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1.5 text-xs bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-400',
+          value:filterType,onChange:e=>setFilterType(e.target.value)},
+          h('option',{value:'all'},'全種別'),
+          h('option',{value:'income'},'収入'),
+          h('option',{value:'expense'},'支出'),
+          h('option',{value:'transfer'},'振替')
+        ),
+        (searchText||filterType!=='all')&&h('button',{onClick:()=>{setSearchText('');setFilterType('all');},
+          className:'text-xs text-indigo-600 dark:text-indigo-400 hover:underline whitespace-nowrap'},'リセット'),
+        h('div',{className:'ml-auto flex items-center gap-3'},
+          (searchText||filterType!=='all')&&h('span',{className:'text-xs text-gray-400 dark:text-gray-500'},`${filteredTxs.length}/${txs.length}件`),
+          h('button',{
+            onClick:()=>downloadTxCsv(filteredTxs,accounts),
+            disabled:filteredTxs.length===0,
+            className:'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-600 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'},
+            h('svg',{className:'w-3.5 h-3.5',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+              h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4'})),
+            'CSV'
+          )
+        )
+      ),
       h('div',{className:'overflow-x-auto'},
         h('table',{className:'w-full text-sm'},
           h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider'},
@@ -690,9 +823,9 @@ function TxManager({ accounts, txs, onChange }){
             )
           ),
           h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},
-            txs.length===0&&h('tr',null,h('td',{colSpan:7,className:'text-center py-10 text-gray-400 dark:text-gray-500'},'取引がまだ登録されていません')),
-            txs.map(tx=>{
-              const acc=accMap[tx.accountId];
+            filteredTxs.length===0&&h('tr',null,h('td',{colSpan:7,className:'text-center py-10 text-gray-400 dark:text-gray-500'},txs.length===0?'取引がまだ登録されていません':'条件に一致する取引がありません')),
+            filteredTxs.map(tx=>{
+              const acc=accMap2[tx.accountId];
               return h('tr',{key:tx.id,className:'hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors'},
                 h('td',{className:'px-4 py-3 font-medium text-gray-800 dark:text-gray-200'},
                   tx.label,
@@ -707,13 +840,13 @@ function TxManager({ accounts, txs, onChange }){
                 h('td',{className:'px-4 py-3 text-gray-600 dark:text-gray-400'},
                   tx.type==='transfer'
                     ? h('span',{className:'flex items-center gap-1 flex-wrap text-xs'},
-                        accMap[tx.fromAccountId]&&h('span',{className:'flex items-center gap-1'},
-                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap[tx.fromAccountId].color}}),
-                          accMap[tx.fromAccountId].name),
+                        accMap2[tx.fromAccountId]&&h('span',{className:'flex items-center gap-1'},
+                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap2[tx.fromAccountId].color}}),
+                          accMap2[tx.fromAccountId].name),
                         h('span',{className:'text-gray-400 mx-0.5'},'→'),
-                        accMap[tx.toAccountId]&&h('span',{className:'flex items-center gap-1'},
-                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap[tx.toAccountId].color}}),
-                          accMap[tx.toAccountId].name))
+                        accMap2[tx.toAccountId]&&h('span',{className:'flex items-center gap-1'},
+                          h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:accMap2[tx.toAccountId].color}}),
+                          accMap2[tx.toAccountId].name))
                     : acc?h('span',{className:'flex items-center gap-1'},
                         h('span',{className:'w-2 h-2 rounded-full',style:{backgroundColor:acc.color}}),acc.name):'—'),
                 h('td',{className:'px-4 py-3 text-gray-500 dark:text-gray-400'},
@@ -725,7 +858,7 @@ function TxManager({ accounts, txs, onChange }){
                 h('td',{className:'px-4 py-3'},
                   h('div',{className:'flex gap-3 justify-end'},
                     h('button',{onClick:()=>startEdit(tx),className:'text-indigo-600 dark:text-indigo-400 hover:underline text-xs font-medium'},'編集'),
-                    h('button',{onClick:()=>onChange(txs.filter(t=>t.id!==tx.id)),className:'text-red-500 dark:text-red-400 hover:underline text-xs font-medium'},'削除')
+                    h('button',{onClick:()=>confirmDelete(tx),className:'text-red-500 dark:text-red-400 hover:underline text-xs font-medium'},'削除')
                   )
                 )
               );
@@ -1233,6 +1366,13 @@ function App(){
   const [dark,setDark]=useState(()=>localStorage.getItem(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
   const [settingsTab,setSettingsTab]=useState(0); // 0=取引管理 1=口座管理
+  const [toasts,setToasts]=useState([]);
+
+  function addToast(message,type='success'){
+    const id=Date.now()+Math.random();
+    setToasts(prev=>[...prev,{id,message,type}]);
+    setTimeout(()=>setToasts(prev=>prev.filter(t=>t.id!==id)),3500);
+  }
 
   useEffect(()=>{
     loadAllData().then(({accounts:a,txs:t})=>{ setAccounts(a); setTxs(t); })
@@ -1318,10 +1458,11 @@ function App(){
           )
         ),
         h('div',{className:'overflow-y-auto flex-1 p-5'},
-          settingsTab===0?h(TxManager,{accounts,txs,onChange:updTxs}):h(AccountManager,{accounts,onChange:updAcc})
+          settingsTab===0?h(TxManager,{accounts,txs,onChange:updTxs,addToast}):h(AccountManager,{accounts,onChange:updAcc,addToast})
         )
       )
-    )
+    ),
+    h(Toast,{toasts})
   );
 }
 
