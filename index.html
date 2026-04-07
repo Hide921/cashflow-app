@@ -92,7 +92,7 @@ function saveTxs(v){ _sbSet('transactions',v).catch(console.error); }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
 
 // ─── Forecast ─────────────────────────────────────────
-function expandRec(tx, startD, endD){
+function expandRec(tx, startD, endD, skippedKeys){
   const evts=[];
   const base=sod(parseISO(tx.startDate));
   const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),endD)) : endD;
@@ -109,15 +109,18 @@ function expandRec(tx, startD, endD){
     const biz=tx.adjustBizDay;
     const adj=biz==='prev'||biz===true ? sod(prevBizDay(cur)) : biz==='next' ? sod(nextBizDay(cur)) : cur;
     if(!isBefore(adj,startD)){
-      const raw=overrides[fmt(adj)]!==undefined ? overrides[fmt(adj)] : tx.amount;
-      const amt=tx.type==='income'?raw:tx.type==='transfer'?raw:-raw;
-      evts.push({date:adj,amt});
+      const ds=fmt(adj);
+      if(!skippedKeys||!skippedKeys.has(`${tx.id}_${ds}`)){
+        const raw=overrides[ds]!==undefined ? overrides[ds] : tx.amount;
+        const amt=tx.type==='income'?raw:tx.type==='transfer'?raw:-raw;
+        evts.push({date:adj,amt});
+      }
     }
   }
   return evts;
 }
 
-function buildForecast(accounts, txs, endD){
+function buildForecast(accounts, txs, endD, skippedKeys){
   const today=todayD();
   const bal={};
   accounts.forEach(a=>{ bal[a.id]=a.balance; });
@@ -125,12 +128,12 @@ function buildForecast(accounts, txs, endD){
   txs.forEach(tx=>{
     if(tx.recurring){
       if(tx.type==='transfer'){
-        expandRec(tx,today,endD).forEach(e=>{
+        expandRec(tx,today,endD,skippedKeys).forEach(e=>{
           evts.push({date:e.date,amt:-e.amt,aid:tx.fromAccountId});
           evts.push({date:e.date,amt:e.amt,aid:tx.toAccountId});
         });
       } else {
-        expandRec(tx,today,endD).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+        expandRec(tx,today,endD,skippedKeys).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
       }
     } else {
       const d=sod(parseISO(tx.startDate));
@@ -165,27 +168,27 @@ function buildForecast(accounts, txs, endD){
 }
 
 // ─── Transaction List for Details ─────────────────────
-function buildTxList(txs, endD) {
+function buildTxList(txs, endD, skippedKeys) {
   const today=todayD();
   const evts=[];
   txs.forEach(tx=>{
     if(tx.recurring){
       if(tx.type==='transfer'){
-        expandRec(tx,today,endD).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        expandRec(tx,today,endD,skippedKeys).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
         });
       } else {
-        expandRec(tx,today,endD).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        expandRec(tx,today,endD,skippedKeys).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:true});
         });
       }
     } else {
       const d=sod(parseISO(tx.startDate));
       if(!isBefore(d,today)&&!isAfter(d,endD)){
         if(tx.type==='transfer'){
-          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:false});
         } else {
-          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:false});
         }
       }
     }
@@ -195,18 +198,18 @@ function buildTxList(txs, endD) {
 }
 
 // ─── Historical Forecast (past) ───────────────────────
-function buildHistoricalForecast(accounts, txs, startD){
+function buildHistoricalForecast(accounts, txs, startD, skippedKeys){
   const today=todayD();
   const evts=[];
   txs.forEach(tx=>{
     if(tx.recurring){
       if(tx.type==='transfer'){
-        expandRec(tx,startD,today).forEach(e=>{
+        expandRec(tx,startD,today,skippedKeys).forEach(e=>{
           evts.push({date:e.date,amt:-e.amt,aid:tx.fromAccountId});
           evts.push({date:e.date,amt:e.amt,aid:tx.toAccountId});
         });
       } else {
-        expandRec(tx,startD,today).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
+        expandRec(tx,startD,today,skippedKeys).forEach(e=>evts.push({date:e.date,amt:e.amt,aid:tx.accountId}));
       }
     } else {
       const d=sod(parseISO(tx.startDate));
@@ -239,27 +242,27 @@ function buildHistoricalForecast(accounts, txs, startD){
 }
 
 // ─── Past Transaction List ─────────────────────────────
-function buildPastTxList(txs, startD){
+function buildPastTxList(txs, startD, skippedKeys){
   const today=todayD();
   const evts=[];
   txs.forEach(tx=>{
     if(tx.recurring){
       if(tx.type==='transfer'){
-        expandRec(tx,startD,today).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+        expandRec(tx,startD,today,skippedKeys).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
         });
       } else {
-        expandRec(tx,startD,today).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+        expandRec(tx,startD,today,skippedKeys).forEach(e=>{
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:true});
         });
       }
     } else {
       const d=sod(parseISO(tx.startDate));
       if(!isBefore(d,startD)&&!isAfter(d,today)){
         if(tx.type==='transfer'){
-          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId});
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:false});
         } else {
-          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId});
+          evts.push({date:fmt(d),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:false});
         }
       }
     }
@@ -871,7 +874,7 @@ function TxManager({ accounts, txs, onChange, addToast }){
 }
 
 // ─── Balance Table ────────────────────────────────────
-function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
+function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip }){
   if(!accounts.length) return null;
   const [viewMode,setViewMode]=useState('weekly');
   const cols=useMemo(()=>{
@@ -896,6 +899,9 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
   };
   const fmtYen=v=>v.toLocaleString();
   const [tip,setTip]=useState(null);
+  const tipTimer=useRef(null);
+  const clearTipTimer=()=>{if(tipTimer.current){clearTimeout(tipTimer.current);tipTimer.current=null;}};
+  const startTipClose=()=>{tipTimer.current=setTimeout(()=>setTip(null),200);};
 
   return h('div',{className:cardCls+' overflow-hidden'},
     h('div',{className:'px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2 flex-wrap'},
@@ -944,8 +950,8 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
                 return h('td',{key:col.date,
                   className:`px-3 py-2.5 text-right whitespace-nowrap${neg?' bg-red-50 dark:bg-red-950/20':''}${onCellClick?' cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20 group':''}`,
                   onClick:onCellClick?()=>onCellClick(col.date,a.id):undefined,
-                  onMouseEnter:e=>{const evs=txEventMap?.[col.date]?.[a.id];if(evs?.length)setTip({x:e.clientX,y:e.clientY,items:evs});},
-                  onMouseLeave:()=>setTip(null)
+                  onMouseEnter:e=>{clearTipTimer();const evs=txEventMap?.[col.date]?.[a.id];if(evs?.length)setTip({x:e.clientX,y:e.clientY,items:evs,date:col.date});},
+                  onMouseLeave:startTipClose
                 },
                   h('span',{className:`font-semibold ${neg?'text-red-600 dark:text-red-400':'text-gray-800 dark:text-gray-200'}`},`¥${fmtYen(val)}`),
                   ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500 dark:text-emerald-400':'text-red-400'}`},
@@ -972,12 +978,21 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
         )
       )
     ),
-    tip&&h('div',{style:{position:'fixed',left:tip.x+12,top:tip.y-8,zIndex:9999,pointerEvents:'none'},
-      className:'bg-gray-900 text-white text-xs rounded-lg shadow-xl px-3 py-2 min-w-[160px]'},
-      tip.items.map((it,i)=>h('div',{key:i,className:'flex items-center justify-between gap-4 py-0.5'},
-        h('span',{className:'text-gray-300 truncate max-w-[120px]'},it.label),
+    tip&&h('div',{
+      style:{position:'fixed',left:tip.x+12,top:tip.y-8,zIndex:9999},
+      className:'bg-gray-900 text-white text-xs rounded-lg shadow-xl px-3 py-2 min-w-[180px]',
+      onMouseEnter:clearTipTimer,
+      onMouseLeave:startTipClose
+    },
+      tip.items.map((it,i)=>h('div',{key:i,className:'flex items-center justify-between gap-3 py-0.5'},
+        h('span',{className:'text-gray-300 truncate max-w-[110px]'},it.label),
         h('span',{className:it.amt>=0?'text-emerald-400 font-medium whitespace-nowrap':'text-rose-400 font-medium whitespace-nowrap'},
-          `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`)
+          `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`),
+        it.recurring&&onSkip&&h('button',{
+          onClick:e=>{e.stopPropagation();onSkip(`${it.txId}_${tip.date}`);setTip(null);},
+          className:'text-gray-500 hover:text-red-400 transition-colors leading-none flex-shrink-0',
+          title:'この回をスキップ'
+        },'✕')
       ))
     )
   );
@@ -985,23 +1000,27 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick }){
 
 // ─── Transaction Details ──────────────────────────────
 const TX_PAGE=20;
-function TxDetails({ txs, endD, startD, isPast, accounts }){
+function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOccurrences, onSkip, onRestore }){
   const [page,setPage]=useState(0);
+  const [showSkipped,setShowSkipped]=useState(false);
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.id,a])),[accounts]);
+  const txMap=useMemo(()=>Object.fromEntries(txs.map(t=>[t.id,t])),[txs]);
   const list=useMemo(()=>{
     if(!txs.length||!accounts.length) return [];
-    if(isPast) return buildPastTxList(txs,startD);
-    return buildTxList(txs,endD);
-  },[txs,endD,startD,isPast,accounts]);
+    if(isPast) return buildPastTxList(txs,startD,skippedKeys);
+    return buildTxList(txs,endD,skippedKeys);
+  },[txs,endD,startD,isPast,accounts,skippedKeys]);
 
   if(!accounts.length) return null;
   const shown=(page+1)*TX_PAGE;
+  const skippedCount=(skippedOccurrences||[]).length;
 
   return h('div',{className:cardCls},
     h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700'},
-      h('span',{className:'text-base font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2'},
+      h('span',{className:'text-base font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 flex-wrap'},
         isPast?'過去の取引':'予定明細',
-        list.length>0&&h('span',{className:'text-xs font-normal text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full'},`${list.length}件`)
+        list.length>0&&h('span',{className:'text-xs font-normal text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full'},`${list.length}件`),
+        skippedCount>0&&h('span',{className:'text-xs font-normal text-orange-400 bg-orange-50 dark:bg-orange-900/20 px-2 py-0.5 rounded-full'},`${skippedCount}件スキップ中`)
       )
     ),
     list.length===0
@@ -1011,7 +1030,7 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
               h('table',{className:'w-full text-sm'},
                 h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wider'},
                   h('tr',null,
-                    ['日付','名前','カテゴリ','口座','金額'].map((col,i)=>
+                    ['日付','名前','カテゴリ','口座','金額',''].map((col,i)=>
                       h('th',{key:i,className:`px-4 py-3 font-medium ${i===4?'text-right':'text-left'}`},col))
                   )
                 ),
@@ -1024,7 +1043,10 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
                     const isTransfer=ev.type==='transfer';
                     return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors'},
                       h('td',{className:'px-4 py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs'},fmtDisp(ev.date)),
-                      h('td',{className:'px-4 py-2.5 font-medium text-gray-800 dark:text-gray-200'},ev.label),
+                      h('td',{className:'px-4 py-2.5 font-medium text-gray-800 dark:text-gray-200'},
+                        ev.label,
+                        ev.recurring&&h('span',{className:'ml-1 text-xs text-gray-400 dark:text-gray-500 font-normal'},'定期')
+                      ),
                       h('td',{className:'px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs'},ev.category||'—'),
                       h('td',{className:'px-4 py-2.5'},
                         isTransfer
@@ -1043,7 +1065,14 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
                             :h('span',{className:'text-gray-400'},'—')
                       ),
                       h('td',{className:`px-4 py-2.5 text-right font-semibold whitespace-nowrap ${isIncome?'text-emerald-600 dark:text-emerald-400':isTransfer?'text-purple-600 dark:text-purple-400':'text-red-600 dark:text-red-400'}`},
-                        `${isIncome?'+':isTransfer?'':'-'}¥${ev.amount.toLocaleString()}`)
+                        `${isIncome?'+':isTransfer?'':'-'}¥${ev.amount.toLocaleString()}`),
+                      h('td',{className:'px-4 py-2.5 text-center'},
+                        ev.recurring&&onSkip&&h('button',{
+                          onClick:()=>onSkip(`${ev.txId}_${ev.date}`),
+                          className:'text-gray-300 dark:text-gray-600 hover:text-red-400 dark:hover:text-red-400 transition-colors text-base leading-none',
+                          title:'この回をスキップ（残高推移から除外）'
+                        },'✕')
+                      )
                     );
                   })
                 )
@@ -1052,6 +1081,27 @@ function TxDetails({ txs, endD, startD, isPast, accounts }){
             list.length>shown&&h('div',{className:'px-5 py-3 border-t border-gray-100 dark:border-gray-700 text-center'},
               h('button',{onClick:()=>setPage(p=>p+1),className:'text-sm text-indigo-600 dark:text-indigo-400 hover:underline font-medium'},
                 `もっと見る（残り ${list.length-shown} 件）`)
+            ),
+            skippedCount>0&&h('div',{className:'border-t border-gray-100 dark:border-gray-700 px-5 py-3'},
+              h('button',{onClick:()=>setShowSkipped(v=>!v),className:'text-xs text-orange-500 dark:text-orange-400 hover:underline'},
+                showSkipped?`▲ スキップ済みを隠す`:`▼ スキップ済み ${skippedCount}件を表示`
+              ),
+              showSkipped&&h('div',{className:'mt-2 space-y-1'},
+                (skippedOccurrences||[]).map(key=>{
+                  const sep=key.indexOf('_');
+                  const txId=key.slice(0,sep);
+                  const date=key.slice(sep+1);
+                  const tx=txMap[txId];
+                  return h('div',{key,className:'flex items-center justify-between text-xs text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800/60 rounded px-3 py-1.5'},
+                    h('span',null,
+                      h('span',{className:'text-gray-500 dark:text-gray-400'},fmtDisp(date)),
+                      h('span',{className:'mx-2'},'—'),
+                      tx?tx.label:txId
+                    ),
+                    onRestore&&h('button',{onClick:()=>onRestore(key),className:'text-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300 hover:underline ml-4'},'復元')
+                  );
+                })
+              )
             )
           )
   );
@@ -1141,7 +1191,7 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
+function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, skippedOccurrences, onSkip, onRestore }){
   const [pIdx,setPIdx]=useState(4);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
@@ -1149,6 +1199,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
   const [editBal,setEditBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
   const isPast=PERIODS[pIdx].months<0;
+  const skippedKeys=useMemo(()=>new Set(skippedOccurrences||[]),[skippedOccurrences]);
   const {startD,endD}=useMemo(()=>{
     const t=todayD();
     if(isPast) return {startD:addMonths(t,PERIODS[pIdx].months),endD:t};
@@ -1156,9 +1207,9 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
   },[pIdx,isPast]);
   const fullData=useMemo(()=>{
     if(!accounts.length) return [];
-    if(isPast) return buildHistoricalForecast(accounts,txs,startD);
-    return buildForecast(accounts,txs,endD);
-  },[accounts,txs,startD,endD,isPast]);
+    if(isPast) return buildHistoricalForecast(accounts,txs,startD,skippedKeys);
+    return buildForecast(accounts,txs,endD,skippedKeys);
+  },[accounts,txs,startD,endD,isPast,skippedKeys]);
   const fData=useMemo(()=>{
     const absMons=Math.abs(PERIODS[pIdx].months);
     const step=absMons<=1?1:absMons<=3?3:7;
@@ -1168,25 +1219,25 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
     if(isPast) return {};
     const map={};
     const today=todayD();
-    const add=(ds,aid,label,amt)=>{if(!map[ds])map[ds]={};if(!map[ds][aid])map[ds][aid]=[];map[ds][aid].push({label,amt});};
+    const add=(ds,aid,label,amt,txId,recurring)=>{if(!map[ds])map[ds]={};if(!map[ds][aid])map[ds][aid]=[];map[ds][aid].push({label,amt,txId,recurring});};
     txs.forEach(tx=>{
       if(tx.recurring){
         if(tx.type==='transfer'){
-          expandRec(tx,today,endD).forEach(e=>{const ds=fmt(e.date);add(ds,tx.fromAccountId,tx.label,-e.amt);add(ds,tx.toAccountId,tx.label,e.amt);});
+          expandRec(tx,today,endD,skippedKeys).forEach(e=>{const ds=fmt(e.date);add(ds,tx.fromAccountId,tx.label,-e.amt,tx.id,true);add(ds,tx.toAccountId,tx.label,e.amt,tx.id,true);});
         } else {
-          expandRec(tx,today,endD).forEach(e=>add(fmt(e.date),tx.accountId,tx.label,e.amt));
+          expandRec(tx,today,endD,skippedKeys).forEach(e=>add(fmt(e.date),tx.accountId,tx.label,e.amt,tx.id,true));
         }
       } else if(tx.startDate){
         const d=sod(parseISO(tx.startDate));
         if(!isBefore(d,today)&&!isAfter(d,endD)){
           const ds=fmt(d);
-          if(tx.type==='transfer'){add(ds,tx.fromAccountId,tx.label,-tx.amount);add(ds,tx.toAccountId,tx.label,tx.amount);}
-          else add(ds,tx.accountId,tx.label,tx.type==='income'?tx.amount:-tx.amount);
+          if(tx.type==='transfer'){add(ds,tx.fromAccountId,tx.label,-tx.amount,tx.id,false);add(ds,tx.toAccountId,tx.label,tx.amount,tx.id,false);}
+          else add(ds,tx.accountId,tx.label,tx.type==='income'?tx.amount:-tx.amount,tx.id,false);
         }
       }
     });
     return map;
-  },[txs,endD,isPast]);
+  },[txs,endD,isPast,skippedKeys]);
 
   const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
   const monthly=useMemo(()=>{
@@ -1225,7 +1276,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
       PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
         className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
     ),
-    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined}),
+    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined}),
     accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
       accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
         onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
@@ -1252,7 +1303,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
           : h('p',{className:'font-bold text-gray-800 dark:text-gray-200 tabular-nums'},`¥${a.balance.toLocaleString()}`)
       ))
     ),
-    h(UpcomingPayments,{txs,accounts}),
+    h(UpcomingPayments,{txs,accounts,skippedKeys}),
     h('div',{className:cardCls+' p-5'},
       h('div',{className:'flex items-center mb-4'},
         h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},isPast?'過去の残高推移':'将来の残高予測'),
@@ -1262,7 +1313,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings }){
         :onAddTx&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'グラフをクリックするとその日付で取引を追加できます'),
       h(SvgChart,{data:fData,accounts,dark,onDateClick:(!isPast&&onAddTx)?setAddDate:undefined})
     ),
-    h(TxDetails,{txs,endD,startD,isPast,accounts}),
+    h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore}),
     fabOpen&&h('div',{className:'fixed inset-0 z-30',onClick:()=>setFabOpen(false)}),
     h('div',{className:'fixed bottom-6 right-4 z-40 flex flex-col items-end gap-2'},
       fabOpen&&h('div',{className:'flex flex-col items-end gap-2 mb-1'},
@@ -1301,7 +1352,7 @@ function SyncStatus(){
 }
 
 // ─── Upcoming Payments ────────────────────────────────
-function UpcomingPayments({txs,accounts}){
+function UpcomingPayments({txs,accounts,skippedKeys}){
   const today=todayD();
   const end30=addDays(today,30);
   const accMap={};
@@ -1310,7 +1361,7 @@ function UpcomingPayments({txs,accounts}){
   txs.forEach(tx=>{
     if(tx.type==='transfer') return;
     if(tx.recurring){
-      expandRec(tx,today,end30).forEach(e=>{
+      expandRec(tx,today,end30,skippedKeys).forEach(e=>{
         events.push({date:fmt(e.date),label:tx.label,amount:Math.abs(e.amt),type:tx.type,daysLeft:Math.round((e.date-today)/86400000)});
       });
     } else {
@@ -1359,9 +1410,13 @@ function UpcomingPayments({txs,accounts}){
 // ─── App ─────────────────────────────────────────────
 const LS_DARK='cf_dark';
 
+const LS_SKIPPED='cf_skipped';
 function App(){
   const [accounts,setAccounts]=useState([]);
   const [txs,setTxs]=useState([]);
+  const [skippedOccurrences,setSkippedOccurrences]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem(LS_SKIPPED)||'[]');}catch{return [];}
+  });
   const [loading,setLoading]=useState(true);
   const [dark,setDark]=useState(()=>localStorage.getItem(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
@@ -1387,6 +1442,20 @@ function App(){
 
   function updAcc(next){ setAccounts(next); saveAccounts(next); }
   function updTxs(next){ setTxs(next); saveTxs(next); }
+  function handleSkip(key){
+    setSkippedOccurrences(prev=>{
+      const next=[...prev,key];
+      localStorage.setItem(LS_SKIPPED,JSON.stringify(next));
+      return next;
+    });
+  }
+  function handleRestore(key){
+    setSkippedOccurrences(prev=>{
+      const next=prev.filter(k=>k!==key);
+      localStorage.setItem(LS_SKIPPED,JSON.stringify(next));
+      return next;
+    });
+  }
 
   if(loading) return h('div',{className:'min-h-screen bg-[#f7f8fc] dark:bg-gray-950 flex items-center justify-center'},
     h('p',{className:'text-gray-400 dark:text-gray-500 text-sm'},'読み込み中…')
@@ -1435,7 +1504,10 @@ function App(){
       h(Dashboard,{accounts,txs,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
         onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a)),
-        onOpenSettings:(section)=>{ setSettingsTab(section==='account'?1:0); setShowSettings(true); }
+        onOpenSettings:(section)=>{ setSettingsTab(section==='account'?1:0); setShowSettings(true); },
+        skippedOccurrences,
+        onSkip:handleSkip,
+        onRestore:handleRestore
       })
     ),
     showSettings&&h('div',{
