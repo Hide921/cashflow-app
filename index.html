@@ -123,7 +123,8 @@ function expandRec(tx, startD, endD, skippedKeys){
 function buildForecast(accounts, txs, endD, skippedKeys){
   const today=todayD();
   const bal={};
-  accounts.forEach(a=>{ bal[a.id]=a.balance; });
+  const asOf={};
+  accounts.forEach(a=>{ bal[a.id]=a.balance; if(a.balanceAsOf) asOf[a.id]=a.balanceAsOf; });
   const evts=[];
   txs.forEach(tx=>{
     if(tx.recurring){
@@ -156,7 +157,10 @@ function buildForecast(accounts, txs, endD, skippedKeys){
   while(!isAfter(cursor,endD)){
     const ds=fmt(cursor);
     while(ei<evts.length&&!isAfter(evts[ei].date,cursor)){
-      const ev=evts[ei]; if(cur[ev.aid]!==undefined) cur[ev.aid]+=ev.amt; ei++;
+      const ev=evts[ei];
+      const aOf=asOf[ev.aid];
+      if(!(aOf && fmt(ev.date)<=aOf) && cur[ev.aid]!==undefined) cur[ev.aid]+=ev.amt;
+      ei++;
     }
     const row={date:ds};
     let tot=0;
@@ -229,7 +233,8 @@ function buildHistoricalForecast(accounts, txs, startD, skippedKeys){
   const evtsByDate={};
   evts.forEach(ev=>{const ds=fmt(ev.date);if(!evtsByDate[ds])evtsByDate[ds]=[];evtsByDate[ds].push(ev);});
   const cur={};
-  accounts.forEach(a=>{cur[a.id]=a.balance;});
+  const asOf={};
+  accounts.forEach(a=>{cur[a.id]=a.balance; if(a.balanceAsOf) asOf[a.id]=a.balanceAsOf;});
   const rows=[];
   let cursor=new Date(today);
   while(!isBefore(cursor,startD)){
@@ -238,7 +243,11 @@ function buildHistoricalForecast(accounts, txs, startD, skippedKeys){
     accounts.forEach(a=>{row[a.id]=Math.round(cur[a.id]);tot+=cur[a.id];});
     row.total=Math.round(tot);
     rows.unshift(row);
-    if(evtsByDate[ds]) evtsByDate[ds].forEach(ev=>{if(cur[ev.aid]!==undefined)cur[ev.aid]-=ev.amt;});
+    if(evtsByDate[ds]) evtsByDate[ds].forEach(ev=>{
+      const aOf=asOf[ev.aid];
+      if(aOf && fmt(ev.date)>=aOf) return;
+      if(cur[ev.aid]!==undefined) cur[ev.aid]-=ev.amt;
+    });
     cursor=addDays(cursor,-1);
   }
   return rows;
@@ -458,11 +467,16 @@ function AccountManager({ accounts, onChange, addToast }){
     setErr('');
     const item={...form,balance:Number(form.balance)};
     if(editId){
-      onChange(accounts.map(a=>a.id===editId?{...a,...item}:a));
+      onChange(accounts.map(a=>{
+        if(a.id!==editId) return a;
+        const merged={...a,...item};
+        if(Number(a.balance)!==Number(item.balance)) merged.balanceAsOf=todayStr();
+        return merged;
+      }));
       setEditId(null);
       addToast&&addToast('口座を更新しました');
     } else {
-      onChange([...accounts,{...item,id:genId()}]);
+      onChange([...accounts,{...item,id:genId(),balanceAsOf:todayStr()}]);
       addToast&&addToast('口座を追加しました');
     }
     setForm(DEF);
@@ -1321,11 +1335,11 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
                 value:editBal,
                 onChange:e=>setEditBal(e.target.value),
                 onKeyDown:e=>{
-                  if(e.key==='Enter'&&!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal)});setEditAccId(null);}
+                  if(e.key==='Enter'&&!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}
                   if(e.key==='Escape') setEditAccId(null);
                 }
               }),
-              h('button',{onClick:()=>{if(!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal)});setEditAccId(null);}},
+              h('button',{onClick:()=>{if(!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}},
                 className:'text-indigo-600 text-xs font-medium hover:underline whitespace-nowrap'},'保存')
             )
           : h('p',{className:'font-bold text-gray-800 dark:text-gray-200 tabular-nums'},`¥${a.balance.toLocaleString()}`)
