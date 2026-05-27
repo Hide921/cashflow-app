@@ -1280,6 +1280,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
+  const [showBreakdown,setShowBreakdown]=useState(false);
   const isPast=PERIODS[pIdx].months<0;
   const skippedKeys=useMemo(()=>new Set(skippedOccurrences||[]),[skippedOccurrences]);
   const {startD,endD}=useMemo(()=>{
@@ -1322,15 +1323,21 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
   },[txs,endD,isPast,skippedKeys]);
 
   const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
-  const monthly=useMemo(()=>{
-    let inc=0,exp=0;
+  const breakdown=useMemo(()=>{
+    const incomeItems=[],expenseItems=[];
     txs.filter(tx=>tx.recurring&&tx.type!=='transfer').forEach(tx=>{
       const m=tx.frequency==='monthly'?1:tx.frequency==='yearly'?1/12:tx.frequency==='weekly'?4:30;
-      if(tx.type==='income') inc+=Math.round(tx.amount*m);
-      else exp+=Math.round(tx.amount*m);
+      const item={id:tx.id,label:tx.label,category:tx.category||'',accountId:tx.accountId,frequency:tx.frequency,amount:tx.amount,monthly:Math.round(tx.amount*m)};
+      if(tx.type==='income') incomeItems.push(item);
+      else expenseItems.push(item);
     });
-    return {inc,exp};
+    incomeItems.sort((a,b)=>b.monthly-a.monthly);
+    expenseItems.sort((a,b)=>b.monthly-a.monthly);
+    const inc=incomeItems.reduce((s,it)=>s+it.monthly,0);
+    const exp=expenseItems.reduce((s,it)=>s+it.monthly,0);
+    return {inc,exp,incomeItems,expenseItems};
   },[txs]);
+  const monthly={inc:breakdown.inc,exp:breakdown.exp};
 
   const net=monthly.inc-monthly.exp;
 
@@ -1351,6 +1358,93 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
         h('p',{className:'text-4xl font-bold text-rose-500 dark:text-rose-400 tabular-nums tracking-tight leading-none'},`-¥${monthly.exp.toLocaleString()}`),
         h('p',{className:`text-xs font-medium mt-3 ${net>=0?'text-emerald-500 dark:text-emerald-400':'text-rose-400'}`},
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
+      )
+    ),
+    (breakdown.incomeItems.length>0||breakdown.expenseItems.length>0)&&h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
+      h('button',{onClick:()=>setShowBreakdown(v=>!v),className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors'},
+        h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200'},
+          '定期取引の内訳',
+          h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},`収入${breakdown.incomeItems.length}件 / 支出${breakdown.expenseItems.length}件`)
+        ),
+        h('span',{className:'text-gray-400 dark:text-gray-500 text-xs'},showBreakdown?'▲ 閉じる':'▼ 開く')
+      ),
+      showBreakdown&&h('div',{className:'px-5 pb-5 grid grid-cols-1 lg:grid-cols-2 gap-6 border-t border-gray-100 dark:border-gray-700/60 pt-4'},
+        // 収入
+        h('div',null,
+          h('h3',{className:'text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-3'},'収入'),
+          breakdown.incomeItems.length===0
+            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'定期収入はありません')
+            :h('table',{className:'w-full text-sm'},
+              h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
+                h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
+                  h('th',{className:'text-left py-2 font-medium'},'名前'),
+                  h('th',{className:'text-left py-2 font-medium'},'口座'),
+                  h('th',{className:'text-right py-2 font-medium'},'月額換算')
+                )
+              ),
+              h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
+                breakdown.incomeItems.map(it=>{
+                  const acc=accounts.find(a=>a.id===it.accountId);
+                  return h('tr',{key:it.id,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
+                    h('td',{className:'py-2'},
+                      h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
+                      it.frequency!=='monthly'&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${FREQS[it.frequency]||it.frequency} ¥${it.amount.toLocaleString()}`)
+                    ),
+                    h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
+                      acc?h('span',{className:'flex items-center gap-1.5'},
+                        h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
+                        h('span',null,acc.name)
+                      ):'—'
+                    ),
+                    h('td',{className:'py-2 text-right font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${it.monthly.toLocaleString()}`)
+                  );
+                }),
+                h('tr',{className:'font-semibold'},
+                  h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
+                  h('td'),
+                  h('td',{className:'pt-3 text-right text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${monthly.inc.toLocaleString()}`)
+                )
+              )
+            )
+        ),
+        // 支出
+        h('div',null,
+          h('h3',{className:'text-xs font-semibold text-rose-500 dark:text-rose-400 uppercase tracking-widest mb-3'},'支出'),
+          breakdown.expenseItems.length===0
+            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'定期支出はありません')
+            :h('table',{className:'w-full text-sm'},
+              h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
+                h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
+                  h('th',{className:'text-left py-2 font-medium'},'名前'),
+                  h('th',{className:'text-left py-2 font-medium'},'口座'),
+                  h('th',{className:'text-right py-2 font-medium'},'月額換算')
+                )
+              ),
+              h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
+                breakdown.expenseItems.map(it=>{
+                  const acc=accounts.find(a=>a.id===it.accountId);
+                  return h('tr',{key:it.id,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
+                    h('td',{className:'py-2'},
+                      h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
+                      it.frequency!=='monthly'&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${FREQS[it.frequency]||it.frequency} ¥${it.amount.toLocaleString()}`)
+                    ),
+                    h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
+                      acc?h('span',{className:'flex items-center gap-1.5'},
+                        h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
+                        h('span',null,acc.name)
+                      ):'—'
+                    ),
+                    h('td',{className:'py-2 text-right font-semibold text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${it.monthly.toLocaleString()}`)
+                  );
+                }),
+                h('tr',{className:'font-semibold'},
+                  h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
+                  h('td'),
+                  h('td',{className:'pt-3 text-right text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${monthly.exp.toLocaleString()}`)
+                )
+              )
+            )
+        )
       )
     ),
     h('div',{className:'flex items-center gap-1.5 flex-wrap'},
