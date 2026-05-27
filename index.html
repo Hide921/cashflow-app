@@ -1323,21 +1323,48 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
   },[txs,endD,isPast,skippedKeys]);
 
   const totalBal=accounts.reduce((s,a)=>s+a.balance,0);
-  const breakdown=useMemo(()=>{
-    const incomeItems=[],expenseItems=[];
+  const monthly=useMemo(()=>{
+    let inc=0,exp=0;
     txs.filter(tx=>tx.recurring&&tx.type!=='transfer').forEach(tx=>{
       const m=tx.frequency==='monthly'?1:tx.frequency==='yearly'?1/12:tx.frequency==='weekly'?4:30;
-      const item={id:tx.id,label:tx.label,category:tx.category||'',accountId:tx.accountId,frequency:tx.frequency,amount:tx.amount,monthly:Math.round(tx.amount*m)};
-      if(tx.type==='income') incomeItems.push(item);
-      else expenseItems.push(item);
+      if(tx.type==='income') inc+=Math.round(tx.amount*m);
+      else exp+=Math.round(tx.amount*m);
     });
-    incomeItems.sort((a,b)=>b.monthly-a.monthly);
-    expenseItems.sort((a,b)=>b.monthly-a.monthly);
-    const inc=incomeItems.reduce((s,it)=>s+it.monthly,0);
-    const exp=expenseItems.reduce((s,it)=>s+it.monthly,0);
-    return {inc,exp,incomeItems,expenseItems};
+    return {inc,exp};
   },[txs]);
-  const monthly={inc:breakdown.inc,exp:breakdown.exp};
+
+  const actualBreakdown=useMemo(()=>{
+    const t=todayD();
+    const monthStart=sod(new Date(t.getFullYear(),t.getMonth(),1));
+    const periodLabel=`${t.getMonth()+1}/1〜${t.getMonth()+1}/${t.getDate()}`;
+    const incMap={},expMap={};
+    txs.forEach(tx=>{
+      if(tx.type==='transfer') return;
+      const target=tx.type==='income'?incMap:expMap;
+      const key=tx.label+'|'+tx.accountId;
+      if(tx.recurring){
+        expandRec(tx,monthStart,t,skippedKeys).forEach(e=>{
+          const amt=Math.abs(e.amt);
+          if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
+          target[key].total+=amt;
+          target[key].count++;
+        });
+      } else if(tx.startDate){
+        const d=sod(parseISO(tx.startDate));
+        const ds=fmt(d);
+        if(!isBefore(d,monthStart)&&!isAfter(d,t)&&!skippedKeys.has(`${tx.id}_${ds}`)){
+          if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
+          target[key].total+=tx.amount;
+          target[key].count++;
+        }
+      }
+    });
+    const incomeItems=Object.values(incMap).sort((a,b)=>b.total-a.total);
+    const expenseItems=Object.values(expMap).sort((a,b)=>b.total-a.total);
+    const incTotal=incomeItems.reduce((s,it)=>s+it.total,0);
+    const expTotal=expenseItems.reduce((s,it)=>s+it.total,0);
+    return {periodLabel,incomeItems,expenseItems,incTotal,expTotal};
+  },[txs,skippedKeys]);
 
   const net=monthly.inc-monthly.exp;
 
@@ -1360,11 +1387,11 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
-    (breakdown.incomeItems.length>0||breakdown.expenseItems.length>0)&&h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
+    (actualBreakdown.incomeItems.length>0||actualBreakdown.expenseItems.length>0)&&h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
       h('button',{onClick:()=>setShowBreakdown(v=>!v),className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors'},
         h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200'},
-          '定期取引の内訳',
-          h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},`収入${breakdown.incomeItems.length}件 / 支出${breakdown.expenseItems.length}件`)
+          '今月の収支（実績）',
+          h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},`${actualBreakdown.periodLabel}・収入${actualBreakdown.incomeItems.length}件 / 支出${actualBreakdown.expenseItems.length}件`)
         ),
         h('span',{className:'text-gray-400 dark:text-gray-500 text-xs'},showBreakdown?'▲ 閉じる':'▼ 開く')
       ),
@@ -1372,23 +1399,23 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
         // 収入
         h('div',null,
           h('h3',{className:'text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-3'},'収入'),
-          breakdown.incomeItems.length===0
-            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'定期収入はありません')
+          actualBreakdown.incomeItems.length===0
+            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'今月の収入はまだありません')
             :h('table',{className:'w-full text-sm'},
               h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
                 h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
                   h('th',{className:'text-left py-2 font-medium'},'名前'),
                   h('th',{className:'text-left py-2 font-medium'},'口座'),
-                  h('th',{className:'text-right py-2 font-medium'},'月額換算')
+                  h('th',{className:'text-right py-2 font-medium'},'金額')
                 )
               ),
               h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
-                breakdown.incomeItems.map(it=>{
+                actualBreakdown.incomeItems.map((it,i)=>{
                   const acc=accounts.find(a=>a.id===it.accountId);
-                  return h('tr',{key:it.id,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
+                  return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
                     h('td',{className:'py-2'},
                       h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
-                      it.frequency!=='monthly'&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${FREQS[it.frequency]||it.frequency} ¥${it.amount.toLocaleString()}`)
+                      it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
                     ),
                     h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
                       acc?h('span',{className:'flex items-center gap-1.5'},
@@ -1396,13 +1423,13 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
                         h('span',null,acc.name)
                       ):'—'
                     ),
-                    h('td',{className:'py-2 text-right font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${it.monthly.toLocaleString()}`)
+                    h('td',{className:'py-2 text-right font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${it.total.toLocaleString()}`)
                   );
                 }),
                 h('tr',{className:'font-semibold'},
                   h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
                   h('td'),
-                  h('td',{className:'pt-3 text-right text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${monthly.inc.toLocaleString()}`)
+                  h('td',{className:'pt-3 text-right text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${actualBreakdown.incTotal.toLocaleString()}`)
                 )
               )
             )
@@ -1410,23 +1437,23 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
         // 支出
         h('div',null,
           h('h3',{className:'text-xs font-semibold text-rose-500 dark:text-rose-400 uppercase tracking-widest mb-3'},'支出'),
-          breakdown.expenseItems.length===0
-            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'定期支出はありません')
+          actualBreakdown.expenseItems.length===0
+            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'今月の支出はまだありません')
             :h('table',{className:'w-full text-sm'},
               h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
                 h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
                   h('th',{className:'text-left py-2 font-medium'},'名前'),
                   h('th',{className:'text-left py-2 font-medium'},'口座'),
-                  h('th',{className:'text-right py-2 font-medium'},'月額換算')
+                  h('th',{className:'text-right py-2 font-medium'},'金額')
                 )
               ),
               h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
-                breakdown.expenseItems.map(it=>{
+                actualBreakdown.expenseItems.map((it,i)=>{
                   const acc=accounts.find(a=>a.id===it.accountId);
-                  return h('tr',{key:it.id,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
+                  return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
                     h('td',{className:'py-2'},
                       h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
-                      it.frequency!=='monthly'&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${FREQS[it.frequency]||it.frequency} ¥${it.amount.toLocaleString()}`)
+                      it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
                     ),
                     h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
                       acc?h('span',{className:'flex items-center gap-1.5'},
@@ -1434,13 +1461,13 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
                         h('span',null,acc.name)
                       ):'—'
                     ),
-                    h('td',{className:'py-2 text-right font-semibold text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${it.monthly.toLocaleString()}`)
+                    h('td',{className:'py-2 text-right font-semibold text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${it.total.toLocaleString()}`)
                   );
                 }),
                 h('tr',{className:'font-semibold'},
                   h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
                   h('td'),
-                  h('td',{className:'pt-3 text-right text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${monthly.exp.toLocaleString()}`)
+                  h('td',{className:'pt-3 text-right text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${actualBreakdown.expTotal.toLocaleString()}`)
                 )
               )
             )
