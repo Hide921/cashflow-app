@@ -917,7 +917,7 @@ h('div',{className:'flex justify-end pb-1'},
 // ─── Balance Table ────────────────────────────────────
 function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hiddenAccIds }){
   if(!accounts.length) return null;
-  const [viewMode,setViewMode]=useState('weekly');
+  const [viewMode,setViewMode]=useState('daily');
   const cols=useMemo(()=>{
     if(viewMode==='daily') return fData;
     if(viewMode==='weekly') return fData.filter((_,i)=>i%7===0||i===fData.length-1);
