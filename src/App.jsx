@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Dashboard from './components/Dashboard.jsx'
 import AccountManager from './components/AccountManager.jsx'
 import TransactionManager from './components/TransactionManager.jsx'
 import ReportView from './components/ReportView.jsx'
 import { ToastContainer, useToast } from './components/Toast.jsx'
-import { getAccounts, saveAccounts, getTransactions, saveTransactions } from './utils/storage.js'
+import { getAccounts, saveAccounts, getTransactions, saveTransactions, getSkippedOccurrences, saveSkippedOccurrences } from './utils/storage.js'
 
 const TABS = ['ダッシュボード', '口座管理', '取引管理', 'レポート']
 
@@ -12,11 +12,14 @@ export default function App() {
   const [tab, setTab] = useState(0)
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
+  const [skippedOccurrences, setSkippedOccurrences] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const { toasts, addToast } = useToast()
+  const txSaveQueue = useRef(Promise.resolve())
 
   useEffect(() => {
+    setSkippedOccurrences(getSkippedOccurrences())
     Promise.all([getAccounts(), getTransactions()])
       .then(([accs, txs]) => {
         setAccounts(accs)
@@ -25,6 +28,20 @@ export default function App() {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  function handleSkipOccurrence(key) {
+    const next = [...skippedOccurrences, key]
+    setSkippedOccurrences(next)
+    saveSkippedOccurrences(next)
+    addToast('この回の取引をスキップしました')
+  }
+
+  function handleRestoreOccurrence(key) {
+    const next = skippedOccurrences.filter(k => k !== key)
+    setSkippedOccurrences(next)
+    saveSkippedOccurrences(next)
+    addToast('取引を復元しました')
+  }
 
   async function updateAccounts(next, successMsg) {
     setAccounts(next)
@@ -37,15 +54,18 @@ export default function App() {
     }
   }
 
-  async function updateTransactions(next, successMsg) {
+  function updateTransactions(next, successMsg) {
     setTransactions(next)
-    try {
-      await saveTransactions(next)
-      if (successMsg) addToast(successMsg)
-    } catch (e) {
-      setError(e.message)
-      addToast(e.message, 'error')
-    }
+    const captured = next
+    txSaveQueue.current = txSaveQueue.current.then(async () => {
+      try {
+        await saveTransactions(captured)
+        if (successMsg) addToast(successMsg)
+      } catch (e) {
+        setError(e.message)
+        addToast(e.message, 'error')
+      }
+    })
   }
 
   if (loading) {
@@ -93,11 +113,15 @@ export default function App() {
           <Dashboard
             accounts={accounts}
             transactions={transactions}
+            skippedOccurrences={skippedOccurrences}
             onTransactionAdd={tx => updateTransactions([...transactions, tx], '取引を追加しました')}
             onAccountUpdate={updated => updateAccounts(
               accounts.map(a => a.id === updated.id ? updated : a),
               '残高を更新しました'
             )}
+            onSkipOccurrence={handleSkipOccurrence}
+            onRestoreOccurrence={handleRestoreOccurrence}
+            onTransactionDelete={id => updateTransactions(transactions.filter(t => t.id !== id), '取引を削除しました')}
           />
         )}
         {tab === 1 && (

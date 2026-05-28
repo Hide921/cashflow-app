@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react'
+import ConfirmDialog from './ConfirmDialog.jsx'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
@@ -168,13 +169,17 @@ function AddTransactionModal({ date, accounts, onSave, onClose }) {
 
 const PAGE_SIZE = 20
 
-export default function Dashboard({ accounts, transactions, onTransactionAdd, onAccountUpdate }) {
+export default function Dashboard({ accounts, transactions, skippedOccurrences = [], onTransactionAdd, onAccountUpdate, onSkipOccurrence, onRestoreOccurrence, onTransactionDelete }) {
   const [periodIdx, setPeriodIdx] = useState(DEFAULT_PERIOD_IDX)
   const [showDetails, setShowDetails] = useState(false)
+  const [showSkipped, setShowSkipped] = useState(false)
   const [detailPage, setDetailPage] = useState(0)
   const [addModalDate, setAddModalDate] = useState(null)
   const [editingAccountId, setEditingAccountId] = useState(null)
   const [editingBalance, setEditingBalance] = useState('')
+  const [deleteConfirmTx, setDeleteConfirmTx] = useState(null)
+
+  const skippedKeys = useMemo(() => new Set(skippedOccurrences), [skippedOccurrences])
 
   const isPast = PERIODS[periodIdx].months < 0
 
@@ -188,21 +193,21 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
 
   const txList = useMemo(() => {
     if (accounts.length === 0 || transactions.length === 0) return []
-    if (isPast) return buildPastTransactionList(transactions, startDate)
-    return buildTransactionList(transactions, endDate)
-  }, [accounts, transactions, startDate, endDate, isPast])
+    if (isPast) return buildPastTransactionList(transactions, startDate, skippedKeys)
+    return buildTransactionList(transactions, endDate, skippedKeys)
+  }, [accounts, transactions, startDate, endDate, isPast, skippedKeys])
 
   const forecastData = useMemo(() => {
     if (accounts.length === 0) return []
     const absMons = Math.abs(PERIODS[periodIdx].months)
     const step = absMons <= 1 ? 1 : absMons <= 3 ? 3 : 7
     if (isPast) {
-      const full = buildHistoricalForecast(accounts, transactions, startDate)
+      const full = buildHistoricalForecast(accounts, transactions, startDate, skippedKeys)
       return full.filter((_, i) => i % step === 0)
     }
-    const full = buildForecast(accounts, transactions, endDate)
+    const full = buildForecast(accounts, transactions, endDate, skippedKeys)
     return full.filter((_, i) => i % step === 0)
-  }, [accounts, transactions, startDate, endDate, periodIdx, isPast])
+  }, [accounts, transactions, startDate, endDate, periodIdx, isPast, skippedKeys])
 
   const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
 
@@ -252,6 +257,21 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
 
   return (
     <div className="space-y-6">
+      {deleteConfirmTx && (
+        <ConfirmDialog
+          title="取引を削除"
+          message={
+            deleteConfirmTx.recurring
+              ? `定期取引「${deleteConfirmTx.label}」を削除しますか？取引管理からも削除され、全ての予定が消えます。`
+              : `「${deleteConfirmTx.label}」を削除しますか？この操作は取り消せません。`
+          }
+          onConfirm={() => {
+            onTransactionDelete(deleteConfirmTx.txId)
+            setDeleteConfirmTx(null)
+          }}
+          onCancel={() => setDeleteConfirmTx(null)}
+        />
+      )}
       {/* 取引追加モーダル */}
       {addModalDate && (
         <AddTransactionModal
@@ -421,6 +441,11 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
                   {PERIODS[periodIdx].label}間 {txList.length}件
                 </span>
               )}
+              {skippedOccurrences.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-orange-400">
+                  （{skippedOccurrences.length}件スキップ中）
+                </span>
+              )}
             </span>
             <span className="text-gray-400 text-sm">{showDetails ? '▲ 閉じる' : '▼ 開く'}</span>
           </button>
@@ -442,6 +467,7 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
                           <th className="text-left px-4 py-3">カテゴリ</th>
                           <th className="text-left px-4 py-3">口座</th>
                           <th className="text-right px-4 py-3">金額</th>
+                          <th className="px-4 py-3"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -452,7 +478,10 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
                               <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">
                                 {ev.date.slice(5).replace('-', '/')}
                               </td>
-                              <td className="px-4 py-2.5 font-medium text-gray-800">{ev.label}</td>
+                              <td className="px-4 py-2.5 font-medium text-gray-800">
+                                {ev.label}
+                                {ev.recurring && <span className="ml-1 text-xs text-gray-400">定期</span>}
+                              </td>
                               <td className="px-4 py-2.5 text-gray-500">{ev.category || '—'}</td>
                               <td className="px-4 py-2.5">
                                 {acc ? (
@@ -466,6 +495,26 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
                                 ev.type === 'income' ? 'text-emerald-600' : 'text-red-600'
                               }`}>
                                 {ev.type === 'income' ? '+' : '-'}¥{ev.amount.toLocaleString()}
+                              </td>
+                              <td className="px-4 py-2.5 text-center">
+                                <div className="flex items-center justify-center gap-2">
+                                  {ev.recurring && (
+                                    <button
+                                      onClick={() => onSkipOccurrence(`${ev.txId}_${ev.date}`)}
+                                      className="text-xs text-gray-300 hover:text-orange-400 transition-colors"
+                                      title="この回だけ残高推移から除外（取引管理には残ります）"
+                                    >
+                                      スキップ
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => setDeleteConfirmTx(ev)}
+                                    className="text-xs text-gray-300 hover:text-red-400 transition-colors"
+                                    title={ev.recurring ? '定期取引を取引管理から削除' : '取引を削除'}
+                                  >
+                                    削除
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           )
@@ -484,6 +533,39 @@ export default function Dashboard({ accounts, transactions, onTransactionAdd, on
                     </div>
                   )}
                 </>
+              )}
+              {skippedOccurrences.length > 0 && (
+                <div className="border-t px-5 py-3">
+                  <button
+                    onClick={() => setShowSkipped(v => !v)}
+                    className="text-xs text-orange-500 hover:underline"
+                  >
+                    {showSkipped ? '▲ スキップ済みを隠す' : `▼ スキップ済み ${skippedOccurrences.length}件を表示`}
+                  </button>
+                  {showSkipped && (
+                    <div className="mt-2 space-y-1">
+                      {skippedOccurrences.map(key => {
+                        const [txId, date] = key.split(/_(.+)/)
+                        const tx = transactions.find(t => t.id === txId)
+                        return (
+                          <div key={key} className="flex items-center justify-between text-xs text-gray-400 bg-gray-50 rounded px-3 py-1.5">
+                            <span>
+                              <span className="text-gray-500">{date.slice(5).replace('-', '/')}</span>
+                              <span className="mx-2">—</span>
+                              <span>{tx ? tx.label : txId}</span>
+                            </span>
+                            <button
+                              onClick={() => onRestoreOccurrence(key)}
+                              className="text-blue-400 hover:text-blue-600 hover:underline ml-4"
+                            >
+                              復元
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
             </>
           )}
