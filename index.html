@@ -915,7 +915,7 @@ h('div',{className:'flex justify-end pb-1'},
 }
 
 // ─── Balance Table ────────────────────────────────────
-function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hiddenAccIds }){
+function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds }){
   if(!accounts.length) return null;
   const [viewMode,setViewMode]=useState('daily');
   const cols=useMemo(()=>{
@@ -943,6 +943,11 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hidden
   const tipTimer=useRef(null);
   const clearTipTimer=()=>{if(tipTimer.current){clearTimeout(tipTimer.current);tipTimer.current=null;}};
   const startTipClose=()=>{tipTimer.current=setTimeout(()=>setTip(null),200);};
+  const editTxFromTip=txId=>{
+    if(!txId||!onEditTx) return;
+    setTip(null);
+    onEditTx(txId);
+  };
   const isTouch=useMemo(()=>{
     if(typeof window==='undefined') return false;
     const mqlNoHover=window.matchMedia&&window.matchMedia('(hover: none)').matches;
@@ -966,7 +971,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hidden
     h('div',{className:'px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2 flex-wrap'},
       h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'口座別 残高推移'),
       h('div',{className:'flex items-center gap-2'},
-        onCellClick&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 hidden sm:block'},'セルをクリックして取引を追加'),
+        onCellClick&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 hidden sm:block'},'セルをクリックして追加・明細から編集'),
         h('div',{className:'flex gap-1'},
           [['daily','日次'],['weekly','週次'],['monthly','月次']].map(([v,l])=>
             h('button',{key:v,onClick:()=>setViewMode(v),
@@ -1062,14 +1067,23 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hidden
         h('button',{onClick:()=>setTip(null),className:'text-gray-400 hover:text-white text-base leading-none -mr-1 px-1','aria-label':'閉じる'},'✕')
       ),
       tip.items.map((it,i)=>h('div',{key:i,className:`flex items-center justify-between gap-3 ${tip.touch?'py-1':'py-0.5'}`},
-        h('span',{className:`text-gray-300 truncate ${tip.touch?'max-w-[150px]':'max-w-[110px]'}`},it.label),
-        h('span',{className:it.amt>=0?'text-emerald-400 font-medium whitespace-nowrap':'text-rose-400 font-medium whitespace-nowrap'},
-          `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`),
-        it.txId&&onSkip&&h('button',{
-          onClick:e=>{e.stopPropagation();onSkip(`${it.txId}_${tip.date}`);setTip(null);},
-          className:'text-gray-500 hover:text-red-400 transition-colors leading-none flex-shrink-0 px-1',
-          title:'この回を残高推移から除外（取引管理には残ります）'
-        },'✕')
+        h('div',{className:'min-w-0 flex-1'},
+          h('div',{className:'text-gray-300 truncate'},it.label),
+          h('div',{className:it.amt>=0?'text-emerald-400 font-medium whitespace-nowrap':'text-rose-400 font-medium whitespace-nowrap'},
+            `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`)
+        ),
+        h('div',{className:'flex items-center gap-1 flex-shrink-0'},
+          it.txId&&onEditTx&&h('button',{
+            onClick:e=>{e.stopPropagation();editTxFromTip(it.txId);},
+            className:'text-indigo-300 hover:text-white transition-colors text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-white/10',
+            title:'この取引を編集'
+          },'編集'),
+          it.txId&&onSkip&&h('button',{
+            onClick:e=>{e.stopPropagation();onSkip(`${it.txId}_${tip.date}`);setTip(null);},
+            className:'text-gray-500 hover:text-red-400 transition-colors leading-none flex-shrink-0 px-1',
+            title:'この回を残高推移から除外（取引管理には残ります）'
+          },'✕')
+        )
       )),
       tip.touch&&onCellClick&&h('button',{
         onClick:()=>{const d=tip.date,aid=tip.accountId;setTip(null);onCellClick(d,aid);},
@@ -1081,7 +1095,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, hidden
 
 // ─── Transaction Details ──────────────────────────────
 const TX_PAGE=20;
-function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOccurrences, onSkip, onRestore, onDeleteTx }){
+function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOccurrences, onSkip, onRestore, onEditTx, onDeleteTx }){
   const [page,setPage]=useState(0);
   const [showSkipped,setShowSkipped]=useState(false);
   const [deleteTarget,setDeleteTarget]=useState(null);
@@ -1196,6 +1210,11 @@ function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOc
                         `${isIncome?'+':isTransfer?'':'-'}¥${ev.amount.toLocaleString()}`),
                       h('td',{className:'px-4 py-2.5 text-center'},
                         h('div',{className:'flex items-center justify-center gap-2'},
+                          ev.txId&&onEditTx&&h('button',{
+                            onClick:()=>onEditTx(ev.txId),
+                            className:'text-xs text-gray-300 dark:text-gray-600 hover:text-indigo-400 dark:hover:text-indigo-400 transition-colors',
+                            title:'この取引を編集'
+                          },'編集'),
                           ev.txId&&ev.recurring&&onSkip&&h('button',{
                             onClick:()=>onSkip(`${ev.txId}_${ev.date}`),
                             className:'text-xs text-gray-300 dark:text-gray-600 hover:text-orange-400 dark:hover:text-orange-400 transition-colors',
@@ -1243,10 +1262,14 @@ function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOc
 }
 
 // ─── Add Transaction Modal ────────────────────────────
-function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
+function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, editTx }){
   const firstId=accounts[0]?.id||'';
   const secondId=accounts[1]?.id||firstId;
-  const [form,setForm]=useState({label:'',type:'expense',amount:'',category:'その他',accountId:initAccountId||firstId,fromAccountId:initAccountId||firstId,toAccountId:secondId,recurring:false,frequency:'monthly',startDate:date,endDate:''});
+  const [form,setForm]=useState(()=>editTx?{
+    label:editTx.label||'',type:editTx.type||'expense',amount:String(editTx.amount||''),category:editTx.category||'その他',
+    accountId:editTx.accountId||initAccountId||firstId,fromAccountId:editTx.fromAccountId||initAccountId||firstId,toAccountId:editTx.toAccountId||secondId,
+    recurring:!!editTx.recurring,frequency:editTx.frequency||'monthly',startDate:editTx.startDate||date,endDate:editTx.endDate||''
+  }:{label:'',type:'expense',amount:'',category:'その他',accountId:initAccountId||firstId,fromAccountId:initAccountId||firstId,toAccountId:secondId,recurring:false,frequency:'monthly',startDate:date,endDate:''});
   const [err,setErr]=useState('');
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
   const isTransfer=form.type==='transfer';
@@ -1258,10 +1281,10 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
     if(isTransfer){
       if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
       if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
-      onSave({id:genId(),label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null});
+      onSave({id:editTx?.id||genId(),label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     } else {
       if(!form.accountId){setErr('口座を選択してください');return;}
-      onSave({id:genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null});
+      onSave({id:editTx?.id||genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     }
   }
   const inp=`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${dark?'bg-gray-800 border-gray-600 text-gray-100':'bg-white border-gray-300 text-gray-900'}`;
@@ -1269,7 +1292,7 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
   return h('div',{className:'fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
     h('div',{className:`rounded-2xl shadow-xl w-full max-w-sm p-5 overflow-y-auto ${dark?'bg-gray-900':'bg-white'}`,style:{maxHeight:'90vh'}},
       h('div',{className:'flex items-center justify-between mb-4'},
-        h('h3',{className:`text-base font-semibold ${dark?'text-gray-100':'text-gray-800'}`},'取引を追加'),
+        h('h3',{className:`text-base font-semibold ${dark?'text-gray-100':'text-gray-800'}`},editTx?'取引を編集':'取引を追加'),
         h('button',{onClick:onClose,className:'text-gray-400 hover:text-gray-600 text-xl leading-none'},'✕')
       ),
       h('form',{onSubmit:submit,className:'space-y-3'},
@@ -1319,29 +1342,34 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
           ),
           h('span',{className:'text-sm text-gray-600 dark:text-gray-300 select-none'},'定期取引')
         ),
-        form.recurring&&h('div',{className:'space-y-2 pl-1'},
-          h('div',null,
-            h('label',{className:lbl},'頻度'),
-            h('div',{className:'flex gap-1.5 flex-wrap'},
-              Object.entries(FREQS).map(([v,l])=>h('button',{key:v,type:'button',onClick:()=>sf('frequency',v),
-                className:`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.frequency===v?'bg-indigo-600 text-white border-indigo-600':(dark?'text-gray-400 border-gray-600 hover:bg-gray-700':'text-gray-600 border-gray-200 hover:bg-gray-50')}`
-              },l))
+        form.recurring
+          ? h('div',{className:'space-y-2 pl-1'},
+              h('div',null,
+                h('label',{className:lbl},'頻度'),
+                h('div',{className:'flex gap-1.5 flex-wrap'},
+                  Object.entries(FREQS).map(([v,l])=>h('button',{key:v,type:'button',onClick:()=>sf('frequency',v),
+                    className:`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.frequency===v?'bg-indigo-600 text-white border-indigo-600':(dark?'text-gray-400 border-gray-600 hover:bg-gray-700':'text-gray-600 border-gray-200 hover:bg-gray-50')}`
+                  },l))
+                )
+              ),
+              h('div',{className:'grid grid-cols-2 gap-2'},
+                h('div',null,
+                  h('label',{className:lbl},'開始日'),
+                  h('input',{type:'date',className:inp,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
+                ),
+                h('div',null,
+                  h('label',{className:lbl},'終了日（任意）'),
+                  h('input',{type:'date',className:inp,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
+                )
+              )
             )
-          ),
-          h('div',{className:'grid grid-cols-2 gap-2'},
-            h('div',null,
-              h('label',{className:lbl},'開始日'),
+          : h('div',null,
+              h('label',{className:lbl},'日付'),
               h('input',{type:'date',className:inp,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
             ),
-            h('div',null,
-              h('label',{className:lbl},'終了日（任意）'),
-              h('input',{type:'date',className:inp,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
-            )
-          )
-        ),
         err&&h('p',{className:'text-rose-500 text-xs'},err),
         h('div',{className:'flex gap-2 pt-1'},
-          h('button',{type:'submit',className:'flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-indigo-700'},'追加'),
+          h('button',{type:'submit',className:'flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-indigo-700'},editTx?'更新':'追加'),
           h('button',{type:'button',onClick:onClose,className:`flex-1 border py-2 rounded-lg text-sm ${dark?'border-gray-600 text-gray-300 hover:bg-gray-800':'border-gray-300 text-gray-600 hover:bg-gray-50'}`},'キャンセル')
         )
       )
@@ -1350,10 +1378,11 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, skippedOccurrences, onSkip, onRestore, onDeleteTx }){
+function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSettings, skippedOccurrences, onSkip, onRestore, onDeleteTx }){
   const [pIdx,setPIdx]=useState(4);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
+  const [editTxId,setEditTxId]=useState(null);
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
@@ -1446,9 +1475,11 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
   },[txs,skippedKeys]);
 
   const net=monthly.inc-monthly.exp;
+  const editTx=editTxId?txs.find(t=>t.id===editTxId):null;
 
   return h('div',{className:'space-y-5'},
     addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
+    editTx&&onUpdTx&&h(AddTxModal,{date:editTx.startDate||todayStr(),accounts,dark,editTx,onClose:()=>setEditTxId(null),onSave:tx=>{onUpdTx(tx);setEditTxId(null);}}),
     h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-4'},
       h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
         h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'総資産'),
@@ -1559,7 +1590,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
       PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
         className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
     ),
-    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,hiddenAccIds}),
+    h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,hiddenAccIds}),
     accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
       accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
         onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
@@ -1596,7 +1627,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onOpenSettings, ski
         :onAddTx&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-3'},'グラフをクリックするとその日付で取引を追加できます'),
       h(SvgChart,{data:fData,accounts,dark,onDateClick:(!isPast&&onAddTx)?setAddDate:undefined,hiddenAccIds,onToggleAcc:toggleAccId})
     ),
-    h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onDeleteTx}),
+    h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,onDeleteTx}),
     fabOpen&&h('div',{className:'fixed inset-0 z-30',onClick:()=>setFabOpen(false)}),
     h('div',{className:'fixed bottom-6 right-4 z-40 flex flex-col items-end gap-2'},
       fabOpen&&h('div',{className:'flex flex-col items-end gap-2 mb-1'},
@@ -1807,6 +1838,7 @@ function App(){
     h('main',{className:'max-w-5xl mx-auto px-4 py-6 pb-28'},
       h(Dashboard,{accounts,txs,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
+        onUpdTx:updated=>{updTxs(txs.map(t=>t.id===updated.id?updated:t));addToast('取引を更新しました');},
         onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a)),
         onOpenSettings:(section)=>{ setSettingsTab(section==='account'?1:0); setShowSettings(true); },
         skippedOccurrences,
