@@ -1252,13 +1252,13 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
   const isTransfer=form.type==='transfer';
   function submit(e){
     e.preventDefault();
-    if(!form.label.trim()){setErr('名前を入力してください');return;}
+    if(!isTransfer&&!form.label.trim()){setErr('名前を入力してください');return;}
     const amt=parseJpAmt(form.amount);
     if(!amt||amt<=0){setErr('金額を入力してください');return;}
     if(isTransfer){
       if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
       if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
-      onSave({id:genId(),label:form.label.trim(),type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null});
+      onSave({id:genId(),label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null});
     } else {
       if(!form.accountId){setErr('口座を選択してください');return;}
       onSave({id:genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null});
@@ -1273,7 +1273,7 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId }){
         h('button',{onClick:onClose,className:'text-gray-400 hover:text-gray-600 text-xl leading-none'},'✕')
       ),
       h('form',{onSubmit:submit,className:'space-y-3'},
-        h('div',null,
+        !isTransfer&&h('div',null,
           h('label',{className:lbl},'名前 *'),
           h('input',{autoFocus:true,className:inp,placeholder:'例: 食費、給与、口座振替',value:form.label,onChange:e=>sf('label',e.target.value)})
         ),
