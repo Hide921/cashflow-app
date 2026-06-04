@@ -293,9 +293,9 @@ function computeBreakdown(txs, startD, endD, skippedKeys){
   txs.forEach(tx=>{
     if(tx.type==='transfer') return;
     const target=tx.type==='income'?incMap:expMap;
-    const key=tx.label+'|'+tx.accountId;
+    const key=tx.label;
     const add=amt=>{
-      if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
+      if(!target[key]) target[key]={label:tx.label,category:tx.category||'',total:0,count:0};
       target[key].total+=amt; target[key].count++;
     };
     if(tx.recurring){
@@ -1407,11 +1407,21 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
   );
 }
 
-// ─── Monthly breakdown section (実績 / 予測) ───────────
-function BreakdownSection({ title, subtitle, badge, badgeClass, data, open, onToggle, accounts, note, emptyIncome, emptyExpense }){
-  if(!data.incomeItems.length && !data.expenseItems.length) return null;
-  const net=data.incTotal-data.expTotal;
-  const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
+// ─── Monthly breakdown card (実績 / 予測 を1枚に集約) ───
+function netCls(n){ return n>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'; }
+function fmtSigned(n){ return `${n>=0?'+':'−'}¥${Math.abs(n).toLocaleString()}`; }
+
+function MonthBreakdownCard({ actual, forecast }){
+  const [open,setOpen]=useState(false);
+  const [view,setView]=useState('actual'); // 'actual' | 'forecast'
+  const hasAny=actual.incomeItems.length||actual.expenseItems.length||forecast.incomeItems.length||forecast.expenseItems.length;
+  if(!hasAny) return null;
+
+  const aNet=actual.incTotal-actual.expTotal;
+  const fNet=forecast.incTotal-forecast.expTotal;
+  const data=view==='actual'?actual:forecast;
+  const emptyInc=view==='actual'?'今月の収入はまだありません':'今月の収入予定はありません';
+  const emptyExp=view==='actual'?'今月の支出はまだありません':'今月の支出予定はありません';
 
   const renderTable=(items, total, isIncome)=>{
     const colorCls=isIncome?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400';
@@ -1419,35 +1429,26 @@ function BreakdownSection({ title, subtitle, badge, badgeClass, data, open, onTo
     return h('div',null,
       h('h3',{className:`text-xs font-semibold ${colorCls} uppercase tracking-widest mb-3`},isIncome?'収入':'支出'),
       items.length===0
-        ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},isIncome?emptyIncome:emptyExpense)
+        ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},isIncome?emptyInc:emptyExp)
         :h('table',{className:'w-full text-sm'},
           h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
             h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
               h('th',{className:'text-left py-2 font-medium'},'名前'),
-              h('th',{className:'text-left py-2 font-medium'},'口座'),
               h('th',{className:'text-right py-2 font-medium'},'金額')
             )
           ),
           h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
             items.map((it,i)=>{
-              const acc=accMap[it.accountId];
               return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
                 h('td',{className:'py-2'},
                   h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
                   it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
-                ),
-                h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
-                  acc?h('span',{className:'flex items-center gap-1.5'},
-                    h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
-                    h('span',null,acc.name)
-                  ):'—'
                 ),
                 h('td',{className:`py-2 text-right font-semibold ${colorCls} whitespace-nowrap tabular-nums`},`${sign}¥${it.total.toLocaleString()}`)
               );
             }),
             h('tr',{className:'font-semibold'},
               h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
-              h('td'),
               h('td',{className:`pt-3 text-right ${colorCls} whitespace-nowrap tabular-nums`},`${sign}¥${total.toLocaleString()}`)
             )
           )
@@ -1455,19 +1456,29 @@ function BreakdownSection({ title, subtitle, badge, badgeClass, data, open, onTo
     );
   };
 
-  return h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
-    h('button',{onClick:onToggle,className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors gap-3'},
-      h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200 min-w-0 flex-1'},
-        title,
-        badge&&h('span',{className:`ml-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeClass||''}`},badge),
-        subtitle&&h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},subtitle)
-      ),
-      h('span',{className:`text-sm font-bold tabular-nums whitespace-nowrap ${net>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},`${net>=0?'+':'−'}¥${Math.abs(net).toLocaleString()}`),
-      h('span',{className:'text-gray-400 dark:text-gray-500 text-xs whitespace-nowrap'},open?'▲':'▼')
+  const figure=(label,labelCls,n)=>h('div',{className:'text-right leading-tight'},
+    h('div',{className:`text-[10px] font-bold uppercase tracking-wider ${labelCls}`},label),
+    h('div',{className:`text-sm font-bold tabular-nums ${netCls(n)}`},fmtSigned(n))
+  );
+
+  return h('div',{className:cardCls+' overflow-hidden'},
+    h('button',{onClick:()=>setOpen(v=>!v),className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors gap-3'},
+      h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200 flex-shrink-0'},'今月の収支'),
+      h('div',{className:'flex items-center gap-5 ml-auto'},
+        figure('実績','text-gray-400 dark:text-gray-500',aNet),
+        figure('予測','text-indigo-400 dark:text-indigo-300',fNet),
+        h('span',{className:'text-gray-400 dark:text-gray-500 text-xs flex-shrink-0'},open?'▲':'▼')
+      )
     ),
     open&&h('div',{className:'border-t border-gray-100 dark:border-gray-700/60'},
-      note&&h('p',{className:'px-5 pt-3 text-xs text-gray-400 dark:text-gray-500'},note),
-      h('div',{className:'px-5 pb-5 pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6'},
+      h('div',{className:'flex items-center gap-2 px-5 pt-4 flex-wrap'},
+        [['actual','実績',actual.periodLabel],['forecast','予測',forecast.periodLabel]].map(([v,label,range])=>
+          h('button',{key:v,onClick:()=>setView(v),
+            className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${view===v?(v==='actual'?'bg-gray-900 dark:bg-white text-white dark:text-gray-900':'bg-indigo-600 text-white'):'text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'}`},
+            `${label} ${range}`))
+      ),
+      view==='forecast'&&h('p',{className:'px-5 pt-2 text-xs text-gray-400 dark:text-gray-500'},'登録済みの定期取引と予定（単発）から、今月末までの収支を予測した金額です。'),
+      h('div',{className:'px-5 pb-5 pt-4 grid grid-cols-2 gap-4 sm:gap-6'},
         renderTable(data.incomeItems,data.incTotal,true),
         renderTable(data.expenseItems,data.expTotal,false)
       )
@@ -1484,8 +1495,6 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSett
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
-  const [showBreakdown,setShowBreakdown]=useState(false);
-  const [showForecast,setShowForecast]=useState(false);
   const [hiddenAccIds,setHiddenAccIds]=useState(new Set());
   function toggleAccId(id){ setHiddenAccIds(prev=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; }); }
   const isPast=PERIODS[pIdx].months<0;
@@ -1564,81 +1573,61 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSett
   return h('div',{className:'space-y-5'},
     addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
     editTx&&onUpdTx&&h(AddTxModal,{date:editTx.startDate||todayStr(),accounts,dark,editTx,onClose:()=>setEditTxId(null),onSave:tx=>{onUpdTx(tx);setEditTxId(null);}}),
-    h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-4'},
-      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
-        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'総資産'),
-        h('p',{className:'text-5xl font-bold text-gray-900 dark:text-gray-100 tabular-nums tracking-tight leading-none'},`¥${totalBal.toLocaleString()}`),
-        h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-3'},`${accounts.length}口座`)
+    h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-3'},
+      h('div',{className:cardCls+' px-4 py-3'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-1'},'総資産'),
+        h('p',{className:'text-3xl font-bold text-gray-900 dark:text-gray-100 tabular-nums tracking-tight leading-none'},`¥${totalBal.toLocaleString()}`),
+        h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-1'},`${accounts.length}口座`)
       ),
-      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
-        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'月間収入（定期）'),
-        h('p',{className:'text-4xl font-bold text-emerald-500 dark:text-emerald-400 tabular-nums tracking-tight leading-none'},`+¥${monthly.inc.toLocaleString()}`)
+      h('div',{className:cardCls+' px-4 py-3'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-1'},'月間収入（定期）'),
+        h('p',{className:'text-2xl font-bold text-emerald-500 dark:text-emerald-400 tabular-nums tracking-tight leading-none'},`+¥${monthly.inc.toLocaleString()}`)
       ),
-      h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 p-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none'},
-        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3'},'月間支出（定期）'),
-        h('p',{className:'text-4xl font-bold text-rose-500 dark:text-rose-400 tabular-nums tracking-tight leading-none'},`-¥${monthly.exp.toLocaleString()}`),
-        h('p',{className:`text-xs font-medium mt-3 ${net>=0?'text-emerald-500 dark:text-emerald-400':'text-rose-400'}`},
+      h('div',{className:cardCls+' px-4 py-3'},
+        h('p',{className:'text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-1'},'月間支出（定期）'),
+        h('p',{className:'text-2xl font-bold text-rose-500 dark:text-rose-400 tabular-nums tracking-tight leading-none'},`-¥${monthly.exp.toLocaleString()}`),
+        h('p',{className:`text-xs font-medium mt-1 ${net>=0?'text-emerald-500 dark:text-emerald-400':'text-rose-400'}`},
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
-    h(BreakdownSection,{
-      title:'今月の収支（実績）',
-      badge:'実績',
-      badgeClass:'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
-      subtitle:`${actualBreakdown.periodLabel}・収入${actualBreakdown.incomeItems.length}件 / 支出${actualBreakdown.expenseItems.length}件`,
-      data:actualBreakdown,
-      open:showBreakdown,
-      onToggle:()=>setShowBreakdown(v=>!v),
-      accounts,
-      emptyIncome:'今月の収入はまだありません',
-      emptyExpense:'今月の支出はまだありません'
-    }),
-    h(BreakdownSection,{
-      title:'今月の収支（予測）',
-      badge:'予測',
-      badgeClass:'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300',
-      subtitle:`${monthForecast.periodLabel}・収入${monthForecast.incomeItems.length}件 / 支出${monthForecast.expenseItems.length}件`,
-      data:monthForecast,
-      open:showForecast,
-      onToggle:()=>setShowForecast(v=>!v),
-      accounts,
-      note:'登録済みの定期取引と予定（単発）から、今月末までの収支を予測した金額です。',
-      emptyIncome:'今月の収入予定はありません',
-      emptyExpense:'今月の支出予定はありません'
-    }),
+    h('div',{className:'grid md:grid-cols-2 gap-5 items-start'},
+      h('div',{className:'space-y-4'},
+        h(MonthBreakdownCard,{actual:actualBreakdown,forecast:monthForecast}),
+        accounts.length>0&&h('div',{className:'grid grid-cols-2 xl:grid-cols-3 gap-3'},
+          accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
+            onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
+            h('div',{className:'flex items-center gap-1.5 mb-1.5'},
+              h('span',{className:'w-2.5 h-2.5 rounded-full flex-shrink-0',style:{backgroundColor:a.color}}),
+              h('span',{className:'text-xs text-gray-500 dark:text-gray-400 truncate flex-1'},a.name),
+              onUpdAcc&&h('span',{className:'text-indigo-400 text-xs opacity-50 group-hover:opacity-100 transition-opacity',title:'タップして残高を更新'},'✎')
+            ),
+            editAccId===a.id
+              ? h('div',{className:'flex items-center gap-1',onClick:e=>e.stopPropagation()},
+                  h('span',{className:'text-sm text-gray-500'},'¥'),
+                  h('input',{autoFocus:true,type:'number',
+                    className:`w-full border rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${dark?'bg-gray-700 border-gray-600 text-gray-100':'bg-white border-gray-300 text-gray-900'}`,
+                    value:editBal,
+                    onChange:e=>setEditBal(e.target.value),
+                    onKeyDown:e=>{
+                      if(e.key==='Enter'&&!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}
+                      if(e.key==='Escape') setEditAccId(null);
+                    }
+                  }),
+                  h('button',{onClick:()=>{if(!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}},
+                    className:'text-indigo-600 text-xs font-medium hover:underline whitespace-nowrap'},'保存')
+                )
+              : h('p',{className:'font-bold text-gray-800 dark:text-gray-200 tabular-nums'},`¥${a.balance.toLocaleString()}`)
+          ))
+        )
+      ),
+      h(UpcomingPayments,{txs,accounts,skippedKeys,onSkip:(!isPast&&onSkip)?onSkip:undefined,onDeleteTx})
+    ),
     h('div',{className:'flex items-center gap-1.5 flex-wrap'},
       h('span',{className:'text-xs font-medium text-gray-400 dark:text-gray-500 mr-0.5'},'表示期間:'),
       PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
         className:`px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-150 ${pIdx===i?(p.months<0?'bg-indigo-600 dark:bg-indigo-500 text-white':'bg-gray-900 dark:bg-white text-white dark:text-gray-900'):'text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'} ${i===2?'mr-1':''}`},p.label))
     ),
     h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,hiddenAccIds}),
-    accounts.length>0&&h('div',{className:'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3'},
-      accounts.map(a=>h('div',{key:a.id,className:cardCls+' p-3 group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500 transition-all',
-        onClick:()=>{if(editAccId!==a.id&&onUpdAcc){setEditAccId(a.id);setEditBal(String(a.balance));}}},
-        h('div',{className:'flex items-center gap-1.5 mb-1.5'},
-          h('span',{className:'w-2.5 h-2.5 rounded-full flex-shrink-0',style:{backgroundColor:a.color}}),
-          h('span',{className:'text-xs text-gray-500 dark:text-gray-400 truncate flex-1'},a.name),
-          onUpdAcc&&h('span',{className:'text-indigo-400 text-xs opacity-50 group-hover:opacity-100 transition-opacity',title:'タップして残高を更新'},'✎')
-        ),
-        editAccId===a.id
-          ? h('div',{className:'flex items-center gap-1',onClick:e=>e.stopPropagation()},
-              h('span',{className:'text-sm text-gray-500'},'¥'),
-              h('input',{autoFocus:true,type:'number',
-                className:`w-full border rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${dark?'bg-gray-700 border-gray-600 text-gray-100':'bg-white border-gray-300 text-gray-900'}`,
-                value:editBal,
-                onChange:e=>setEditBal(e.target.value),
-                onKeyDown:e=>{
-                  if(e.key==='Enter'&&!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}
-                  if(e.key==='Escape') setEditAccId(null);
-                }
-              }),
-              h('button',{onClick:()=>{if(!isNaN(Number(editBal))){onUpdAcc({...a,balance:Number(editBal),balanceAsOf:todayStr()});setEditAccId(null);}},
-                className:'text-indigo-600 text-xs font-medium hover:underline whitespace-nowrap'},'保存')
-            )
-          : h('p',{className:'font-bold text-gray-800 dark:text-gray-200 tabular-nums'},`¥${a.balance.toLocaleString()}`)
-      ))
-    ),
-    h(UpcomingPayments,{txs,accounts,skippedKeys,onSkip:(!isPast&&onSkip)?onSkip:undefined,onDeleteTx}),
     h('div',{className:cardCls+' p-5'},
       h('div',{className:'flex items-center mb-4'},
         h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},isPast?'過去の残高推移':'将来の残高予測'),
@@ -1731,7 +1720,7 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
       h('span',{className:'ml-auto text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded-full px-2 py-0.5 font-medium'},`${events.length}件`)
     ),
     h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},
-      events.slice(0,8).map((ev,i)=>
+      events.slice(0,6).map((ev,i)=>
         h('div',{key:i,className:'flex items-center gap-3 py-2.5'},
           h('div',{className:`w-11 text-center flex-shrink-0 rounded-lg py-1 ${ev.daysLeft===0?'bg-amber-100 dark:bg-amber-900/40':'bg-gray-50 dark:bg-gray-700/50'}`},
             h('div',{className:`text-base font-bold leading-none tabular-nums ${ev.daysLeft===0?'text-amber-600 dark:text-amber-400':'text-gray-600 dark:text-gray-300'}`},ev.daysLeft===0?'今日':ev.daysLeft),
@@ -1757,7 +1746,7 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
           )
         )
       ),
-      events.length>8&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 text-center py-2'},`他 ${events.length-8} 件`)
+      events.length>6&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 text-center py-2'},`他 ${events.length-6} 件`)
     )
   );
 }
