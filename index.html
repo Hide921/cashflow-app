@@ -285,6 +285,36 @@ function buildPastTxList(txs, startD, skippedKeys){
   return evts;
 }
 
+// ─── Monthly breakdown (実績/予測 共通) ─────────────────
+// startD〜endD の収入・支出を「名前×口座」単位で集計する。
+// 定期取引はスケジュールから展開、単発取引は期間内のものを含める。
+function computeBreakdown(txs, startD, endD, skippedKeys){
+  const incMap={},expMap={};
+  txs.forEach(tx=>{
+    if(tx.type==='transfer') return;
+    const target=tx.type==='income'?incMap:expMap;
+    const key=tx.label+'|'+tx.accountId;
+    const add=amt=>{
+      if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
+      target[key].total+=amt; target[key].count++;
+    };
+    if(tx.recurring){
+      expandRec(tx,startD,endD,skippedKeys).forEach(e=>add(Math.abs(e.amt)));
+    } else if(tx.startDate){
+      const d=sod(parseISO(tx.startDate));
+      const ds=fmt(d);
+      if(!isBefore(d,startD)&&!isAfter(d,endD)&&!(skippedKeys&&skippedKeys.has(`${tx.id}_${ds}`))) add(tx.amount);
+    }
+  });
+  const incomeItems=Object.values(incMap).sort((a,b)=>b.total-a.total);
+  const expenseItems=Object.values(expMap).sort((a,b)=>b.total-a.total);
+  return {
+    incomeItems, expenseItems,
+    incTotal:incomeItems.reduce((s,it)=>s+it.total,0),
+    expTotal:expenseItems.reduce((s,it)=>s+it.total,0),
+  };
+}
+
 // ─── Constants ────────────────────────────────────────
 const COLORS=['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
 const CATS=['給与','家賃','食費','交通費','光熱費','保険','娯楽','その他'];
@@ -1377,6 +1407,74 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
   );
 }
 
+// ─── Monthly breakdown section (実績 / 予測) ───────────
+function BreakdownSection({ title, subtitle, badge, badgeClass, data, open, onToggle, accounts, note, emptyIncome, emptyExpense }){
+  if(!data.incomeItems.length && !data.expenseItems.length) return null;
+  const net=data.incTotal-data.expTotal;
+  const accMap=Object.fromEntries(accounts.map(a=>[a.id,a]));
+
+  const renderTable=(items, total, isIncome)=>{
+    const colorCls=isIncome?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400';
+    const sign=isIncome?'+':'-';
+    return h('div',null,
+      h('h3',{className:`text-xs font-semibold ${colorCls} uppercase tracking-widest mb-3`},isIncome?'収入':'支出'),
+      items.length===0
+        ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},isIncome?emptyIncome:emptyExpense)
+        :h('table',{className:'w-full text-sm'},
+          h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
+            h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
+              h('th',{className:'text-left py-2 font-medium'},'名前'),
+              h('th',{className:'text-left py-2 font-medium'},'口座'),
+              h('th',{className:'text-right py-2 font-medium'},'金額')
+            )
+          ),
+          h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
+            items.map((it,i)=>{
+              const acc=accMap[it.accountId];
+              return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
+                h('td',{className:'py-2'},
+                  h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
+                  it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
+                ),
+                h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
+                  acc?h('span',{className:'flex items-center gap-1.5'},
+                    h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
+                    h('span',null,acc.name)
+                  ):'—'
+                ),
+                h('td',{className:`py-2 text-right font-semibold ${colorCls} whitespace-nowrap tabular-nums`},`${sign}¥${it.total.toLocaleString()}`)
+              );
+            }),
+            h('tr',{className:'font-semibold'},
+              h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
+              h('td'),
+              h('td',{className:`pt-3 text-right ${colorCls} whitespace-nowrap tabular-nums`},`${sign}¥${total.toLocaleString()}`)
+            )
+          )
+        )
+    );
+  };
+
+  return h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
+    h('button',{onClick:onToggle,className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors gap-3'},
+      h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200 min-w-0 flex-1'},
+        title,
+        badge&&h('span',{className:`ml-2 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeClass||''}`},badge),
+        subtitle&&h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},subtitle)
+      ),
+      h('span',{className:`text-sm font-bold tabular-nums whitespace-nowrap ${net>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},`${net>=0?'+':'−'}¥${Math.abs(net).toLocaleString()}`),
+      h('span',{className:'text-gray-400 dark:text-gray-500 text-xs whitespace-nowrap'},open?'▲':'▼')
+    ),
+    open&&h('div',{className:'border-t border-gray-100 dark:border-gray-700/60'},
+      note&&h('p',{className:'px-5 pt-3 text-xs text-gray-400 dark:text-gray-500'},note),
+      h('div',{className:'px-5 pb-5 pt-4 grid grid-cols-1 lg:grid-cols-2 gap-6'},
+        renderTable(data.incomeItems,data.incTotal,true),
+        renderTable(data.expenseItems,data.expTotal,false)
+      )
+    )
+  );
+}
+
 // ─── Dashboard ───────────────────────────────────────
 function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSettings, skippedOccurrences, onSkip, onRestore, onDeleteTx }){
   const [pIdx,setPIdx]=useState(4);
@@ -1387,6 +1485,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSett
   const [editBal,setEditBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
   const [showBreakdown,setShowBreakdown]=useState(false);
+  const [showForecast,setShowForecast]=useState(false);
   const [hiddenAccIds,setHiddenAccIds]=useState(new Set());
   function toggleAccId(id){ setHiddenAccIds(prev=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; }); }
   const isPast=PERIODS[pIdx].months<0;
@@ -1441,37 +1540,22 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSett
     return {inc,exp};
   },[txs]);
 
+  // 今月の実績（月初〜今日）
   const actualBreakdown=useMemo(()=>{
     const t=todayD();
     const monthStart=sod(new Date(t.getFullYear(),t.getMonth(),1));
     const periodLabel=`${t.getMonth()+1}/1〜${t.getMonth()+1}/${t.getDate()}`;
-    const incMap={},expMap={};
-    txs.forEach(tx=>{
-      if(tx.type==='transfer') return;
-      const target=tx.type==='income'?incMap:expMap;
-      const key=tx.label+'|'+tx.accountId;
-      if(tx.recurring){
-        expandRec(tx,monthStart,t,skippedKeys).forEach(e=>{
-          const amt=Math.abs(e.amt);
-          if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
-          target[key].total+=amt;
-          target[key].count++;
-        });
-      } else if(tx.startDate){
-        const d=sod(parseISO(tx.startDate));
-        const ds=fmt(d);
-        if(!isBefore(d,monthStart)&&!isAfter(d,t)&&!skippedKeys.has(`${tx.id}_${ds}`)){
-          if(!target[key]) target[key]={label:tx.label,category:tx.category||'',accountId:tx.accountId,total:0,count:0};
-          target[key].total+=tx.amount;
-          target[key].count++;
-        }
-      }
-    });
-    const incomeItems=Object.values(incMap).sort((a,b)=>b.total-a.total);
-    const expenseItems=Object.values(expMap).sort((a,b)=>b.total-a.total);
-    const incTotal=incomeItems.reduce((s,it)=>s+it.total,0);
-    const expTotal=expenseItems.reduce((s,it)=>s+it.total,0);
-    return {periodLabel,incomeItems,expenseItems,incTotal,expTotal};
+    return {periodLabel,...computeBreakdown(txs,monthStart,t,skippedKeys)};
+  },[txs,skippedKeys]);
+
+  // 今月の予測（月初〜月末）— 定期取引と予定（単発）から1ヶ月まるごとを見積もる
+  const monthForecast=useMemo(()=>{
+    const t=todayD();
+    const monthStart=sod(new Date(t.getFullYear(),t.getMonth(),1));
+    const monthEnd=sod(new Date(t.getFullYear(),t.getMonth()+1,0));
+    const m=t.getMonth()+1;
+    const periodLabel=`${m}/1〜${m}/${monthEnd.getDate()}`;
+    return {periodLabel,...computeBreakdown(txs,monthStart,monthEnd,skippedKeys)};
   },[txs,skippedKeys]);
 
   const net=monthly.inc-monthly.exp;
@@ -1497,94 +1581,31 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onOpenSett
           `収支 ${net>=0?'+':''}¥${net.toLocaleString()}`)
       )
     ),
-    (actualBreakdown.incomeItems.length>0||actualBreakdown.expenseItems.length>0)&&h('div',{className:'rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700/60 shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden'},
-      h('button',{onClick:()=>setShowBreakdown(v=>!v),className:'w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors gap-3'},
-        h('span',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200 min-w-0 flex-1'},
-          '今月の収支（実績）',
-          h('span',{className:'ml-2 text-xs font-normal text-gray-400 dark:text-gray-500'},`${actualBreakdown.periodLabel}・収入${actualBreakdown.incomeItems.length}件 / 支出${actualBreakdown.expenseItems.length}件`)
-        ),
-        (()=>{const n=actualBreakdown.incTotal-actualBreakdown.expTotal;return h('span',{className:`text-sm font-bold tabular-nums whitespace-nowrap ${n>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},`${n>=0?'+':'−'}¥${Math.abs(n).toLocaleString()}`)})(),
-        h('span',{className:'text-gray-400 dark:text-gray-500 text-xs whitespace-nowrap'},showBreakdown?'▲':'▼')
-      ),
-      showBreakdown&&h('div',{className:'px-5 pb-5 grid grid-cols-1 lg:grid-cols-2 gap-6 border-t border-gray-100 dark:border-gray-700/60 pt-4'},
-        // 収入
-        h('div',null,
-          h('h3',{className:'text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-3'},'収入'),
-          actualBreakdown.incomeItems.length===0
-            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'今月の収入はまだありません')
-            :h('table',{className:'w-full text-sm'},
-              h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
-                h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
-                  h('th',{className:'text-left py-2 font-medium'},'名前'),
-                  h('th',{className:'text-left py-2 font-medium'},'口座'),
-                  h('th',{className:'text-right py-2 font-medium'},'金額')
-                )
-              ),
-              h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
-                actualBreakdown.incomeItems.map((it,i)=>{
-                  const acc=accounts.find(a=>a.id===it.accountId);
-                  return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
-                    h('td',{className:'py-2'},
-                      h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
-                      it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
-                    ),
-                    h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
-                      acc?h('span',{className:'flex items-center gap-1.5'},
-                        h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
-                        h('span',null,acc.name)
-                      ):'—'
-                    ),
-                    h('td',{className:'py-2 text-right font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${it.total.toLocaleString()}`)
-                  );
-                }),
-                h('tr',{className:'font-semibold'},
-                  h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
-                  h('td'),
-                  h('td',{className:'pt-3 text-right text-emerald-600 dark:text-emerald-400 whitespace-nowrap tabular-nums'},`+¥${actualBreakdown.incTotal.toLocaleString()}`)
-                )
-              )
-            )
-        ),
-        // 支出
-        h('div',null,
-          h('h3',{className:'text-xs font-semibold text-rose-500 dark:text-rose-400 uppercase tracking-widest mb-3'},'支出'),
-          actualBreakdown.expenseItems.length===0
-            ?h('p',{className:'text-xs text-gray-400 dark:text-gray-500 py-4'},'今月の支出はまだありません')
-            :h('table',{className:'w-full text-sm'},
-              h('thead',{className:'text-gray-400 dark:text-gray-500 text-xs'},
-                h('tr',{className:'border-b border-gray-100 dark:border-gray-700/60'},
-                  h('th',{className:'text-left py-2 font-medium'},'名前'),
-                  h('th',{className:'text-left py-2 font-medium'},'口座'),
-                  h('th',{className:'text-right py-2 font-medium'},'金額')
-                )
-              ),
-              h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700/60'},
-                actualBreakdown.expenseItems.map((it,i)=>{
-                  const acc=accounts.find(a=>a.id===it.accountId);
-                  return h('tr',{key:i,className:'hover:bg-gray-50 dark:hover:bg-gray-700/30'},
-                    h('td',{className:'py-2'},
-                      h('div',{className:'font-medium text-gray-800 dark:text-gray-200'},it.label),
-                      it.count>1&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500'},`${it.count}回`)
-                    ),
-                    h('td',{className:'py-2 text-gray-500 dark:text-gray-400'},
-                      acc?h('span',{className:'flex items-center gap-1.5'},
-                        h('span',{className:'w-2 h-2 rounded-full flex-shrink-0',style:{backgroundColor:acc.color}}),
-                        h('span',null,acc.name)
-                      ):'—'
-                    ),
-                    h('td',{className:'py-2 text-right font-semibold text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${it.total.toLocaleString()}`)
-                  );
-                }),
-                h('tr',{className:'font-semibold'},
-                  h('td',{className:'pt-3 text-gray-700 dark:text-gray-300'},'合計'),
-                  h('td'),
-                  h('td',{className:'pt-3 text-right text-rose-500 dark:text-rose-400 whitespace-nowrap tabular-nums'},`-¥${actualBreakdown.expTotal.toLocaleString()}`)
-                )
-              )
-            )
-        )
-      )
-    ),
+    h(BreakdownSection,{
+      title:'今月の収支（実績）',
+      badge:'実績',
+      badgeClass:'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+      subtitle:`${actualBreakdown.periodLabel}・収入${actualBreakdown.incomeItems.length}件 / 支出${actualBreakdown.expenseItems.length}件`,
+      data:actualBreakdown,
+      open:showBreakdown,
+      onToggle:()=>setShowBreakdown(v=>!v),
+      accounts,
+      emptyIncome:'今月の収入はまだありません',
+      emptyExpense:'今月の支出はまだありません'
+    }),
+    h(BreakdownSection,{
+      title:'今月の収支（予測）',
+      badge:'予測',
+      badgeClass:'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300',
+      subtitle:`${monthForecast.periodLabel}・収入${monthForecast.incomeItems.length}件 / 支出${monthForecast.expenseItems.length}件`,
+      data:monthForecast,
+      open:showForecast,
+      onToggle:()=>setShowForecast(v=>!v),
+      accounts,
+      note:'登録済みの定期取引と予定（単発）から、今月末までの収支を予測した金額です。',
+      emptyIncome:'今月の収入予定はありません',
+      emptyExpense:'今月の支出予定はありません'
+    }),
     h('div',{className:'flex items-center gap-1.5 flex-wrap'},
       h('span',{className:'text-xs font-medium text-gray-400 dark:text-gray-500 mr-0.5'},'表示期間:'),
       PERIODS.map((p,i)=>h('button',{key:i,onClick:()=>setPIdx(i),
