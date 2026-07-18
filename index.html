@@ -78,43 +78,28 @@ const _sb = supabase.createClient(
 // ─── Storage ──────────────────────────────────────────
 const DATA_KEYS=['accounts','transactions','budgets','skipped','preferences'];
 const LS_CACHE_PREFIX='cf_cache_v2:';
-function dataScope(userId,secure){ return secure&&userId?userId:'legacy'; }
-function scopedKey(key,userId,secure){ return secure&&userId?`${userId}:${key}`:key; }
-function readLocalCache(scope){
-  try{return JSON.parse(localStorage.getItem(LS_CACHE_PREFIX+scope)||'{}');}catch{return {};}
+function readLocalCache(){
+  try{return JSON.parse(localStorage.getItem(LS_CACHE_PREFIX+'legacy')||'{}');}catch{return {};}
 }
-function writeLocalCache(scope,key,value){
-  const cache=readLocalCache(scope);
+function writeLocalCache(key,value){
+  const cache=readLocalCache();
   cache[key]=value;
   cache.updatedAt=new Date().toISOString();
-  localStorage.setItem(LS_CACHE_PREFIX+scope,JSON.stringify(cache));
+  localStorage.setItem(LS_CACHE_PREFIX+'legacy',JSON.stringify(cache));
 }
-async function detectSecureSchema(){
-  const {error}=await _sb.from('user_data').select('user_id').limit(1);
-  return !(error&&(error.code==='42703'||/user_id.*does not exist/i.test(error.message||'')));
-}
-async function _sbGet(key,userId,secure){
-  let q=_sb.from('user_data').select('value').eq('key',scopedKey(key,userId,secure));
-  if(secure) q=q.eq('user_id',userId);
-  const {data,error}=await q.maybeSingle();
+async function _sbGet(key){
+  const {data,error}=await _sb.from('user_data').select('value').eq('key',key).maybeSingle();
   if(error) throw error;
   return data?.value;
 }
-async function _sbSet(key,value,userId,secure){
-  const row={key:scopedKey(key,userId,secure),value,updated_at:new Date().toISOString()};
-  if(secure) row.user_id=userId;
-  const {error}=await _sb.from('user_data').upsert(row,{onConflict:'key'});
+async function _sbSet(key,value){
+  const {error}=await _sb.from('user_data').upsert({key,value,updated_at:new Date().toISOString()},{onConflict:'key'});
   if(error) throw error;
   return value;
 }
-async function loadAllData(userId,secure){
-  const values=await Promise.all(DATA_KEYS.map(key=>_sbGet(key,userId,secure)));
+async function loadAllData(){
+  const values=await Promise.all(DATA_KEYS.map(key=>_sbGet(key)));
   return Object.fromEntries(DATA_KEYS.map((key,i)=>[key,values[i]]));
-}
-async function claimLegacyData(){
-  const {data,error}=await _sb.rpc('claim_legacy_data');
-  if(error) return false;
-  return data===true;
 }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
 
@@ -1984,41 +1969,7 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
   );
 }
 
-// ─── Authentication ──────────────────────────────────
-function AuthGate(){
-  const [mode,setMode]=useState('signin');
-  const [email,setEmail]=useState('');
-  const [password,setPassword]=useState('');
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState('');
-  const [message,setMessage]=useState('');
-  async function submit(e){
-    e.preventDefault(); setBusy(true); setError(''); setMessage('');
-    const result=mode==='signin'?await _sb.auth.signInWithPassword({email,password}):await _sb.auth.signUp({email,password});
-    setBusy(false);
-    if(result.error){setError(result.error.message);return;}
-    if(mode==='signup'&&!result.data.session) setMessage('確認メールを送りました。メール内のリンクを開いてからログインしてください。');
-  }
-  return h('div',{className:'min-h-screen bg-[#f7f8fc] dark:bg-gray-950 flex items-center justify-center px-4'},
-    h('main',{className:'w-full max-w-sm'},
-      h('div',{className:'text-center mb-6'},h('div',{className:'w-12 h-12 mx-auto bg-indigo-600 rounded-2xl flex items-center justify-center text-xl shadow-sm'},'💰'),h('h1',{className:'text-2xl font-bold text-gray-900 dark:text-gray-100 mt-3'},'資金管理'),h('p',{className:'text-sm text-gray-400 mt-1'},'データを安全に同期するためログインしてください')),
-      h('div',{className:cardCls+' p-6'},
-        h('div',{className:'grid grid-cols-2 bg-gray-100 dark:bg-gray-800 rounded-xl p-1 mb-5'},
-          [['signin','ログイン'],['signup','新規登録']].map(([v,l])=>h('button',{key:v,onClick:()=>{setMode(v);setError('');setMessage('');},className:`py-2 rounded-lg text-sm font-semibold ${mode===v?'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-300 shadow-sm':'text-gray-400'}`},l))
-        ),
-        h('form',{onSubmit:submit,className:'space-y-4'},
-          h('div',null,h('label',{htmlFor:'auth-email',className:labelCls},'メールアドレス'),h('input',{id:'auth-email',type:'email',autoComplete:'email',required:true,className:inputCls,value:email,onChange:e=>setEmail(e.target.value)})),
-          h('div',null,h('label',{htmlFor:'auth-password',className:labelCls},'パスワード'),h('input',{id:'auth-password',type:'password',autoComplete:mode==='signin'?'current-password':'new-password',minLength:8,required:true,className:inputCls,value:password,onChange:e=>setPassword(e.target.value)})),
-          error&&h('p',{className:'text-sm text-rose-500',role:'alert'},error),
-          message&&h('p',{className:'text-sm text-emerald-600 dark:text-emerald-400'},message),
-          h('button',{disabled:busy,type:'submit',className:'w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-semibold'},busy?'処理中…':mode==='signin'?'ログイン':'登録する')
-        )
-      )
-    )
-  );
-}
-
-function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport,secureMode,session,onSignOut}){
+function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport}){
   const [message,setMessage]=useState('');
   useEffect(()=>{const fn=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onClose]);
   function readFile(file,handler){
@@ -2060,11 +2011,6 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
             h('label',{className:'text-center border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer'},'取引CSVを追加',h('input',{type:'file',accept:'.csv,text/csv',className:'sr-only',onChange:e=>readFile(e.target.files?.[0],text=>onCsvImport(text))}))
           )
         ),
-        h('section',{className:cardCls+' p-4'},
-          h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'セキュリティ'),
-          secureMode?h('p',{className:'text-sm text-emerald-600 dark:text-emerald-400'},`ユーザー別に保護されています${session?.user?.email?`（${session.user.email}）`:''}`):h('p',{className:'text-sm text-amber-600 dark:text-amber-400'},'レガシーモードです。Supabase移行SQLを適用するとログインとRLSが有効になります。'),
-          session&&h('button',{onClick:onSignOut,className:'mt-3 text-xs text-rose-600 hover:underline'},'ログアウト')
-        ),
         message&&h('p',{className:'text-sm text-indigo-600 dark:text-indigo-400',role:'status'},message)
       )
     )
@@ -2094,8 +2040,6 @@ function App(){
   const [dark,setDark]=useState(()=>localStorage.getItem(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
   const [activeView,setActiveView]=useState('home');
-  const [secureMode,setSecureMode]=useState(null);
-  const [session,setSession]=useState(null);
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [toasts,setToasts]=useState([]);
   const txSaveQueue=useRef(Promise.resolve());
@@ -2109,36 +2053,11 @@ function App(){
 
   useEffect(()=>{
     let alive=true;
-    async function init(){
-      try{
-        const secure=await detectSecureSchema();
-        if(!alive)return;
-        setSecureMode(secure);
-        if(secure){
-          const {data}=await _sb.auth.getSession();
-          if(alive)setSession(data.session||null);
-        }
-      }catch(e){
-        if(alive){setSecureMode(false);setSyncStatus({state:'offline',message:'クラウドに接続できないためローカルデータを使用します'});}
-      }
-    }
-    init();
-    const {data:listener}=_sb.auth.onAuthStateChange((_event,next)=>{if(alive)setSession(next);});
-    return()=>{alive=false;listener.subscription.unsubscribe();};
-  },[]);
-
-  useEffect(()=>{
-    if(secureMode===null)return;
-    if(secureMode&&!session){setLoading(false);return;}
-    let alive=true;
-    const userId=session?.user?.id||null;
-    const scope=dataScope(userId,secureMode);
     async function hydrate(){
       setLoading(true);
-      const cache=readLocalCache(scope);
+      const cache=readLocalCache();
       try{
-        let data=await loadAllData(userId,secureMode);
-        if(secureMode&&DATA_KEYS.every(k=>data[k]===undefined)&&await claimLegacyData()) data=await loadAllData(userId,secureMode);
+        const data=await loadAllData();
         if(!alive)return;
         const legacySkipped=(()=>{try{return JSON.parse(localStorage.getItem(LS_SKIPPED)||'[]');}catch{return [];}})();
         const a=data.accounts??cache.accounts??[];
@@ -2147,7 +2066,7 @@ function App(){
         const s=data.skipped??cache.skipped??legacySkipped;
         const p={...DEFAULT_PREFS,...(data.preferences??cache.preferences??{})};
         setAccounts(a);setTxs(t);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
-        DATA_KEYS.forEach(k=>writeLocalCache(scope,k,{accounts:a,transactions:t,budgets:b,skipped:s,preferences:p}[k]));
+        DATA_KEYS.forEach(k=>writeLocalCache(k,{accounts:a,transactions:t,budgets:b,skipped:s,preferences:p}[k]));
         setSyncStatus({state:'synced',message:'クラウドと同期済み'});
       }catch(e){
         if(!alive)return;
@@ -2157,7 +2076,7 @@ function App(){
     }
     hydrate();
     return()=>{alive=false;};
-  },[secureMode,session?.user?.id]);
+  },[]);
 
   useEffect(()=>{
     if(dark){ document.documentElement.classList.add('dark'); }
@@ -2194,11 +2113,10 @@ function App(){
   },[accounts,txs,preferences,skippedOccurrences]);
 
   function persist(key,value){
-    const userId=session?.user?.id||null,scope=dataScope(userId,secureMode);
-    writeLocalCache(scope,key,value);
+    writeLocalCache(key,value);
     if(!navigator.onLine){setSyncStatus({state:'offline',message:'変更は端末に保存され、オンライン復帰時に同期されます'});retryRef.current=syncAll;return;}
     setSyncStatus({state:'saving',message:'クラウドへ保存しています'});
-    const save=()=>_sbSet(key,value,userId,secureMode);
+    const save=()=>_sbSet(key,value);
     const task=key==='transactions'?txSaveQueue.current.then(save):save();
     if(key==='transactions')txSaveQueue.current=task.catch(()=>{});
     retryRef.current=()=>persist(key,value);
@@ -2206,13 +2124,11 @@ function App(){
       .catch(e=>{setSyncStatus({state:'error',message:e.message});addToast('同期に失敗しました。端末には保存されています','error');});
   }
   async function syncAll(){
-    if(secureMode&& !session)return;
-    const userId=session?.user?.id||null;
     if(!navigator.onLine){setSyncStatus({state:'offline',message:'オフラインです'});return;}
     setSyncStatus({state:'saving',message:'すべてのデータを同期しています'});
     try{
       await Promise.all([
-        _sbSet('accounts',accounts,userId,secureMode),_sbSet('transactions',txs,userId,secureMode),_sbSet('budgets',budgets,userId,secureMode),_sbSet('skipped',skippedOccurrences,userId,secureMode),_sbSet('preferences',preferences,userId,secureMode)
+        _sbSet('accounts',accounts),_sbSet('transactions',txs),_sbSet('budgets',budgets),_sbSet('skipped',skippedOccurrences),_sbSet('preferences',preferences)
       ]);
       setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
     }catch(e){setSyncStatus({state:'error',message:e.message});addToast('再同期に失敗しました','error');}
@@ -2254,7 +2170,6 @@ function App(){
     updTxs([...txs,...items]);addToast(`${items.length}件を追加しました${skipped?`（${skipped}件スキップ）`:''}`);setShowSettings(false);setActiveView('transactions');
   }
 
-  if(secureMode===true&&!session&&!loading)return h(AuthGate);
   if(loading) return h('div',{className:'min-h-screen bg-[#f7f8fc] dark:bg-gray-950 flex items-center justify-center'},
     h('div',{className:'text-center'},h('div',{className:'w-10 h-10 rounded-full border-2 border-indigo-200 border-t-indigo-600 animate-spin mx-auto mb-3'}),h('p',{className:'text-gray-400 dark:text-gray-500 text-sm'},'読み込み中…'))
   );
@@ -2299,7 +2214,6 @@ function App(){
         )
       )
     ),
-    !secureMode&&h('div',{className:'bg-amber-50 dark:bg-amber-950/30 border-b border-amber-100 dark:border-amber-900/40'},h('div',{className:'max-w-5xl mx-auto px-4 py-2 flex items-center justify-between gap-3 text-xs text-amber-700 dark:text-amber-300'},h('span',null,'セキュリティ移行待ちのレガシーモードです'),h('button',{onClick:()=>setShowSettings(true),className:'font-semibold underline'},'詳細'))),
     h('main',{className:'max-w-5xl mx-auto px-4 py-5 sm:py-6 pb-28'},
       activeView==='home'&&h(Dashboard,{accounts,txs,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
@@ -2315,7 +2229,7 @@ function App(){
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='analysis'&&h(AnalysisView,{txs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
     ),
-    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,budgets,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv,secureMode,session,onSignOut:()=>_sb.auth.signOut()}),
+    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,budgets,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv}),
     h(Toast,{toasts})
   );
 }

@@ -14,9 +14,7 @@ jobs:
       - name: Fetch data from Supabase
         env:
           SUPABASE_URL: https://ugyashjjxoezvlnjtizw.supabase.co
-          # RLS適用後も全ユーザー分をバックアップできるよう、
-          # Repository secret に SUPABASE_SERVICE_ROLE_KEY を登録する。
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           mkdir -p backups
           DATE=$(date -u +"%Y-%m-%d")
