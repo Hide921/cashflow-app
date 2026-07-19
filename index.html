@@ -192,11 +192,11 @@ function buildTxList(txs, endD, skippedKeys) {
     if(tx.recurring){
       if(tx.type==='transfer'){
         expandRec(tx,today,endD,skippedKeys).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:Math.abs(e.amt),fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
         });
       } else {
         expandRec(tx,today,endD,skippedKeys).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:true});
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:Math.abs(e.amt),accountId:tx.accountId,txId:tx.id,recurring:true});
         });
       }
     } else {
@@ -369,18 +369,115 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false){
   });
   return {income,expense,net:income-expense,byCategory,start,end};
 }
-function findShortfalls(accounts,forecast){
+function findShortfalls(accounts,forecast,txs=[],skippedKeys){
+  if(!accounts.length||!forecast.length) return [];
+  const baselineRows=forecast.map(row=>({...row}));
+  const rows=baselineRows.map(row=>({...row}));
   const found=[];
-  accounts.forEach(acc=>{
-    const first=forecast.find(row=>Number(row[acc.id])<0);
-    if(!first) return;
-    const source=accounts
-      .filter(a=>a.id!==acc.id&&Number(first[a.id])>0)
-      .sort((a,b)=>Number(first[b.id])-Number(first[a.id]))[0];
-    const shortage=Math.abs(Number(first[acc.id]));
-    found.push({account:acc,date:first.date,shortage,source,recommended:Math.ceil(shortage/1000)*1000});
+  const suggestedUntil={};
+  const adjustedOccurrences=new Set();
+  const planningDays=35;
+  const sourceReserve=10000;
+  const roundUp=n=>Math.ceil(Math.max(0,n)/1000)*1000;
+  const roundDown=n=>Math.floor(Math.max(0,n)/1000)*1000;
+  const changeFrom=(startIndex,accountId,amount)=>{
+    for(let i=startIndex;i<rows.length;i++) rows[i][accountId]=Number(rows[i][accountId]||0)+amount;
+  };
+  const forecastEnd=sod(parseISO(rows[rows.length-1].date));
+  const transferEvents=[];
+  txs.filter(tx=>tx.type==='transfer').forEach(tx=>{
+    if(tx.recurring){
+      expandRec(tx,todayD(),forecastEnd,skippedKeys).forEach(event=>{
+        if(Number(event.amt)>0) transferEvents.push({tx,date:fmt(event.date),amount:Number(event.amt)});
+      });
+    } else if(tx.startDate){
+      const date=fmt(sod(parseISO(tx.startDate)));
+      if(date>=rows[0].date&&date<=rows[rows.length-1].date&&(!skippedKeys||!skippedKeys.has(`${tx.id}_${date}`))) transferEvents.push({tx,date,amount:Number(tx.amount)||0});
+    }
   });
-  return found.sort((a,b)=>a.date.localeCompare(b.date));
+  transferEvents.sort((a,b)=>a.date.localeCompare(b.date));
+
+  for(let rowIndex=0;rowIndex<rows.length;rowIndex++){
+    const targets=accounts
+      .filter(acc=>Number(rows[rowIndex][acc.id])<0&&Number(suggestedUntil[acc.id]??-1)<rowIndex)
+      .sort((a,b)=>Number(rows[rowIndex][a.id])-Number(rows[rowIndex][b.id]));
+    targets.forEach(account=>{
+      if(Number(rows[rowIndex][account.id])>=0) return;
+      const windowEnd=Math.min(rows.length-1,rowIndex+planningDays);
+      let lowestTarget=Number(rows[rowIndex][account.id]||0),lowestIndex=rowIndex;
+      for(let i=rowIndex+1;i<=windowEnd;i++){
+        const balance=Number(rows[i][account.id]||0);
+        if(balance<lowestTarget){lowestTarget=balance;lowestIndex=i;}
+      }
+      const shortage=Math.abs(Number(rows[rowIndex][account.id]));
+      const recommended=roundUp(Math.abs(Math.min(0,lowestTarget)));
+      let immediateRemaining=roundUp(shortage);
+      let remaining=recommended;
+      const riskDate=rows[rowIndex].date;
+      const riskDay=sod(parseISO(riskDate));
+      const priorBusinessDay=prevBizDay(addDays(riskDay,-1));
+      const transferDate=fmt(isBefore(priorBusinessDay,todayD())?todayD():priorBusinessDay);
+      let transferIndex=rows.findIndex(row=>row.date>=transferDate);
+      if(transferIndex<0) transferIndex=rowIndex;
+
+      const proposals=[];
+      const adjustableEvents=transferEvents.filter(event=>{
+          if(event.tx.fromAccountId!==account.id||event.date<transferDate||event.date>rows[lowestIndex].date||adjustedOccurrences.has(`${event.tx.id}_${event.date}`)) return false;
+          const eventIndex=baselineRows.findIndex(row=>row.date>=event.date);
+          if(eventIndex<0) return false;
+          const destinationAtRisk=baselineRows.slice(eventIndex,windowEnd+1).some(row=>Number(row[event.tx.toAccountId]||0)<sourceReserve);
+          return !destinationAtRisk;
+        });
+      const applyAdjustments=(events,forImmediate)=>events.forEach(event=>{
+          const needed=forImmediate?immediateRemaining:remaining;
+          if(needed<=0||event.amount<=0) return;
+          const eventIndex=rows.findIndex(row=>row.date>=event.date);
+          if(eventIndex<0) return;
+          const destinationLowest=Math.min(...rows.slice(eventIndex,windowEnd+1).map(row=>Number(row[event.tx.toAccountId]||0)));
+          const safeReduction=roundDown(destinationLowest-sourceReserve);
+          const reduction=Math.min(needed,event.amount,safeReduction);
+          if(reduction<=0) return;
+          proposals.push({kind:'adjust',tx:event.tx,date:event.date,originalAmount:event.amount,newAmount:event.amount-reduction,reduction});
+          adjustedOccurrences.add(`${event.tx.id}_${event.date}`);
+          changeFrom(eventIndex,account.id,reduction);
+          changeFrom(eventIndex,event.tx.toAccountId,-reduction);
+          remaining-=reduction;
+          if(forImmediate) immediateRemaining-=reduction;
+        });
+      const allocateTransfers=(needed,forImmediate)=>{
+        const candidates=accounts
+          .filter(source=>source.id!==account.id)
+          .map(source=>{
+            const lowestSource=Math.min(...rows.slice(transferIndex,windowEnd+1).map(row=>Number(row[source.id]||0)));
+            return {source,capacity:roundDown(lowestSource-sourceReserve)};
+          })
+          .filter(item=>item.capacity>0)
+          .sort((a,b)=>b.capacity-a.capacity);
+        let left=needed;
+        candidates.forEach(item=>{
+          if(left<=0) return;
+          const amount=Math.min(left,item.capacity);
+          if(amount<=0) return;
+          const existing=proposals.find(p=>p.kind==='transfer'&&p.source.id===item.source.id);
+          if(existing) existing.amount+=amount;
+          else proposals.push({kind:'transfer',source:item.source,amount});
+          changeFrom(transferIndex,item.source.id,-amount);
+          changeFrom(transferIndex,account.id,amount);
+          remaining-=amount;
+          if(forImmediate) immediateRemaining-=amount;
+          left-=amount;
+        });
+      };
+
+      applyAdjustments(adjustableEvents.filter(event=>event.date<=riskDate),true);
+      if(immediateRemaining>0) allocateTransfers(immediateRemaining,true);
+      if(immediateRemaining<=0&&remaining>0) applyAdjustments(adjustableEvents.filter(event=>event.date>riskDate),false);
+      if(immediateRemaining<=0&&remaining>0) allocateTransfers(remaining,false);
+      suggestedUntil[account.id]=windowEnd;
+      found.push({account,date:riskDate,transferDate,shortage,recommended,proposals,uncovered:remaining,immediateUncovered:immediateRemaining,planningDays,sourceReserve});
+    });
+  }
+  return found.sort((a,b)=>a.date.localeCompare(b.date)||b.recommended-a.recommended);
 }
 function downloadBlob(name,content,type){
   const blob=new Blob([content],{type});
@@ -1640,7 +1737,7 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate
     return fullData.filter((_,i)=>i%step===0);
   },[fullData,pIdx]);
   const riskData=useMemo(()=>accounts.length?buildForecast(accounts,txs,addMonths(todayD(),12),skippedKeys):[],[accounts,txs,skippedKeys]);
-  const shortfalls=useMemo(()=>findShortfalls(accounts,riskData),[accounts,riskData]);
+  const shortfalls=useMemo(()=>findShortfalls(accounts,riskData,txs,skippedKeys),[accounts,riskData,txs,skippedKeys]);
   const txEventMap=useMemo(()=>{
     if(isPast) return {};
     const map={};
@@ -1726,13 +1823,31 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate
             h('h2',{id:'shortfall-title',className:'font-semibold text-rose-800 dark:text-rose-200'},'資金不足の予測'),
             h('span',{className:'text-xs text-rose-500 dark:text-rose-400'},'今後12ヶ月')
           ),
-          h('div',{className:'space-y-2'},shortfalls.slice(0,3).map(r=>
-            h('div',{key:r.account.id,className:'flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 bg-white/70 dark:bg-gray-900/50 rounded-xl px-3 py-2.5'},
-              h('div',{className:'flex-1 min-w-0'},
-                h('p',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},`${fmtDisp(r.date)}・${r.account.name}`),
-                h('p',{className:'text-xs text-rose-600 dark:text-rose-300 mt-0.5'},`不足見込 -¥${r.shortage.toLocaleString()}${r.source?` ／ ${r.source.name}から約¥${r.recommended.toLocaleString()}を振替推奨`:''}`)
+          h('p',{className:'text-[11px] text-rose-500/80 dark:text-rose-300/70 mb-3'},'既存振替の減額を優先し、追加振替は振替元の今後35日間の最低残高から1万円を残せる範囲で算出します。'),
+          h('div',{className:'space-y-3'},shortfalls.slice(0,3).map(r=>
+            h('div',{key:`${r.account.id}_${r.date}`,className:'bg-white/75 dark:bg-gray-900/50 rounded-xl px-3 py-3'},
+              h('div',{className:'flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1 mb-2'},
+                h('div',null,
+                  h('p',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},`${r.account.name}・${fmtDisp(r.date)}に不足`),
+                  h('p',{className:'text-xs text-rose-600 dark:text-rose-300 mt-0.5'},`35日以内の最大不足 -¥${r.recommended.toLocaleString()}（最初の不足 -¥${r.shortage.toLocaleString()}）`)
+                ),
+                h('span',{className:'text-[11px] font-semibold text-rose-600 dark:text-rose-300 whitespace-nowrap'},`${fmtDisp(r.transferDate)}までに初回対策`)
               ),
-              r.source&&h('button',{'aria-label':`${r.account.name}への推奨振替を追加`,onClick:()=>{setAddDate(r.date);setAddInit({label:'資金補填',type:'transfer',amount:r.recommended,fromAccountId:r.source.id,toAccountId:r.account.id});},className:'self-start sm:self-auto whitespace-nowrap text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg px-3 py-2'},'振替を追加')
+              r.proposals.length>0&&h('div',{className:'space-y-2'},r.proposals.map(p=>
+                p.kind==='adjust'
+                  ?h('div',{key:`adjust_${p.tx.id}_${p.date}`,className:'flex flex-col sm:flex-row sm:items-center gap-2 bg-amber-50 dark:bg-amber-950/25 rounded-lg px-3 py-2'},
+                    h('div',{className:'flex-1 min-w-0'},
+                      h('p',{className:'text-[10px] font-bold text-amber-600 dark:text-amber-300 uppercase tracking-wide'},'既存振替を調整'),
+                      h('p',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200 mt-0.5'},`${fmtDisp(p.date)}・${r.account.name} → ${accounts.find(a=>a.id===p.tx.toAccountId)?.name||'振替先'}`,h('span',{className:'ml-2 tabular-nums'},`¥${p.originalAmount.toLocaleString()} → ¥${p.newAmount.toLocaleString()}`))
+                    ),
+                    onUpdTx&&h('button',{'aria-label':`${fmtDisp(p.date)}の既存振替を¥${p.newAmount.toLocaleString()}に変更`,onClick:()=>{if(!window.confirm(`${fmtDisp(p.date)}の「${p.tx.label}」を今回だけ¥${p.newAmount.toLocaleString()}に変更しますか？`))return;const updated=p.tx.recurring?{...p.tx,overrides:{...(p.tx.overrides||{}),[p.date]:p.newAmount}}:{...p.tx,amount:p.newAmount};onUpdTx(updated);},className:'self-start sm:self-auto whitespace-nowrap text-xs font-semibold text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-lg px-3 py-2'},p.newAmount===0?'今回分を停止':`今回を¥${p.newAmount.toLocaleString()}に減額`)
+                  )
+                  :h('div',{key:`transfer_${p.source.id}`,className:'flex flex-col sm:flex-row sm:items-center gap-2 bg-rose-50/80 dark:bg-rose-950/30 rounded-lg px-3 py-2'},
+                    h('p',{className:'flex-1 text-xs font-semibold text-gray-700 dark:text-gray-200'},`${p.source.name} → ${r.account.name}`,h('span',{className:'ml-2 text-rose-600 dark:text-rose-300 tabular-nums'},`¥${p.amount.toLocaleString()}`)),
+                    h('button',{'aria-label':`${p.source.name}から${r.account.name}へ¥${p.amount.toLocaleString()}の振替を追加`,onClick:()=>{setAddDate(r.transferDate);setAddInit({label:'資金補填',type:'transfer',amount:p.amount,fromAccountId:p.source.id,toAccountId:r.account.id});},className:'self-start sm:self-auto whitespace-nowrap text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg px-3 py-2'},'この振替を追加')
+                  )
+              )),
+              r.uncovered>0&&h('p',{className:'text-xs text-amber-700 dark:text-amber-300 mt-2',role:'status'},r.immediateUncovered>0?`最初の不足を解消できる安全な余力が、あと¥${r.immediateUncovered.toLocaleString()}不足しています。`:r.proposals.length?`35日以内の不足に対して、安全に動かせる余力があと¥${r.uncovered.toLocaleString()}不足しています。`:`安全に振替できる余力のある口座がありません（必要額 ¥${r.uncovered.toLocaleString()}）。`)
             )
           ))
         )
@@ -2102,7 +2217,7 @@ function App(){
       else if(tx.startDate){const d=sod(parseISO(tx.startDate));if(!isBefore(d,start)&&!isAfter(d,end)&&tx.amount>=(preferences.largePayment||100000)){largeCount++;largeTotal+=tx.amount;}}
     });
     const notificationForecast=accounts.length?buildForecast(accounts,txs,end,keys):[];
-    const risks=findShortfalls(accounts,notificationForecast);
+    const risks=findShortfalls(accounts,notificationForecast,txs,keys);
     const lowLine=Number(preferences.lowBalance)||0;
     const lowAccounts=lowLine>0?accounts.filter(a=>notificationForecast.some(row=>Number(row[a.id])<lowLine)):[];
     const parts=[];
