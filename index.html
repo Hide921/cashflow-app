@@ -2070,7 +2070,8 @@ function LoanManager({loans,onChange,addToast}){
   const [editId,setEditId]=useState(null);
   const [err,setErr]=useState('');
   const [paymentErr,setPaymentErr]=useState('');
-  const [showAddForm,setShowAddForm]=useState(loans.length===0);
+  const [showAddForm,setShowAddForm]=useState(false);
+  useEffect(()=>{if(loans.length===0&&!editId)setShowAddForm(true);},[loans.length,editId]);
   const sf=(key,value)=>setForm(current=>({...current,[key]:value}));
   const totalBalance=loans.reduce((sum,loan)=>sum+Number(loan.balance||0),0);
   const totalMonthly=loans.reduce((sum,loan)=>sum+Number(loan.monthlyPayment||0),0);
