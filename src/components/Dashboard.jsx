@@ -169,7 +169,7 @@ function AddTransactionModal({ date, accounts, onSave, onClose }) {
 
 const PAGE_SIZE = 20
 
-export default function Dashboard({ accounts, transactions, skippedOccurrences = [], onTransactionAdd, onAccountUpdate, onSkipOccurrence, onRestoreOccurrence, onTransactionDelete }) {
+export default function Dashboard({ accounts, transactions, loans = [], skippedOccurrences = [], onTransactionAdd, onAccountUpdate, onSkipOccurrence, onRestoreOccurrence, onTransactionDelete }) {
   const [periodIdx, setPeriodIdx] = useState(DEFAULT_PERIOD_IDX)
   const [showDetails, setShowDetails] = useState(false)
   const [showSkipped, setShowSkipped] = useState(false)
@@ -210,6 +210,7 @@ export default function Dashboard({ accounts, transactions, skippedOccurrences =
   }, [accounts, transactions, startDate, endDate, periodIdx, isPast, skippedKeys])
 
   const totalBalance = accounts.reduce((s, a) => s + a.balance, 0)
+  const totalDebt = loans.reduce((s, loan) => s + loan.balance, 0)
 
   const thisMonthIncome = useMemo(() => {
     return transactions
@@ -286,7 +287,7 @@ export default function Dashboard({ accounts, transactions, skippedOccurrences =
       )}
 
       {/* サマリーカード */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border shadow-sm p-5">
           <p className="text-sm text-gray-500 mb-1">総資産</p>
           <p className="text-3xl font-bold text-gray-900">¥{totalBalance.toLocaleString()}</p>
@@ -302,6 +303,11 @@ export default function Dashboard({ accounts, transactions, skippedOccurrences =
           <p className={`text-xs mt-1 ${thisMonthIncome - thisMonthExpense >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
             月次収支: {thisMonthIncome - thisMonthExpense >= 0 ? '+' : ''}¥{Math.round(thisMonthIncome - thisMonthExpense).toLocaleString()}
           </p>
+        </div>
+        <div className="bg-white rounded-xl border shadow-sm p-5">
+          <p className="text-sm text-gray-500 mb-1">借入残高</p>
+          <p className="text-2xl font-bold text-orange-600">¥{totalDebt.toLocaleString()}</p>
+          <p className="text-xs text-gray-400 mt-1">{loans.length}件</p>
         </div>
       </div>
 

@@ -3,15 +3,22 @@ import Dashboard from './components/Dashboard.jsx'
 import AccountManager from './components/AccountManager.jsx'
 import TransactionManager from './components/TransactionManager.jsx'
 import ReportView from './components/ReportView.jsx'
+import LoanManager from './components/LoanManager.jsx'
 import { ToastContainer, useToast } from './components/Toast.jsx'
-import { getAccounts, saveAccounts, getTransactions, saveTransactions, getSkippedOccurrences, saveSkippedOccurrences } from './utils/storage.js'
+import {
+  getAccounts, saveAccounts, getTransactions, saveTransactions,
+  getLoans, saveLoans, getLoanPayments, saveLoanPayments,
+  getSkippedOccurrences, saveSkippedOccurrences,
+} from './utils/storage.js'
 
-const TABS = ['ダッシュボード', '口座管理', '取引管理', 'レポート']
+const TABS = ['ダッシュボード', '口座管理', '取引管理', '借入管理', 'レポート']
 
 export default function App() {
   const [tab, setTab] = useState(0)
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
+  const [loans, setLoans] = useState([])
+  const [loanPayments, setLoanPayments] = useState([])
   const [skippedOccurrences, setSkippedOccurrences] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -20,10 +27,12 @@ export default function App() {
 
   useEffect(() => {
     setSkippedOccurrences(getSkippedOccurrences())
-    Promise.all([getAccounts(), getTransactions()])
-      .then(([accs, txs]) => {
+    Promise.all([getAccounts(), getTransactions(), getLoans(), getLoanPayments()])
+      .then(([accs, txs, loadedLoans, loadedPayments]) => {
         setAccounts(accs)
         setTransactions(txs)
+        setLoans(loadedLoans)
+        setLoanPayments(loadedPayments)
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
@@ -66,6 +75,28 @@ export default function App() {
         addToast(e.message, 'error')
       }
     })
+  }
+
+  async function updateLoans(next, successMsg) {
+    setLoans(next)
+    try {
+      await saveLoans(next)
+      if (successMsg) addToast(successMsg)
+    } catch (e) {
+      setError(e.message)
+      addToast(e.message, 'error')
+    }
+  }
+
+  async function updateLoanPayments(next, successMsg) {
+    setLoanPayments(next)
+    try {
+      await saveLoanPayments(next)
+      if (successMsg) addToast(successMsg)
+    } catch (e) {
+      setError(e.message)
+      addToast(e.message, 'error')
+    }
   }
 
   if (loading) {
@@ -113,6 +144,7 @@ export default function App() {
           <Dashboard
             accounts={accounts}
             transactions={transactions}
+            loans={loans}
             skippedOccurrences={skippedOccurrences}
             onTransactionAdd={tx => updateTransactions([...transactions, tx], '取引を追加しました')}
             onAccountUpdate={updated => updateAccounts(
@@ -140,6 +172,15 @@ export default function App() {
           />
         )}
         {tab === 3 && (
+          <LoanManager
+            loans={loans}
+            payments={loanPayments}
+            onLoansChange={updateLoans}
+            onPaymentsChange={updateLoanPayments}
+            addToast={addToast}
+          />
+        )}
+        {tab === 4 && (
           <ReportView
             accounts={accounts}
             transactions={transactions}
