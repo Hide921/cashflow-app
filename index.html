@@ -2161,8 +2161,7 @@ function LoanManager({loans,onChange,addToast}){
         loan.notes&&h('p',{className:'text-xs text-gray-400 mt-2 whitespace-pre-wrap'},loan.notes),
          (loan.payments||[]).length>0&&h('p',{className:'text-xs text-gray-400 mt-3'},`返済履歴 ${loan.payments.length}件`)
       );
-    }))
-    ),
+    })),
     paymentRows.length>0&&h('section',{className:cardCls+' overflow-hidden'},
       h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between'},h('div',null,h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100'},'返済履歴'),h('p',{className:'text-xs text-gray-400 mt-1'},'新しい返済から順に表示')),h('span',{className:'text-xs text-gray-400'},`${paymentRows.length}件`)),
       h('div',{className:'overflow-x-auto'},h('table',{className:'w-full text-sm'},h('thead',{className:'bg-gray-50 dark:bg-gray-700/50 text-gray-500 text-xs'},h('tr',null,h('th',{className:'text-left px-5 py-3'},'日付'),h('th',{className:'text-left px-5 py-3'},'借入'),h('th',{className:'text-right px-5 py-3'},'返済額'),h('th',{className:'text-left px-5 py-3'},'メモ'),h('th',{className:'px-5 py-3'}))),h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},paymentRows.map(item=>{const loan=loans.find(current=>current.id===item.loanId);return h('tr',{key:item.id},h('td',{className:'px-5 py-3 text-gray-500 whitespace-nowrap'},fmtDisp(item.paidAt)),h('td',{className:'px-5 py-3 font-medium text-gray-700 dark:text-gray-200'},item.loanName),h('td',{className:'px-5 py-3 text-right font-semibold text-emerald-600 whitespace-nowrap'},loanYen(item.amount)),h('td',{className:'px-5 py-3 text-gray-500'},item.note||'—'),h('td',{className:'px-5 py-3 text-right'},loan&&h('button',{onClick:()=>removePayment(loan,item.id),className:'text-xs text-red-500 hover:underline'},'削除')))})))
