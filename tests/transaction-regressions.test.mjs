@@ -159,6 +159,50 @@ test('残高編集では空欄を保存できず、0円は保存できる', () =
   assert.equal(updated.balance, 0);
 });
 
+test('口座残高を続けて更新しても先の変更を消さない', async () => {
+  const accounts = [
+    { id: 'a', name: '銀行A', balance: 100, balanceAsOf: '2026-01-01' },
+    { id: 'b', name: '銀行B', balance: 200, balanceAsOf: '2026-01-01' },
+  ];
+  const app = appContext({ accounts, transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} });
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.resetHooks();
+  const dashboard = findNode(app.evaluate('App()'), 'Dashboard');
+  assert.ok(dashboard);
+  dashboard.props.onUpdAcc({ ...accounts[0], balance: 110 });
+  dashboard.props.onUpdAcc({ ...accounts[1], balance: 220 });
+  assert.deepEqual(Array.from(app.state[0], account => account.balance), [110, 220]);
+});
+
+test('同じ残高を保存しても残高基準日を変更しない', () => {
+  const app = appContext();
+  const account = { id: 'a', name: '銀行A', balance: 100, balanceAsOf: '2026-01-01' };
+  app.context.testAccount = account;
+  let updated;
+  app.context.onUpdAcc = item => { updated = item; };
+  const render = () => {
+    app.resetHooks();
+    return app.evaluate('Dashboard({accounts:[testAccount],txs:[],loans:[],dark:false,onUpdAcc,onUpdTx:null,onNavigate:null,skippedOccurrences:[],onSkip:null,onRestore:null,onDeleteTx:null,investmentData:null})');
+  };
+  findElement(render(), node => node.type === 'button' && node.props.children.includes('残高を編集')).props.onClick();
+  findElement(render(), node => node.type === 'button' && node.props.children.includes('保存')).props.onClick();
+  assert.equal(updated, undefined);
+});
+
+test('今日の未反映予定は残高編集後の予測に入り、支払済みなら入らない', () => {
+  const app = appContext();
+  const date = app.evaluate('todayStr()');
+  app.context.testAccount = { id: 'a', name: '銀行A', balance: 1000, balanceAsOf: date };
+  app.context.testTx = { id: 'today-expense', label: 'クレカ', type: 'expense', amount: 100, recurring: false, accountId: 'a', startDate: date };
+  const pending = app.evaluate('buildForecast([testAccount],[testTx],todayD(),new Set())');
+  assert.equal(pending[0].a, 900);
+  app.context.testSkipped = new Set([`today-expense_${date}`]);
+  const paid = app.evaluate('buildForecast([testAccount],[testTx],todayD(),testSkipped)');
+  assert.equal(paid[0].a, 1000);
+});
+
 test('定期取引の確定額はその回だけ予測に反映され、概算にも戻せる', () => {
   const app = appContext();
   const date = app.evaluate('todayStr()');

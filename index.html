@@ -198,7 +198,7 @@ function buildForecast(accounts, txs, endD, skippedKeys){
     while(ei<evts.length&&!isAfter(evts[ei].date,cursor)){
       const ev=evts[ei];
       const aOf=asOf[ev.aid];
-      if(!(aOf && fmt(ev.date)<=aOf) && cur[ev.aid]!==undefined) cur[ev.aid]+=ev.amt;
+      if(!(aOf && fmt(ev.date)<aOf) && cur[ev.aid]!==undefined) cur[ev.aid]+=ev.amt;
       ei++;
     }
     const row={date:ds};
@@ -1793,8 +1793,9 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
   const [hiddenAccIds,setHiddenAccIds]=useState(new Set());
   function toggleAccId(id){ setHiddenAccIds(prev=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; }); }
   function saveAccountBalance(account){
-    if(editBal===''||!Number.isFinite(Number(editBal)))return;
-    onUpdAcc({...account,balance:Number(editBal),balanceAsOf:todayStr()});
+    const balance=Number(editBal);
+    if(editBal.trim()===''||!Number.isSafeInteger(balance))return;
+    if(balance!==Number(account.balance))onUpdAcc({...account,balance,balanceAsOf:todayStr()});
     setEditAccId(null);
   }
   const isPast=PERIODS[pIdx].months<0;
@@ -1888,7 +1889,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
             h('h2',{id:'balance-table-title',className:'text-lg font-bold text-gray-900 dark:text-gray-100'},'残高表'),
             accounts.length>0&&h('span',{className:'text-sm font-bold text-indigo-700 dark:text-indigo-300 tabular-nums'},`今日の現預金 ¥${Math.round(totalBal).toLocaleString()}`)
           ),
-          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},isPast?'過去の残高を確認できます':'日付の残高を選ぶと取引を追加できます。左右に移動して先の予定を確認できます')
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},isPast?'過去の残高を確認できます':'今日の列は未反映の予定を含む見込みです。反映済みの予定は「支払済み」にしてください')
         ),
         h('label',{className:'flex items-center gap-2 flex-shrink-0'},
           h('span',{className:'text-xs text-gray-400 dark:text-gray-500 hidden sm:inline'},'期間'),
@@ -1968,7 +1969,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
           h('div',{className:'flex items-end justify-between gap-3 px-1'},
             h('div',null,
               h('h2',{id:'account-balance-title',className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},'口座残高'),
-              h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400 mt-0.5'},'口座ごとに残高を確認・更新できます')
+              h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400 mt-0.5'},'現在残高を更新。未反映の予定は予測に加算します')
             ),
             onNavigate&&h('button',{onClick:()=>onNavigate('accounts'),className:'text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 whitespace-nowrap'},'すべて管理 →')
           ),
@@ -1988,13 +1989,13 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
                       value:editBal,'aria-label':`${a.name}の現在残高`,
                       onChange:e=>setEditBal(e.target.value),
                       onKeyDown:e=>{
-                        if(e.key==='Enter')saveAccountBalance(a);
+                        if(e.key==='Enter'){e.preventDefault();saveAccountBalance(a);}
                         if(e.key==='Escape') setEditAccId(null);
                       }
                     }),
                   ),
                   h('div',{className:'flex items-center gap-2'},
-                    h('button',{onClick:()=>saveAccountBalance(a),disabled:editBal===''||!Number.isFinite(Number(editBal)),className:'rounded-lg bg-indigo-600 text-white px-3 py-1.5 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed'},'保存'),
+                    h('button',{onClick:()=>saveAccountBalance(a),disabled:editBal.trim()===''||!Number.isSafeInteger(Number(editBal)),className:'rounded-lg bg-indigo-600 text-white px-3 py-1.5 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed'},'保存'),
                     h('button',{onClick:()=>setEditAccId(null),className:'text-xs font-medium text-gray-600 dark:text-gray-300 px-2 py-1.5'},'キャンセル')
                   )
                   )
@@ -2669,6 +2670,7 @@ const LS_DARK='cf_dark';
 const LS_SKIPPED='cf_skipped';
 function App(){
   const [accounts,setAccounts]=useState([]);
+  const accountsRef=useRef([]);
   const [txs,setTxs]=useState([]);
   const [loans,setLoans]=useState([]);
   const [budgets,setBudgets]=useState({});
@@ -2711,7 +2713,7 @@ function App(){
         const b=pendingOr('budgets',data.budgets??cache.budgets??{});
         const s=pendingOr('skipped',data.skipped??cache.skipped??legacySkipped);
         const p={...DEFAULT_PREFS,...pendingOr('preferences',data.preferences??cache.preferences??{})};
-        setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
+        accountsRef.current=a;setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
         DATA_KEYS.forEach(k=>writeLocalCache(k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p}[k]));
         try{
           const investments=await loadInvestmentData();
@@ -2726,7 +2728,8 @@ function App(){
       }catch(e){
         if(!alive)return;
         loadFailedRef.current=true;
-        setAccounts(pendingOr('accounts',cache.accounts||[]));setTxs(pendingOr('transactions',cache.transactions||[]));setLoans(pendingOr('loans',cache.loans||[]));setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
+        const cachedAccounts=pendingOr('accounts',cache.accounts||[]);
+        accountsRef.current=cachedAccounts;setAccounts(cachedAccounts);setTxs(pendingOr('transactions',cache.transactions||[]));setLoans(pendingOr('loans',cache.loans||[]));setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
         const saved=cache.investmentData||{stocks:[],log:[],collateral:[]};
         setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         setSyncStatus({state:navigator.onLine?'error':'offline',message:`ローカルデータを表示中: ${e.message}`});
@@ -2808,7 +2811,7 @@ function App(){
       setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
     }catch(e){setSyncStatus({state:'error',message:e.message});addToast('再同期に失敗しました','error');}
   }
-  function updAcc(next){setAccounts(next);persist('accounts',next);}
+  function updAcc(next){const value=typeof next==='function'?next(accountsRef.current):next;accountsRef.current=value;setAccounts(value);persist('accounts',value);}
   function updTxs(next){setTxs(next);persist('transactions',next);}
   function updLoans(next){setLoans(next);persist('loans',next);}
   function updBudgets(next){setBudgets(next);persist('budgets',next);addToast('予算を保存しました');}
@@ -2873,7 +2876,7 @@ function App(){
     if(!data||!Array.isArray(data.accounts)||!Array.isArray(data.transactions)){addToast('対応していないバックアップ形式です','error');return;}
     if(!window.confirm(`口座${data.accounts.length}件・取引${data.transactions.length}件で現在のデータを置き換えますか？`))return;
     const nextLoans=data.loans||[],nextBudgets=data.budgets||{},nextSkipped=data.skipped||[],nextPrefs={...DEFAULT_PREFS,...(data.preferences||{})};
-    setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
+    accountsRef.current=data.accounts;setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
     persist('accounts',data.accounts);persist('transactions',data.transactions);persist('loans',nextLoans);persist('budgets',nextBudgets);persist('skipped',nextSkipped);persist('preferences',nextPrefs);
     addToast('バックアップを復元しました');setShowSettings(false);
   }
@@ -2931,7 +2934,7 @@ function App(){
       activeView==='home'&&h(Dashboard,{accounts,txs,loans,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
         onUpdTx:updated=>{updTxs(txs.map(t=>t.id===updated.id?updated:t));addToast('取引を更新しました');},
-        onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a)),
+        onUpdAcc:updated=>updAcc(current=>current.map(a=>a.id===updated.id?{...a,balance:updated.balance,balanceAsOf:updated.balanceAsOf}:a)),
         onNavigate:setActiveView,
         skippedOccurrences,
         onSkip:handleSkip,
