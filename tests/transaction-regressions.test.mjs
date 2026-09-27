@@ -191,3 +191,20 @@ test('直近予定から定期取引の金額確定を開始できる', () => {
   assert.ok(dialog);
   assert.equal(dialog.props.date, date);
 });
+
+test('過去の月を指定して定期取引の発生日を取得できる', () => {
+  const app = appContext();
+  app.context.testTx = { id: 'card', label: 'クレカ', type: 'expense', amount: 50000, recurring: true, frequency: 'monthly', startDate: '2024-01-15' };
+  const dates = app.evaluate('occurrencesInMonth(testTx,"2025-02")');
+  assert.deepEqual(Array.from(dates), ['2025-02-15']);
+  assert.deepEqual(Array.from(app.evaluate('occurrencesInMonth(testTx,"2023-12")')), []);
+});
+
+test('過去の取引明細には概算ではなく確定額が表示される', () => {
+  const app = appContext();
+  const date = app.evaluate('fmt(addMonths(todayD(),-1))');
+  app.context.testDate = date;
+  app.context.testTx = { id: 'card', label: 'クレカ', type: 'expense', amount: 50000, recurring: true, frequency: 'monthly', startDate: date, overrides: { [date]: 37240 } };
+  const list = app.evaluate('buildPastTxList([testTx],addMonths(todayD(),-2),new Set())');
+  assert.equal(list.find(item => item.date === date)?.amount, 37240);
+});

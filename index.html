@@ -300,11 +300,11 @@ function buildPastTxList(txs, startD, skippedKeys){
     if(tx.recurring){
       if(tx.type==='transfer'){
         expandRec(tx,startD,today,skippedKeys).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:tx.amount,fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:'transfer',amount:Math.abs(e.amt),fromAccountId:tx.fromAccountId,toAccountId:tx.toAccountId,txId:tx.id,recurring:true});
         });
       } else {
         expandRec(tx,startD,today,skippedKeys).forEach(e=>{
-          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:tx.amount,accountId:tx.accountId,txId:tx.id,recurring:true});
+          evts.push({date:fmt(e.date),label:tx.label,category:tx.category||'',type:tx.type,amount:Math.abs(e.amt),accountId:tx.accountId,txId:tx.id,recurring:true});
         });
       }
     } else {
@@ -743,6 +743,15 @@ function setOccurrenceAmount(tx,date,amount){
   return {...tx,overrides};
 }
 
+function occurrencesInMonth(tx,month){
+  if(!tx.startDate||!/^\d{4}-\d{2}$/.test(month)) return [];
+  const start=sod(parseISO(`${month}-01`));
+  const end=sod(new Date(start.getFullYear(),start.getMonth()+1,0));
+  return expandRec(tx,addDays(start,-7),addDays(end,7),new Set())
+    .filter(event=>!isBefore(event.date,start)&&!isAfter(event.date,end))
+    .map(event=>fmt(event.date));
+}
+
 function ConfirmAmountDialog({tx,date,onSave,onClose}){
   const confirmed=tx.overrides?.[date]!==undefined;
   const [amount,setAmount]=useState(String(confirmed?tx.overrides[date]:tx.amount));
@@ -786,6 +795,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   const [showSugs,setShowSugs]=useState(false);
   const [confirmTarget,setConfirmTarget]=useState(null);
   const [amountTarget,setAmountTarget]=useState(null);
+  const [overrideMonth,setOverrideMonth]=useState(todayStr().slice(0,7));
   const [searchText,setSearchText]=useState('');
   const [filterType,setFilterType]=useState('all');
   const [filterRecurring,setFilterRecurring]=useState('all');
@@ -872,9 +882,9 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     setConfirmTarget(null);
   }
 
-  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); setErr('');setShowSugs(false);setShowForm(true); }
+  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); setOverrideMonth(todayStr().slice(0,7));setErr('');setShowSugs(false);setShowForm(true); }
   function cancel(){ setEditId(null); setForm(DEF); setErr('');setShowSugs(false);setShowForm(false); }
-  function openAddForm(){ setEditId(null); setForm({...DEF,accountId:accounts[0]?.id||'',fromAccountId:accounts[0]?.id||'',toAccountId:accounts[1]?.id||''}); setErr(''); setShowForm(true); }
+  function openAddForm(){ setEditId(null); setForm({...DEF,accountId:accounts[0]?.id||'',fromAccountId:accounts[0]?.id||'',toAccountId:accounts[1]?.id||''}); setOverrideMonth(todayStr().slice(0,7));setErr(''); setShowForm(true); }
 
   const dateCls='border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm flex-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-400';
 
@@ -1025,7 +1035,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
           )
         ),
         form.recurring&&(()=>{
-          const occs=getOccurrences(form);
+          const occs=occurrencesInMonth(form,overrideMonth);
           const estAmt=parseJpAmt(form.amount)||0;
           return h('details',{className:'sm:col-span-2 border border-amber-200 dark:border-amber-800/60 rounded-lg p-3 bg-amber-50 dark:bg-amber-900/10'},
             h('summary',{className:'cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-300'},`確定金額を設定（${Object.keys(form.overrides||{}).length}件）`),
@@ -1035,7 +1045,13 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
               Object.keys(form.overrides||{}).length>0&&h('span',{className:'text-xs bg-amber-200 dark:bg-amber-800/60 text-amber-700 dark:text-amber-300 rounded-full px-2 py-0.5'},`${Object.keys(form.overrides).length}件確定済`)
             ),
             h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-2.5'},'各回の金額欄に入力すると概算を上書き。空欄は概算額を使用します。'),
-            occs.length===0&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 italic'},'開始日を設定すると予定一覧が表示されます'),
+            h('div',{className:'mb-3 flex flex-wrap items-center gap-2'},
+              h('span',{className:'text-xs font-medium text-gray-600 dark:text-gray-300'},'対象月'),
+              h('button',{type:'button',disabled:!overrideMonth,onClick:()=>setOverrideMonth(fmt(addMonths(parseISO(`${overrideMonth}-01`),-1)).slice(0,7)),className:'rounded-lg border border-amber-200 dark:border-amber-800 px-2 py-1 text-sm text-amber-700 dark:text-amber-300 disabled:opacity-40','aria-label':'前の月'},'←'),
+              h('input',{type:'month',value:overrideMonth,onChange:e=>setOverrideMonth(e.target.value),className:'rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-800 dark:text-gray-100','aria-label':'確定額の対象月'}),
+              h('button',{type:'button',disabled:!overrideMonth,onClick:()=>setOverrideMonth(fmt(addMonths(parseISO(`${overrideMonth}-01`),1)).slice(0,7)),className:'rounded-lg border border-amber-200 dark:border-amber-800 px-2 py-1 text-sm text-amber-700 dark:text-amber-300 disabled:opacity-40','aria-label':'次の月'},'→')
+            ),
+            occs.length===0&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 italic'},'この月に予定はありません。対象月や開始日を確認してください。'),
             occs.length>0&&h('div',{className:'space-y-1 max-h-52 overflow-x-auto overflow-y-auto pr-0.5'},
               h('div',{className:'grid text-xs text-gray-400 dark:text-gray-500 px-2 pb-1',style:{gridTemplateColumns:'7rem 1fr 7.5rem 3rem'}},
                 h('span',null,'日付'),h('span',{className:'text-right'},'概算'),h('span',{className:'text-right'},'確定金額'),h('span',null)
@@ -1380,10 +1396,11 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
 
 // ─── Transaction Details ──────────────────────────────
 const TX_PAGE=20;
-function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOccurrences, onSkip, onRestore, onEditTx, onDeleteTx, embedded=false }){
+function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOccurrences, onSkip, onRestore, onEditTx, onUpdTx, onDeleteTx, embedded=false }){
   const [page,setPage]=useState(0);
   const [showSkipped,setShowSkipped]=useState(false);
   const [deleteTarget,setDeleteTarget]=useState(null);
+  const [amountTarget,setAmountTarget]=useState(null);
   const [search,setSearch]=useState('');
   const [typeFilter,setTypeFilter]=useState('all');
   const accMap=useMemo(()=>Object.fromEntries(accounts.map(a=>[a.id,a])),[accounts]);
@@ -1408,6 +1425,11 @@ function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOc
   const skippedCount=(skippedOccurrences||[]).length;
 
   return h('div',{className:embedded?'':cardCls},
+    amountTarget&&txMap[amountTarget.txId]&&h(ConfirmAmountDialog,{
+      tx:txMap[amountTarget.txId],date:amountTarget.date,
+      onSave:updated=>{onUpdTx(updated);setAmountTarget(null);},
+      onClose:()=>setAmountTarget(null)
+    }),
     deleteTarget&&h(ConfirmDialog,{
       title:'取引を削除',
       message:deleteTarget.recurring
@@ -1495,6 +1517,11 @@ function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOc
                         `${isIncome?'+':isTransfer?'':'-'}¥${ev.amount.toLocaleString()}`),
                       h('td',{className:'px-4 py-2.5 text-center'},
                         h('div',{className:'flex items-center justify-center gap-2'},
+                          ev.txId&&ev.recurring&&onUpdTx&&h('button',{
+                            onClick:()=>setAmountTarget({txId:ev.txId,date:ev.date}),
+                            className:'text-xs font-medium text-amber-700 dark:text-amber-300 hover:underline whitespace-nowrap',
+                            title:'この回だけ確定額に変更'
+                          },txMap[ev.txId]?.overrides?.[ev.date]!==undefined?'確定額を修正':'金額確定'),
                           ev.txId&&onEditTx&&h('button',{
                             onClick:()=>onEditTx(ev.txId),
                             className:'text-xs text-gray-300 dark:text-gray-600 hover:text-indigo-400 dark:hover:text-indigo-400 transition-colors',
@@ -2008,7 +2035,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
         )
       ),
       h('div',{className:'border-t border-gray-100 dark:border-gray-700'},
-        h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,onDeleteTx,embedded:true})
+        h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,onUpdTx,onDeleteTx,embedded:true})
       )
     ),
     fabOpen&&h('div',{className:'fixed inset-0 z-30',onClick:()=>setFabOpen(false)}),
