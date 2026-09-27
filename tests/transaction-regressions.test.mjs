@@ -158,3 +158,36 @@ test('残高編集では空欄を保存できず、0円は保存できる', () =
   saveZero.props.onClick();
   assert.equal(updated.balance, 0);
 });
+
+test('定期取引の確定額はその回だけ予測に反映され、概算にも戻せる', () => {
+  const app = appContext();
+  const date = app.evaluate('todayStr()');
+  const nextDate = app.evaluate('fmt(addMonths(todayD(),1))');
+  const tx = { id: 'card', label: 'クレカ引落', type: 'expense', amount: 50000, recurring: true, frequency: 'monthly', startDate: date, overrides: {} };
+  app.context.testTx = tx;
+  app.context.testDate = date;
+  const confirmed = app.evaluate('setOccurrenceAmount(testTx,testDate,37240)');
+  assert.equal(confirmed.amount, 50000);
+  assert.equal(confirmed.overrides[date], 37240);
+  app.context.confirmedTx = confirmed;
+  const events = app.evaluate('expandRec(confirmedTx,todayD(),addMonths(todayD(),1),new Set()).map(event=>({date:fmt(event.date),amt:event.amt}))');
+  assert.equal(events[0].amt, -37240);
+  assert.equal(events.find(event => event.date === nextDate)?.amt, -50000);
+  const restored = app.evaluate('setOccurrenceAmount(confirmedTx,testDate,null)');
+  assert.equal(restored.overrides[date], undefined);
+  assert.equal(tx.overrides[date], undefined);
+});
+
+test('直近予定から定期取引の金額確定を開始できる', () => {
+  const app = appContext();
+  const date = app.evaluate('todayStr()');
+  const tx = { id: 'card', label: 'クレカ引落', type: 'expense', amount: 50000, recurring: true, frequency: 'monthly', startDate: date, overrides: {} };
+  app.context.testTx = tx;
+  const render = () => { app.resetHooks(); return app.evaluate('UpcomingPayments({txs:[testTx],accounts:[],skippedKeys:new Set(),onUpdTx:()=>{}})'); };
+  const button = findElement(render(), node => node.type === 'button' && node.props.children.includes('金額確定'));
+  assert.ok(button);
+  button.props.onClick();
+  const dialog = findNode(render(), 'ConfirmAmountDialog');
+  assert.ok(dialog);
+  assert.equal(dialog.props.date, date);
+});

@@ -736,6 +736,45 @@ function parseJpAmt(s){
   return null;
 }
 
+function setOccurrenceAmount(tx,date,amount){
+  const overrides={...(tx.overrides||{})};
+  if(amount===null) delete overrides[date];
+  else overrides[date]=amount;
+  return {...tx,overrides};
+}
+
+function ConfirmAmountDialog({tx,date,onSave,onClose}){
+  const confirmed=tx.overrides?.[date]!==undefined;
+  const [amount,setAmount]=useState(String(confirmed?tx.overrides[date]:tx.amount));
+  const [error,setError]=useState('');
+  useEffect(()=>{const onKey=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);},[onClose]);
+  function save(e){
+    e.preventDefault();
+    const parsed=parseJpAmt(amount);
+    if(!Number.isSafeInteger(parsed)||parsed<=0){setError('1円以上の金額を入力してください');return;}
+    onSave(setOccurrenceAmount(tx,date,parsed));
+  }
+  return h('div',{className:'fixed inset-0 z-[310] bg-black/60 flex items-center justify-center px-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
+    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'confirm-amount-title',className:'w-full max-w-sm rounded-2xl bg-white dark:bg-gray-900 p-5 shadow-2xl'},
+      h('h3',{id:'confirm-amount-title',className:'text-lg font-semibold text-gray-900 dark:text-white'},confirmed?'確定額を修正':'この回の金額を確定'),
+      h('p',{className:'mt-1 text-sm text-gray-600 dark:text-gray-300'},`${tx.label} ・ ${fmtDisp(date)}`),
+      h('p',{className:'mt-3 rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-2 text-sm text-gray-600 dark:text-gray-300'},`通常の予定額 ¥${Number(tx.amount).toLocaleString()}`),
+      h('form',{onSubmit:save},
+        h('label',{className:'mt-4 block text-sm font-semibold text-gray-800 dark:text-gray-100',htmlFor:'confirmed-amount'},'今回の確定額'),
+        h('div',{className:'mt-1 flex items-center gap-2'},
+          h('span',{className:'text-gray-500'},'¥'),
+          h('input',{id:'confirmed-amount',type:'text',inputMode:'decimal',autoFocus:true,value:amount,onChange:e=>{setAmount(e.target.value);setError('');},className:'w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-right text-lg font-semibold text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500'})),
+        error&&h('p',{role:'alert',className:'mt-2 text-sm text-rose-600'},error),
+        h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400'},'この日付だけを変更します。翌月以降の予定額は変わりません。'),
+        h('div',{className:'mt-5 flex flex-wrap justify-end gap-2'},
+          confirmed&&h('button',{type:'button',onClick:()=>onSave(setOccurrenceAmount(tx,date,null)),className:'mr-auto rounded-xl px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30'},'概算に戻す'),
+          h('button',{type:'button',onClick:onClose,className:'rounded-xl border border-gray-200 dark:border-gray-600 px-3 py-2 text-sm text-gray-600 dark:text-gray-300'},'キャンセル'),
+          h('button',{type:'submit',className:'rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'},'確定額を保存'))
+      )
+    )
+  );
+}
+
 // ─── Transaction Manager ──────────────────────────────
 function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',fromAccountId:'',toAccountId:'',overrides:{},recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
@@ -746,6 +785,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   const [sugs,setSugs]=useState([]);
   const [showSugs,setShowSugs]=useState(false);
   const [confirmTarget,setConfirmTarget]=useState(null);
+  const [amountTarget,setAmountTarget]=useState(null);
   const [searchText,setSearchText]=useState('');
   const [filterType,setFilterType]=useState('all');
   const [filterRecurring,setFilterRecurring]=useState('all');
@@ -871,6 +911,11 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   },[txs]);
 
   return h('div',{className:'space-y-6'},
+    amountTarget&&txs.find(tx=>tx.id===amountTarget.txId)&&h(ConfirmAmountDialog,{
+      tx:txs.find(tx=>tx.id===amountTarget.txId),date:amountTarget.date,
+      onSave:updated=>{onChange(txs.map(tx=>tx.id===updated.id?updated:tx));addToast&&addToast('この回の金額を更新しました');setAmountTarget(null);},
+      onClose:()=>setAmountTarget(null)
+    }),
     confirmTarget&&h(ConfirmDialog,{
       title:'取引を削除',
       message:`「${confirmTarget.label}」を削除しますか？この操作は取り消せません。`,
@@ -1081,9 +1126,9 @@ h('div',{className:'flex justify-end pb-1'},
               h('p',{className:`font-bold whitespace-nowrap ${tx.type==='income'?'text-emerald-600':tx.type==='transfer'?'text-purple-600':'text-rose-500'}`},`${tx.type==='income'?'+':tx.type==='transfer'?'':'-'}¥${tx.amount.toLocaleString()}`),
               tx.recurring&&h('p',{className:'text-[11px] text-indigo-500 dark:text-indigo-400 whitespace-nowrap'},nextDate?'次回 '+fmtDisp(nextDate):'終了済み')
             ),
-            h('div',{className:'flex items-center justify-between mt-3'},
+            h('div',{className:'flex flex-wrap items-center justify-between gap-2 mt-3'},
               h('span',{className:'text-xs px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-300 rounded-full'},tx.type==='income'?'収入':tx.type==='transfer'?'振替':tx.category||'支出'),
-              h('div',{className:'flex gap-2'},h('button',{onClick:()=>startEdit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},'編集'),h('button',{onClick:()=>confirmDelete(tx),className:'rounded-lg px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400'},'削除'))
+              h('div',{className:'flex flex-wrap justify-end gap-2'},nextDate&&h('button',{onClick:()=>setAmountTarget({txId:tx.id,date:nextDate}),className:'rounded-lg border border-amber-200 dark:border-amber-800 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300'},tx.overrides?.[nextDate]!==undefined?'確定額を修正':'次回を確定'),h('button',{onClick:()=>startEdit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},'編集'),h('button',{onClick:()=>confirmDelete(tx),className:'rounded-lg px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400'},'削除'))
             )
           );
         })
@@ -1132,6 +1177,7 @@ h('div',{className:'flex justify-end pb-1'},
                 h('td',{className:'px-4 py-3 text-gray-500 dark:text-gray-400 text-xs'},tx.recurring?h('div',null,h('p',{className:nextDate?'text-gray-700 dark:text-gray-200':'text-gray-400'},nextDate?fmtDisp(nextDate):'終了済み'),h('p',{className:'text-[11px] text-gray-400 mt-0.5'},tx.endDate?'〜 '+fmtDisp(tx.endDate):'終了日なし')):fmtDisp(tx.startDate)),
                 h('td',{className:'px-4 py-3'},
                   h('div',{className:'flex gap-3 justify-end'},
+                    nextDate&&h('button',{onClick:()=>setAmountTarget({txId:tx.id,date:nextDate}),className:'rounded-lg border border-amber-200 dark:border-amber-800 px-3 py-1.5 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 text-xs font-semibold whitespace-nowrap'},tx.overrides?.[nextDate]!==undefined?'確定額を修正':'次回を確定'),
                     h('button',{onClick:()=>startEdit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 text-xs font-semibold'},'編集'),
                     h('button',{onClick:()=>confirmDelete(tx),className:'rounded-lg px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-xs font-medium'},'削除')
                   )
@@ -1936,7 +1982,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
           )
         )
       ),
-      h(UpcomingPayments,{txs,accounts,skippedKeys,onSkip:(!isPast&&onSkip)?onSkip:undefined,onDeleteTx})
+      h(UpcomingPayments,{txs,accounts,skippedKeys,onSkip:(!isPast&&onSkip)?onSkip:undefined,onDeleteTx,onUpdTx:!isPast?onUpdTx:undefined})
     ),
     h('details',{className:cardCls+' overflow-hidden group'},
       h('summary',{className:'flex cursor-pointer list-none items-center justify-between px-5 py-4 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800'},
@@ -2010,10 +2056,11 @@ function SyncStatus({status,onRetry}){
 }
 
 // ─── Upcoming Payments ────────────────────────────────
-function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
+function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx,onUpdTx}){
   const today=todayD();
   const end30=addDays(today,30);
   const [deleteTarget,setDeleteTarget]=useState(null);
+  const [amountTarget,setAmountTarget]=useState(null);
   const accMap={};
   accounts.forEach(a=>{accMap[a.id]=a;});
   const events=[];
@@ -2021,7 +2068,8 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
     if(tx.type==='transfer') return;
     if(tx.recurring){
       expandRec(tx,today,end30,skippedKeys).forEach(e=>{
-        events.push({date:fmt(e.date),label:tx.label,amount:Math.abs(e.amt),type:tx.type,daysLeft:Math.round((e.date-today)/86400000),txId:tx.id,recurring:true});
+        const date=fmt(e.date);
+        events.push({date,label:tx.label,amount:Math.abs(e.amt),type:tx.type,daysLeft:Math.round((e.date-today)/86400000),txId:tx.id,recurring:true,confirmed:tx.overrides?.[date]!==undefined});
       });
     } else {
       const d=sod(parseISO(tx.startDate));
@@ -2033,6 +2081,11 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
   events.sort((a,b)=>a.date.localeCompare(b.date));
   if(!events.length) return null;
   return h('div',{className:cardCls+' p-5'},
+    amountTarget&&txs.find(tx=>tx.id===amountTarget.txId)&&h(ConfirmAmountDialog,{
+      tx:txs.find(tx=>tx.id===amountTarget.txId),date:amountTarget.date,
+      onSave:updated=>{onUpdTx(updated);setAmountTarget(null);},
+      onClose:()=>setAmountTarget(null)
+    }),
     deleteTarget&&h(ConfirmDialog,{
       title:'取引を削除',
       message:deleteTarget.recurring
@@ -2055,18 +2108,23 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
     ),
     h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},
       events.slice(0,6).map((ev,i)=>
-        h('div',{key:i,className:'flex items-center gap-3 py-2.5'},
+        h('div',{key:i,className:'flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2.5'},
           h('div',{className:`w-11 text-center flex-shrink-0 rounded-lg py-1 ${ev.daysLeft===0?'bg-amber-100 dark:bg-amber-900/40':'bg-gray-50 dark:bg-gray-700/50'}`},
             h('div',{className:`text-base font-bold leading-none tabular-nums ${ev.daysLeft===0?'text-amber-600 dark:text-amber-400':'text-gray-600 dark:text-gray-300'}`},ev.daysLeft===0?'今日':ev.daysLeft),
             ev.daysLeft>0&&h('div',{className:'text-xs text-gray-400 dark:text-gray-500 mt-0.5'},'日後')
           ),
           h('div',{className:'flex-1 min-w-0'},
             h('p',{className:'text-sm font-medium text-gray-800 dark:text-gray-200 truncate'},ev.label),
-            h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-0.5'},ev.date.slice(5).replace('-','/'))
+            h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mt-0.5'},ev.date.slice(5).replace('-','/'),ev.recurring&&h('span',{className:`ml-1.5 ${ev.confirmed?'text-amber-600 dark:text-amber-400':'text-gray-400'}`},ev.confirmed?'確定額':'概算'))
           ),
-          h('div',{className:`text-sm font-bold tabular-nums ${ev.type==='income'?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},
+          h('div',{className:`text-sm font-bold tabular-nums whitespace-nowrap ${ev.type==='income'?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},
             `${ev.type==='income'?'+':'-'}¥${ev.amount.toLocaleString()}`),
-          (onSkip||onDeleteTx)&&h('div',{className:'flex gap-1 flex-shrink-0'},
+          (onSkip||onDeleteTx||onUpdTx)&&h('div',{className:'flex w-full sm:w-auto justify-end gap-1 flex-shrink-0'},
+            onUpdTx&&ev.recurring&&h('button',{
+              onClick:()=>setAmountTarget(ev),
+              className:'text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1.5 py-0.5 rounded whitespace-nowrap',
+              title:'今回だけ予定額を確定額に変更'
+            },ev.confirmed?'修正':'金額確定'),
             onSkip&&h('button',{
               onClick:()=>onSkip(`${ev.txId}_${ev.date}`),
               className:'text-xs text-gray-400 dark:text-gray-500 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors px-1.5 py-0.5 rounded hover:bg-emerald-50 dark:hover:bg-emerald-900/20 whitespace-nowrap',
