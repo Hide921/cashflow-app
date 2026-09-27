@@ -2451,6 +2451,38 @@ function InvestmentView({data,onReload,onStocksChange}){
   );
 }
 
+const LS_INVESTMENT_MODE='cf_investment_mode';
+function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
+  const [mode,setMode]=useState(()=>new URLSearchParams(window.location.search).get('investment')==='summary'?'summary':localStorage.getItem(LS_INVESTMENT_MODE)||'full');
+  function changeMode(next){setMode(next);localStorage.setItem(LS_INVESTMENT_MODE,next);if(next==='summary')onReload&&onReload();}
+  useEffect(()=>{
+    const receive=e=>{
+      if(e.origin!==window.location.origin||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
+      onEmbeddedChange&&onEmbeddedChange({stocks:e.data.stocks,log:e.data.log,collateral:e.data.collateral});
+    };
+    window.addEventListener('message',receive);
+    return()=>window.removeEventListener('message',receive);
+  },[onEmbeddedChange]);
+  return h('div',{className:'space-y-4'},
+    h('div',{className:'flex flex-wrap items-center justify-between gap-3'},
+      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資管理'),h('p',{className:'text-sm text-gray-400 mt-1'},mode==='full'?'株式管理アプリの全機能をこの画面で利用できます':'資産全体をシンプルに確認できます')),
+      h('div',{className:'inline-flex rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1'},
+        h('button',{onClick:()=>changeMode('summary'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='summary'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'概要'),
+        h('button',{onClick:()=>changeMode('full'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='full'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'完全管理')
+      )
+    ),
+    mode==='summary'
+      ?h(InvestmentView,{data,onReload,onStocksChange})
+      :h('section',{className:'rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden shadow-sm'},
+        h('div',{className:'flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-800'},
+          h('div',null,h('p',{className:'text-sm font-semibold text-gray-700 dark:text-gray-200'},'株式ポートフォリオ完全版'),h('p',{className:'text-xs text-gray-400 mt-0.5'},'候補・売買履歴・SBI取込・リバランス・担保金・分析に対応')),
+          h('a',{href:`/investment-full.html?api=${encodeURIComponent(INVESTMENT_API)}`,target:'_blank',rel:'noopener noreferrer',className:'text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white'},'別画面で開く ↗')
+        ),
+        h('iframe',{title:'株式ポートフォリオ完全管理',src:`/investment-full.html?api=${encodeURIComponent(INVESTMENT_API)}`,className:'block w-full h-[calc(100vh-12rem)] min-h-[720px] border-0 bg-[#f5f5f3]',loading:'eager'})
+      )
+  );
+}
+
 function AppNavigation({active,onChange}){
   const icons={
     home:[h('path',{key:'p1',d:'M3 10.5 12 3l9 7.5'}),h('path',{key:'p2',d:'M5 9.5V21h14V9.5'}),h('path',{key:'p3',d:'M9 21v-7h6v7'})],
@@ -2627,6 +2659,12 @@ function App(){
     retryRef.current=save;
     save();
   }
+  function applyEmbeddedInvestmentData(next){
+    if(!next||!Array.isArray(next.stocks))return;
+    const merged={stocks:next.stocks,log:Array.isArray(next.log)?next.log:investmentData.log||[],collateral:Array.isArray(next.collateral)?next.collateral:investmentData.collateral||[]};
+    setInvestmentData(current=>({...current,...merged,loading:false,error:''}));
+    writeLocalCache('investmentData',merged);
+  }
   function handleSkip(key){
     const next=skippedOccurrences.includes(key)?skippedOccurrences:[...skippedOccurrences,key];
     setSkippedOccurrences(next);
@@ -2718,7 +2756,7 @@ function App(){
       }),
       activeView==='transactions'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),h(TxManager,{accounts,txs,onChange:updTxs,addToast})),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
-      activeView==='investments'&&h(InvestmentView,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks}),
+      activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,onChange:updLoans,addToast})),
       activeView==='analysis'&&h(AnalysisView,{txs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
     ),
