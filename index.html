@@ -31,6 +31,7 @@ const { useState, useEffect, useMemo, useRef, createElement: h } = React;
 function sod(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
 function parseISO(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
 function fmt(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function validTxDate(value){ return /^\d{4}-\d{2}-\d{2}$/.test(value||'')&&fmt(parseISO(value))===value; }
 const DOW=['日','月','火','水','木','金','土'];
 function fmtDisp(s){ const [y,m,d]=s.split('-'); const dt=new Date(Number(y),Number(m)-1,Number(d)); return `${y}/${m}/${d}(${DOW[dt.getDay()]})`; }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
@@ -83,8 +84,21 @@ const INVESTMENT_FULL_URL=window.location.hostname.endsWith('github.io')?'./publ
 const INVESTMENT_LOCAL_ONLY=new URLSearchParams(window.location.search).get('local-only')==='1';
 const INVESTMENT_FULL_SRC=`${INVESTMENT_FULL_URL}?api=${encodeURIComponent(INVESTMENT_API)}${INVESTMENT_LOCAL_ONLY?'&local-only=1':''}`;
 const LS_CACHE_PREFIX='cf_cache_v2:';
+const LS_PENDING='cf_pending_v1';
 function readLocalCache(){
   try{return JSON.parse(localStorage.getItem(LS_CACHE_PREFIX+'legacy')||'{}');}catch{return {};}
+}
+function readPending(){
+  try{return JSON.parse(localStorage.getItem(LS_PENDING)||'{}')||{};}catch{return {};}
+}
+function markPending(key,value){
+  localStorage.setItem(LS_PENDING,JSON.stringify({...readPending(),[key]:value}));
+}
+function clearPendingIfCurrent(key,value){
+  const pending=readPending();
+  if(JSON.stringify(pending[key])!==JSON.stringify(value))return;
+  delete pending[key];
+  localStorage.setItem(LS_PENDING,JSON.stringify(pending));
 }
 function writeLocalCache(key,value){
   const cache=readLocalCache();
@@ -710,7 +724,7 @@ function parseJpAmt(s){
 }
 
 // ─── Transaction Manager ──────────────────────────────
-function TxManager({ accounts, txs, onChange, addToast }){
+function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',fromAccountId:'',toAccountId:'',overrides:{},recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
@@ -779,6 +793,8 @@ function TxManager({ accounts, txs, onChange, addToast }){
     } else {
       if(!form.accountId){setErr('口座を選択してください');return;}
     }
+    if(!validTxDate(form.startDate)){setErr('有効な日付を入力してください');return;}
+    if(form.recurring&&form.endDate&&(!validTxDate(form.endDate)||form.endDate<form.startDate)){setErr('終了日は開始日以降にしてください');return;}
     setErr('');
     const tx={...form,amount:parsedAmt,endDate:form.endDate||null};
     if(editId){
@@ -796,7 +812,7 @@ function TxManager({ accounts, txs, onChange, addToast }){
   function confirmDelete(tx){ setConfirmTarget(tx); }
   function doDelete(){
     if(!confirmTarget) return;
-    onChange(txs.filter(t=>t.id!==confirmTarget.id));
+    onDelete(confirmTarget.id);
     addToast&&addToast(`「${confirmTarget.label}」を削除しました`);
     setConfirmTarget(null);
   }
@@ -1476,6 +1492,8 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
     if(!isTransfer&&!form.label.trim()){setErr('名前を入力してください');return;}
     const amt=parseJpAmt(form.amount);
     if(!amt||amt<=0){setErr('金額を入力してください');return;}
+    if(!validTxDate(form.startDate)){setErr('有効な日付を入力してください');return;}
+    if(form.recurring&&form.endDate&&(!validTxDate(form.endDate)||form.endDate<form.startDate)){setErr('終了日は開始日以降にしてください');return;}
     if(isTransfer){
       if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
       if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
@@ -1953,7 +1971,7 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx}){
       });
     } else {
       const d=sod(parseISO(tx.startDate));
-      if(!isBefore(d,today)&&!isAfter(d,end30)){
+      if(!isBefore(d,today)&&!isAfter(d,end30)&&(!skippedKeys||!skippedKeys.has(`${tx.id}_${fmt(d)}`))){
         events.push({date:fmt(d),label:tx.label,amount:tx.amount,type:tx.type,daysLeft:Math.round((d-today)/86400000),txId:tx.id,recurring:false});
       }
     }
@@ -2521,8 +2539,10 @@ function App(){
   const [activeView,setActiveView]=useState('home');
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [toasts,setToasts]=useState([]);
-  const txSaveQueue=useRef(Promise.resolve());
+  const saveQueues=useRef({});
   const retryRef=useRef(null);
+  const hydratedRef=useRef(false);
+  const loadFailedRef=useRef(false);
   const investmentDirtyRef=useRef(false);
 
   function addToast(message,type='success'){
@@ -2536,16 +2556,19 @@ function App(){
     async function hydrate(){
       setLoading(true);
       const cache=readLocalCache();
+      const pending=readPending();
+      const pendingOr=(key,fallback)=>Object.prototype.hasOwnProperty.call(pending,key)?pending[key]:fallback;
       try{
         const data=await loadAllData();
         if(!alive)return;
+        loadFailedRef.current=false;
         const legacySkipped=(()=>{try{return JSON.parse(localStorage.getItem(LS_SKIPPED)||'[]');}catch{return [];}})();
-        const a=data.accounts??cache.accounts??[];
-        const t=data.transactions??cache.transactions??[];
-        const l=data.loans??cache.loans??[];
-        const b=data.budgets??cache.budgets??{};
-        const s=data.skipped??cache.skipped??legacySkipped;
-        const p={...DEFAULT_PREFS,...(data.preferences??cache.preferences??{})};
+        const a=pendingOr('accounts',data.accounts??cache.accounts??[]);
+        const t=pendingOr('transactions',data.transactions??cache.transactions??[]);
+        const l=pendingOr('loans',data.loans??cache.loans??[]);
+        const b=pendingOr('budgets',data.budgets??cache.budgets??{});
+        const s=pendingOr('skipped',data.skipped??cache.skipped??legacySkipped);
+        const p={...DEFAULT_PREFS,...pendingOr('preferences',data.preferences??cache.preferences??{})};
         setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
         DATA_KEYS.forEach(k=>writeLocalCache(k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p}[k]));
         try{
@@ -2560,11 +2583,18 @@ function App(){
         setSyncStatus({state:'synced',message:'クラウドと同期済み'});
       }catch(e){
         if(!alive)return;
-        setAccounts(cache.accounts||[]);setTxs(cache.transactions||[]);setLoans(cache.loans||[]);setBudgets(cache.budgets||{});setSkippedOccurrences(cache.skipped||[]);setPreferences({...DEFAULT_PREFS,...(cache.preferences||{})});
+        loadFailedRef.current=true;
+        setAccounts(pendingOr('accounts',cache.accounts||[]));setTxs(pendingOr('transactions',cache.transactions||[]));setLoans(pendingOr('loans',cache.loans||[]));setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
         const saved=cache.investmentData||{stocks:[],log:[],collateral:[]};
         setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         setSyncStatus({state:navigator.onLine?'error':'offline',message:`ローカルデータを表示中: ${e.message}`});
-      }finally{if(alive)setLoading(false);}
+      }finally{
+        if(alive){
+          hydratedRef.current=true;
+          setLoading(false);
+          if(navigator.onLine&&Object.keys(readPending()).length)syncAll();
+        }
+      }
     }
     hydrate();
     return()=>{alive=false;};
@@ -2604,24 +2634,35 @@ function App(){
     if(parts.length){new Notification('資金管理のお知らせ',{body:parts.join('／')});localStorage.setItem(stamp,'1');}
   },[accounts,txs,preferences,skippedOccurrences]);
 
+  function savePendingKey(key,value){
+    const task=(saveQueues.current[key]||Promise.resolve()).then(()=>_sbSet(key,value));
+    saveQueues.current[key]=task.catch(()=>{});
+    return task.then(()=>{clearPendingIfCurrent(key,value);});
+  }
   function persist(key,value){
     writeLocalCache(key,value);
-    if(!navigator.onLine){setSyncStatus({state:'offline',message:'変更は端末に保存され、オンライン復帰時に同期されます'});retryRef.current=syncAll;return;}
+    markPending(key,value);
+    retryRef.current=syncAll;
+    if(!navigator.onLine){setSyncStatus({state:'offline',message:'変更は端末に保存され、オンライン復帰時に同期されます'});return;}
     setSyncStatus({state:'saving',message:'クラウドへ保存しています'});
-    const save=()=>_sbSet(key,value);
-    const task=key==='transactions'?txSaveQueue.current.then(save):save();
-    if(key==='transactions')txSaveQueue.current=task.catch(()=>{});
-    retryRef.current=()=>persist(key,value);
-    task.then(()=>setSyncStatus({state:'synced',message:`${new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} に同期済み`}))
+    savePendingKey(key,value)
+      .then(()=>{if(!Object.keys(readPending()).length)setSyncStatus({state:'synced',message:`${new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} に同期済み`});})
       .catch(e=>{setSyncStatus({state:'error',message:e.message});addToast('同期に失敗しました。端末には保存されています','error');});
   }
   async function syncAll(){
-    if(!navigator.onLine){setSyncStatus({state:'offline',message:'オフラインです'});return;}
+    if(!navigator.onLine||!hydratedRef.current){setSyncStatus({state:'offline',message:'オフラインです。変更は端末に保存されています'});return;}
     setSyncStatus({state:'saving',message:'すべてのデータを同期しています'});
     try{
-      const tasks=[_sbSet('accounts',accounts),_sbSet('transactions',txs),_sbSet('loans',loans),_sbSet('budgets',budgets),_sbSet('skipped',skippedOccurrences),_sbSet('preferences',preferences)];
+      await Promise.all(Object.values(saveQueues.current));
+      const tasks=Object.entries(readPending()).map(([key,value])=>savePendingKey(key,value));
       if(investmentDirtyRef.current)tasks.push(_sbSet('sp_stocks',canonicalInvestmentStocks(investmentData.stocks||[])).then(()=>{investmentDirtyRef.current=false;}));
       await Promise.all(tasks);
+      if(Object.keys(readPending()).length)throw new Error('未同期の変更が残っています');
+      if(loadFailedRef.current){
+        await loadAllData();
+        window.location.reload();
+        return;
+      }
       setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
     }catch(e){setSyncStatus({state:'error',message:e.message});addToast('再同期に失敗しました','error');}
   }
@@ -2756,7 +2797,7 @@ function App(){
         onDeleteTx:deleteTx,
         investmentData
       }),
-      activeView==='transactions'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),h(TxManager,{accounts,txs,onChange:updTxs,addToast})),
+      activeView==='transactions'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),h(TxManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,onChange:updLoans,addToast})),
