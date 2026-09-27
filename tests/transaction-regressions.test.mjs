@@ -59,6 +59,13 @@ function findNode(node, name) {
   return findNode(node.props?.children, name);
 }
 
+function findElement(node, predicate) {
+  if (Array.isArray(node)) return node.map(child => findElement(child, predicate)).find(Boolean);
+  if (!node || typeof node !== 'object') return null;
+  if (predicate(node)) return node;
+  return findElement(node.props?.children, predicate);
+}
+
 test('未同期の削除は再読込時にクラウドの古い取引で復活しない', async () => {
   const old = { id: 'old', label: '古い取引', type: 'expense', amount: 100, startDate: '2026-09-27' };
   const cloud = { accounts: [], transactions: [old], skipped: [] };
@@ -123,4 +130,31 @@ test('空欄や存在しない日付を拒否する', () => {
   assert.equal(app.evaluate('validTxDate("2026-09-27")'), true);
   assert.equal(app.evaluate('validTxDate("")'), false);
   assert.equal(app.evaluate('validTxDate("2026-02-30")'), false);
+});
+
+test('残高編集では空欄を保存できず、0円は保存できる', () => {
+  const app = appContext();
+  const account = { id: 'account', name: 'テスト口座', balance: 1000, color: '#6366f1' };
+  let updated;
+  app.context.testAccount = account;
+  app.context.onUpdAcc = item => { updated = item; };
+  const render = () => {
+    app.resetHooks();
+    return app.evaluate('Dashboard({accounts:[testAccount],txs:[],loans:[],dark:false,onAddTx:null,onUpdAcc,onUpdTx:null,onNavigate:null,skippedOccurrences:[],onSkip:null,onRestore:null,onDeleteTx:null,investmentData:null})');
+  };
+  const edit = findElement(render(), node => node.type === 'button' && node.props.children.includes('残高を編集'));
+  assert.ok(edit);
+  edit.props.onClick();
+  const input = findElement(render(), node => node.type === 'input' && node.props['aria-label'] === 'テスト口座の現在残高');
+  assert.ok(input);
+  input.props.onChange({ target: { value: '' } });
+  const saveEmpty = findElement(render(), node => node.type === 'button' && node.props.children.includes('保存'));
+  assert.equal(saveEmpty.props.disabled, true);
+  saveEmpty.props.onClick();
+  assert.equal(updated, undefined);
+  findElement(render(), node => node.type === 'input' && node.props['aria-label'] === 'テスト口座の現在残高').props.onChange({ target: { value: '0' } });
+  const saveZero = findElement(render(), node => node.type === 'button' && node.props.children.includes('保存'));
+  assert.equal(saveZero.props.disabled, false);
+  saveZero.props.onClick();
+  assert.equal(updated.balance, 0);
 });
