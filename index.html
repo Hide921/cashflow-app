@@ -618,6 +618,7 @@ function AccountManager({ accounts, onChange, addToast }){
   const DEF={name:'',bankName:'',balance:'',color:COLORS[0]};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
+  const [showForm,setShowForm]=useState(accounts.length===0);
   const [err,setErr]=useState('');
   const [confirmTarget,setConfirmTarget]=useState(null);
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
@@ -625,9 +626,9 @@ function AccountManager({ accounts, onChange, addToast }){
   function submit(e){
     e.preventDefault();
     if(!form.name.trim()){setErr('口座名を入力してください');return;}
-    if(form.balance===''){setErr('残高を入力してください');return;}
+    if(form.balance===''||!Number.isFinite(Number(form.balance))){setErr('有効な残高を入力してください');return;}
     setErr('');
-    const item={...form,balance:Number(form.balance)};
+    const item={...form,name:form.name.trim(),bankName:form.bankName.trim(),balance:Number(form.balance)};
     if(editId){
       onChange(accounts.map(a=>{
         if(a.id!==editId) return a;
@@ -642,10 +643,12 @@ function AccountManager({ accounts, onChange, addToast }){
       addToast&&addToast('口座を追加しました');
     }
     setForm(DEF);
+    setShowForm(false);
   }
 
-  function startEdit(a){ setEditId(a.id); setForm({name:a.name,bankName:a.bankName,balance:String(a.balance),color:a.color}); }
-  function cancel(){ setEditId(null); setForm(DEF); setErr(''); }
+  function startEdit(a){ setEditId(a.id); setForm({name:a.name||'',bankName:a.bankName||'',balance:String(a.balance),color:a.color||COLORS[0]});setErr('');setShowForm(true);window.scrollTo({top:0,behavior:'smooth'}); }
+  function cancel(){ setEditId(null); setForm(DEF); setErr('');setShowForm(false); }
+  function openAdd(){setEditId(null);setForm(DEF);setErr('');setShowForm(true);}
 
   function confirmDelete(a){ setConfirmTarget(a); }
   function doDelete(){
@@ -662,12 +665,18 @@ function AccountManager({ accounts, onChange, addToast }){
       onConfirm:doDelete,
       onCancel:()=>setConfirmTarget(null)
     }),
-    h('div',{className:cardCls+' p-5'},
-      h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-4'},editId?'口座を編集':'口座を追加'),
-      h('form',{onSubmit:submit,className:'grid grid-cols-1 sm:grid-cols-2 gap-3'},
+    h('div',{className:cardCls+' p-4 sm:p-5'},
+      h('div',{className:'flex items-center justify-between gap-3 flex-wrap'},
+        h('div',null,
+          h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100'},editId?'口座を編集':'口座を登録'),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'現在残高を起点に、残高表の予測を作成します')
+        ),
+        !showForm&&h('button',{type:'button',onClick:openAdd,className:'rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2.5 text-sm font-semibold'},'＋ 口座を登録')
+      ),
+      showForm&&h('form',{onSubmit:submit,className:'grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700'},
         h('div',null,
           h('label',{htmlFor:'account-name',className:labelCls},'口座名 *'),
-          h('input',{id:'account-name',className:inputCls,placeholder:'例: 普通預金',value:form.name,onChange:e=>sf('name',e.target.value)})
+          h('input',{id:'account-name',autoFocus:true,className:inputCls,placeholder:'例: 生活費用口座',value:form.name,onChange:e=>sf('name',e.target.value)})
         ),
         h('div',null,
           h('label',{htmlFor:'account-bank',className:labelCls},'銀行名'),
@@ -675,20 +684,22 @@ function AccountManager({ accounts, onChange, addToast }){
         ),
         h('div',null,
           h('label',{htmlFor:'account-balance',className:labelCls},'現在残高 (円) *'),
-          h('input',{id:'account-balance',type:'number',className:inputCls,placeholder:'0',value:form.balance,onChange:e=>sf('balance',e.target.value)})
+          h('input',{id:'account-balance',type:'number',inputMode:'decimal',className:inputCls,placeholder:'0',value:form.balance,onChange:e=>sf('balance',e.target.value)}),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'今日時点の残高。あとから編集できます')
         ),
         h('div',null,
           h('label',{className:labelCls},'カラー'),
           h('div',{className:'flex gap-2 flex-wrap pt-1'},
             COLORS.map(c=>h('button',{key:c,type:'button',onClick:()=>sf('color',c),
-              className:`w-7 h-7 rounded-full border-2 transition-all ${form.color===c?'border-gray-900 dark:border-white scale-110':'border-transparent hover:scale-105'}`,
+              'aria-label':`表示色 ${c}`,'aria-pressed':form.color===c,
+              className:`w-9 h-9 rounded-full border-2 transition-all ${form.color===c?'border-gray-900 dark:border-white scale-110':'border-transparent hover:scale-105'}`,
               style:{backgroundColor:c}}))
           )
         ),
-        err&&h('p',{className:'sm:col-span-2 text-red-500 dark:text-red-400 text-sm'},err),
-        h('div',{className:'sm:col-span-2 flex gap-2'},
-          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'更新':'追加'),
-          editId&&h('button',{type:'button',onClick:cancel,className:'border border-gray-200 dark:border-gray-600 px-5 py-2.5 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
+        err&&h('p',{role:'alert',className:'sm:col-span-2 text-red-600 dark:text-red-400 text-sm font-medium'},err),
+        h('div',{className:'sm:col-span-2 flex gap-2 pt-1'},
+          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'変更を保存':'口座を登録'),
+          h('button',{type:'button',onClick:cancel,className:'border border-gray-200 dark:border-gray-600 px-5 py-2.5 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
         )
       )
     ),
@@ -784,7 +795,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
 
   function submit(e){
     e.preventDefault();
-    if(!form.label.trim()){setErr('名前を入力してください');return;}
+    if(form.type!=='transfer'&&!form.label.trim()){setErr('名前を入力してください');return;}
     const parsedAmt=parseJpAmt(form.amount);
     if(!parsedAmt||parsedAmt<=0){setErr('金額を入力してください');return;}
     if(form.type==='transfer'){
@@ -796,7 +807,8 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     if(!validTxDate(form.startDate)){setErr('有効な日付を入力してください');return;}
     if(form.recurring&&form.endDate&&(!validTxDate(form.endDate)||form.endDate<form.startDate)){setErr('終了日は開始日以降にしてください');return;}
     setErr('');
-    const tx={...form,amount:parsedAmt,endDate:form.endDate||null};
+    const original=editId?txs.find(t=>t.id===editId):null;
+    const tx={...form,label:form.type==='transfer'?(original?.type==='transfer'?original.label:'資金振替'):form.label.trim(),amount:parsedAmt,endDate:form.endDate||null};
     if(editId){
       onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t));
       setEditId(null);
@@ -819,7 +831,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
 
   function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); setShowForm(true); }
   function cancel(){ setEditId(null); setForm(DEF); setErr(''); setShowForm(false); }
-  function openAddForm(){ setEditId(null); setForm(DEF); setErr(''); setShowForm(true); }
+  function openAddForm(){ setEditId(null); setForm({...DEF,accountId:accounts[0]?.id||'',fromAccountId:accounts[0]?.id||'',toAccountId:accounts[1]?.id||''}); setErr(''); setShowForm(true); }
 
   const dateCls='border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm flex-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-400';
 
@@ -865,13 +877,25 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     showForm&&h('div',{className:'fixed inset-0 bg-black/60 dark:bg-black/80 flex items-center justify-center z-[300] px-4',onClick:e=>{if(e.target===e.currentTarget)cancel();}},
       h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'tx-form-title',className:'bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden',style:{maxHeight:'88vh'}},
         h('div',{className:'flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex-shrink-0'},
-          h('h3',{id:'tx-form-title',className:'text-base font-semibold text-gray-800 dark:text-gray-100'},editId?'取引を編集':'取引を追加'),
+          h('div',null,
+            h('h3',{id:'tx-form-title',className:'text-lg font-semibold text-gray-800 dark:text-gray-100'},editId?'取引を編集':'取引を登録'),
+            h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'金額・口座・日付を入力。定期取引もここで設定できます'),
+            err&&h('p',{role:'alert',className:'text-sm font-medium text-red-600 dark:text-red-400 mt-2'},err)
+          ),
           h('button',{onClick:cancel,'aria-label':'取引フォームを閉じる',className:'w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 text-xl leading-none'},'✕')
         ),
         h('div',{className:'overflow-y-auto p-5'},
           accounts.length===0&&h('p',{className:'text-amber-600 dark:text-amber-400 text-sm mb-3'},'先に「口座管理」タブで口座を追加してください'),
-          h('form',{onSubmit:submit,className:'grid grid-cols-2 gap-3'},
-        h('div',{className:'col-span-2 relative'},
+          h('form',{onSubmit:submit,className:'grid grid-cols-1 sm:grid-cols-2 gap-4'},
+        h('div',{className:'sm:col-span-2'},
+          h('p',{className:labelCls},'種別'),
+          h('div',{className:'grid grid-cols-3 gap-1.5 rounded-xl bg-gray-100 dark:bg-gray-800 p-1'},
+            [['expense','支出'],['income','収入'],['transfer','振替']].map(([t,label])=>
+              h('button',{key:t,type:'button',onClick:()=>{sf('type',t);setErr('');},'aria-pressed':form.type===t,
+                className:`min-h-10 rounded-lg text-sm font-semibold transition-colors ${form.type===t?'bg-white dark:bg-gray-700 text-indigo-700 dark:text-indigo-300 shadow-sm':'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'}`},label))
+          )
+        ),
+        form.type!=='transfer'&&h('div',{className:'sm:col-span-2 relative'},
           h('label',{htmlFor:'tx-label',className:labelCls},'名前 *'),
           h('input',{id:'tx-label',className:inputCls,placeholder:'例: 月給、家賃',value:form.label,autoComplete:'off',
             onChange:e=>handleLabelChange(e.target.value),
@@ -888,16 +912,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
             ))
           )
         ),
-        h('div',null,
-          h('label',{className:labelCls},'種別'),
-          h('div',{className:'flex gap-2'},
-            [['income','収入','bg-emerald-500 border-emerald-500'],['expense','支出','bg-red-500 border-red-500'],['transfer','振替','bg-purple-500 border-purple-500']].map(([t,label,sel])=>
-              h('button',{key:t,type:'button',onClick:()=>sf('type',t),
-                className:`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.type===t?sel+' text-white border-transparent':'text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'}`},
-              label))
-          )
-        ),
-        h('div',null,
+        h('div',{className:'sm:col-span-2'},
           h('label',{htmlFor:'tx-amount',className:labelCls},'金額 (円) *'),
           h('input',{id:'tx-amount',type:'text',inputMode:'numeric',className:inputCls,placeholder:'例: 50000 / 5万 / 12.5万',value:form.amount,
             onChange:e=>sf('amount',e.target.value),
@@ -906,7 +921,8 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
           (()=>{ const p=parseJpAmt(form.amount); return p!==null&&String(p)!==form.amount&&h('p',{className:'text-xs text-indigo-500 dark:text-indigo-400 mt-1'},`→ ¥${p.toLocaleString()}`); })()
         ),
         form.type==='transfer'
-          ? h('div',{className:'col-span-2 grid grid-cols-2 gap-3'},
+          ? h('div',{className:'sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3'},
+              accounts.length<2&&h('p',{className:'sm:col-span-2 text-xs text-amber-700 dark:text-amber-300'},'振替には異なる口座が2つ必要です'),
               h('div',null,
                 h('label',{htmlFor:'tx-from-account',className:labelCls},'振替元口座 *'),
                 h('select',{id:'tx-from-account',className:selectCls,value:form.fromAccountId,onChange:e=>sf('fromAccountId',e.target.value)},
@@ -933,11 +949,24 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
                   CATS.map(c=>h('option',{key:c},c)))
               )
             ),
-        h('div',{className:'col-span-2 flex items-center gap-2'},
-          h('input',{type:'checkbox',id:'tx-rec',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'w-4 h-4 accent-indigo-600 rounded cursor-pointer'}),
-          h('label',{htmlFor:'tx-rec',className:'text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none'},'定期取引')
+        h('div',{className:'sm:col-span-2'},
+          h('label',{htmlFor:'tx-start-date',className:labelCls},form.recurring?'開始日 *':'日付 *'),
+          h('input',{id:'tx-start-date',type:'date',className:inputCls,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
         ),
-        form.recurring&&h('div',{className:'col-span-2 flex items-center gap-2 flex-wrap'},
+        h('div',{className:'sm:col-span-2 flex items-center gap-2'},
+          h('input',{type:'checkbox',id:'tx-rec',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'w-4 h-4 accent-indigo-600 rounded cursor-pointer'}),
+          h('label',{htmlFor:'tx-rec',className:'text-sm font-medium text-gray-700 dark:text-gray-200 cursor-pointer select-none'},'定期取引として繰り返す')
+        ),
+        form.recurring&&h('div',null,
+          h('label',{htmlFor:'tx-frequency',className:labelCls},'頻度'),
+          h('select',{id:'tx-frequency',className:selectCls,value:form.frequency,onChange:e=>sf('frequency',e.target.value)},
+            Object.entries(FREQS).map(([v,l])=>h('option',{key:v,value:v},l)))
+        ),
+        form.recurring&&h('div',null,
+          h('label',{htmlFor:'tx-end-date',className:labelCls},'終了日（任意）'),
+          h('input',{id:'tx-end-date',type:'date',className:inputCls,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
+        ),
+        form.recurring&&h('div',{className:'sm:col-span-2 flex items-center gap-2 flex-wrap'},
           h('label',{className:'text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap'},'土日祝の調整'),
           h('div',{className:'flex gap-1'},
             [['','調整なし'],['prev','前営業日'],['next','翌営業日']].map(([val,label])=>
@@ -950,14 +979,16 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
         form.recurring&&(()=>{
           const occs=getOccurrences(form);
           const estAmt=parseJpAmt(form.amount)||0;
-          return h('div',{className:'col-span-2 border border-amber-200 dark:border-amber-800/60 rounded-lg p-3 bg-amber-50 dark:bg-amber-900/10'},
+          return h('details',{className:'sm:col-span-2 border border-amber-200 dark:border-amber-800/60 rounded-lg p-3 bg-amber-50 dark:bg-amber-900/10'},
+            h('summary',{className:'cursor-pointer text-sm font-medium text-amber-800 dark:text-amber-300'},`確定金額を設定（${Object.keys(form.overrides||{}).length}件）`),
+            h('div',{className:'pt-3'},
             h('div',{className:'flex items-center justify-between mb-1'},
               h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-300'},'確定金額の上書き'),
               Object.keys(form.overrides||{}).length>0&&h('span',{className:'text-xs bg-amber-200 dark:bg-amber-800/60 text-amber-700 dark:text-amber-300 rounded-full px-2 py-0.5'},`${Object.keys(form.overrides).length}件確定済`)
             ),
             h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-2.5'},'各回の金額欄に入力すると概算を上書き。空欄は概算額を使用します。'),
             occs.length===0&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500 italic'},'開始日を設定すると予定一覧が表示されます'),
-            occs.length>0&&h('div',{className:'space-y-1 max-h-52 overflow-y-auto pr-0.5'},
+            occs.length>0&&h('div',{className:'space-y-1 max-h-52 overflow-x-auto overflow-y-auto pr-0.5'},
               h('div',{className:'grid text-xs text-gray-400 dark:text-gray-500 px-2 pb-1',style:{gridTemplateColumns:'7rem 1fr 7.5rem 3rem'}},
                 h('span',null,'日付'),h('span',{className:'text-right'},'概算'),h('span',{className:'text-right'},'確定金額'),h('span',null)
               ),
@@ -980,24 +1011,11 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
                 );
               })
             )
+            )
           );
         })(),
-        form.recurring&&h('div',null,
-          h('label',{htmlFor:'tx-frequency',className:labelCls},'頻度'),
-          h('select',{id:'tx-frequency',className:selectCls,value:form.frequency,onChange:e=>sf('frequency',e.target.value)},
-            Object.entries(FREQS).map(([v,l])=>h('option',{key:v,value:v},l)))
-        ),
-        h('div',null,
-          h('label',{htmlFor:'tx-start-date',className:labelCls},form.recurring?'開始日':'日付'),
-          h('input',{id:'tx-start-date',type:'date',className:inputCls,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
-        ),
-        form.recurring&&h('div',null,
-          h('label',{htmlFor:'tx-end-date',className:labelCls},'終了日（任意）'),
-          h('input',{id:'tx-end-date',type:'date',className:inputCls,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
-        ),
-        err&&h('p',{className:'col-span-2 text-red-500 dark:text-red-400 text-sm'},err),
-        h('div',{className:'col-span-2 flex gap-2'},
-          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'更新':'追加'),
+        h('div',{className:'sm:col-span-2 sticky bottom-0 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-700 pt-3 pb-1 flex gap-2'},
+          h('button',{type:'submit',className:'bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-gray-700 dark:hover:bg-gray-100 transition-colors shadow-sm'},editId?'変更を保存':'取引を登録'),
           h('button',{type:'button',onClick:cancel,className:'border border-gray-200 dark:border-gray-600 px-5 py-2.5 rounded-xl text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors'},'キャンセル')
         )
       )
@@ -1505,97 +1523,103 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
     if(isTransfer){
       if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
       if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
-      onSave({id:editTx?.id||genId(),label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
+      onSave({id:editTx?.id||genId(),label:editTx?.type==='transfer'?editTx.label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     } else {
       if(!form.accountId){setErr('口座を選択してください');return;}
       onSave({id:editTx?.id||genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     }
   }
   const inp=`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${dark?'bg-gray-800 border-gray-600 text-gray-100':'bg-white border-gray-300 text-gray-900'}`;
-  const lbl='block text-xs text-gray-500 mb-1';
+  const lbl='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1.5';
+  const parsedPreview=parseJpAmt(form.amount);
   return h('div',{className:'fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
-    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'quick-add-title',className:`rounded-2xl shadow-xl w-full max-w-sm p-5 overflow-y-auto ${dark?'bg-gray-900':'bg-white'}`,style:{maxHeight:'90vh'}},
-      h('div',{className:'flex items-center justify-between mb-4'},
-        h('h3',{id:'quick-add-title',className:`text-base font-semibold ${dark?'text-gray-100':'text-gray-800'}`},editTx?'取引を編集':'取引を追加'),
+    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'quick-add-title',className:`rounded-2xl shadow-xl w-full max-w-md p-4 sm:p-5 overflow-y-auto ${dark?'bg-gray-900':'bg-white'}`,style:{maxHeight:'90vh'}},
+      h('div',{className:'flex items-start justify-between mb-4'},
+        h('div',null,
+          h('h3',{id:'quick-add-title',className:`text-lg font-semibold ${dark?'text-gray-100':'text-gray-800'}`},editTx?'取引を編集':'取引を登録'),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'種別・金額・口座・日付を入力してください')
+        ),
         h('button',{onClick:onClose,'aria-label':'取引追加を閉じる',className:'text-gray-400 hover:text-gray-600 text-xl leading-none'},'✕')
       ),
-      h('form',{onSubmit:submit,className:'space-y-3'},
+      h('form',{onSubmit:submit,className:'space-y-4'},
+        accounts.length===0&&h('p',{className:'rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-800 dark:text-amber-200'},'取引を登録する前に、口座画面で口座を登録してください'),
+        h('div',null,
+          h('p',{className:lbl},'種別'),
+          h('div',{className:'grid grid-cols-3 gap-1.5 rounded-xl bg-gray-100 dark:bg-gray-800 p-1'},
+            [['expense','支出'],['income','収入'],['transfer','振替']].map(([t,l])=>
+              h('button',{key:t,type:'button',onClick:()=>{sf('type',t);setErr('');},'aria-pressed':form.type===t,
+                className:`min-h-10 rounded-lg text-sm font-semibold transition-colors ${form.type===t?'bg-white dark:bg-gray-700 text-indigo-700 dark:text-indigo-300 shadow-sm':'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'}`
+              },l)
+            )
+          )
+        ),
         !isTransfer&&h('div',null,
           h('label',{htmlFor:'quick-label',className:lbl},'名前 *'),
           h('input',{id:'quick-label',autoFocus:true,className:inp,placeholder:'例: 食費、給与、口座振替',value:form.label,onChange:e=>sf('label',e.target.value)})
         ),
-        h('div',{className:'flex gap-1.5'},
-          [['income','収入','bg-emerald-500 border-emerald-500'],['expense','支出','bg-rose-500 border-rose-500'],['transfer','資金振替','bg-purple-500 border-purple-500']].map(([t,l,activeC])=>
-            h('button',{key:t,type:'button',onClick:()=>sf('type',t),
-              className:`flex-1 py-1.5 rounded-lg text-sm font-medium border transition-colors ${form.type===t?activeC+' text-white':(dark?'text-gray-400 border-gray-600 hover:bg-gray-800':'text-gray-600 border-gray-300 hover:bg-gray-50')}`
-            },l)
-          )
-        ),
         h('div',null,
           h('label',{htmlFor:'quick-amount',className:lbl},'金額 (円) *'),
-          h('input',{id:'quick-amount',type:'text',inputMode:'numeric',className:inp,placeholder:'例: 50000 / 5万',value:form.amount,onChange:e=>sf('amount',e.target.value)})
+          h('input',{id:'quick-amount',type:'text',inputMode:'decimal',className:inp,placeholder:'例: 50000 / 5万',value:form.amount,onChange:e=>sf('amount',e.target.value)}),
+          parsedPreview!==null&&form.amount.trim()&&h('p',{className:'text-xs font-medium text-indigo-600 dark:text-indigo-300 mt-1'},`入力金額: ¥${parsedPreview.toLocaleString()}`)
         ),
         isTransfer
           ? h('div',{className:'space-y-2'},
+              accounts.length<2&&h('p',{className:'text-xs text-amber-700 dark:text-amber-300'},'振替には異なる口座が2つ必要です'),
               h('div',null,
-                h('label',{className:lbl},'振替元口座 *'),
-                h('select',{className:inp,value:form.fromAccountId,onChange:e=>sf('fromAccountId',e.target.value)},
+                h('label',{htmlFor:'quick-from-account',className:lbl},'振替元口座 *'),
+                h('select',{id:'quick-from-account',className:inp,value:form.fromAccountId,onChange:e=>sf('fromAccountId',e.target.value)},
                   accounts.map(a=>h('option',{key:a.id,value:a.id},a.name)))
               ),
               h('div',null,
-                h('label',{className:lbl},'振替先口座 *'),
-                h('select',{className:inp,value:form.toAccountId,onChange:e=>sf('toAccountId',e.target.value)},
+                h('label',{htmlFor:'quick-to-account',className:lbl},'振替先口座 *'),
+                h('select',{id:'quick-to-account',className:inp,value:form.toAccountId,onChange:e=>sf('toAccountId',e.target.value)},
                   accounts.map(a=>h('option',{key:a.id,value:a.id},a.name)))
               )
             )
           : h('div',{className:'grid grid-cols-2 gap-2'},
               h('div',null,
-                h('label',{className:lbl},'口座 *'),
-                h('select',{className:inp,value:form.accountId,onChange:e=>sf('accountId',e.target.value)},
+                h('label',{htmlFor:'quick-account',className:lbl},'口座 *'),
+                h('select',{id:'quick-account',className:inp,value:form.accountId,onChange:e=>sf('accountId',e.target.value)},
                   accounts.map(a=>h('option',{key:a.id,value:a.id},a.name)))
               ),
               h('div',null,
-                h('label',{className:lbl},'カテゴリ'),
-                h('select',{className:inp,value:form.category,onChange:e=>sf('category',e.target.value)},
+                h('label',{htmlFor:'quick-category',className:lbl},'カテゴリ'),
+                h('select',{id:'quick-category',className:inp,value:form.category,onChange:e=>sf('category',e.target.value)},
                   CATS.map(c=>h('option',{key:c},c)))
               )
             ),
-        h('label',{htmlFor:'quick-recurring',className:`flex items-center gap-2 py-1 px-3 rounded-lg cursor-pointer ${dark?'bg-gray-800':'bg-gray-50'}`},
+        h('div',null,
+          h('label',{htmlFor:'quick-start-date',className:lbl},form.recurring?'開始日 *':'日付 *'),
+          h('input',{id:'quick-start-date',type:'date',className:inp,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
+        ),
+        h('label',{htmlFor:'quick-recurring',className:`flex items-center gap-3 py-3 px-3 rounded-xl border cursor-pointer ${dark?'bg-gray-800 border-gray-700':'bg-gray-50 border-gray-200'}`},
           h('input',{id:'quick-recurring',type:'checkbox',checked:form.recurring,onChange:e=>sf('recurring',e.target.checked),className:'sr-only'}),
           h('span',{className:`w-9 h-5 rounded-full transition-colors flex items-center px-0.5 ${form.recurring?'bg-indigo-500':'bg-gray-300 dark:bg-gray-600'}`},
             h('span',{className:`w-4 h-4 bg-white rounded-full shadow transition-transform ${form.recurring?'translate-x-4':'translate-x-0'}`})
           ),
-          h('span',{className:'text-sm text-gray-600 dark:text-gray-300 select-none'},'定期取引')
+          h('span',{className:'text-sm font-medium text-gray-700 dark:text-gray-200 select-none'},'定期取引として繰り返す')
         ),
-        form.recurring
-          ? h('div',{className:'space-y-2 pl-1'},
+        form.recurring&&h('div',{className:'space-y-3 pl-1'},
               h('div',null,
                 h('label',{className:lbl},'頻度'),
                 h('div',{className:'flex gap-1.5 flex-wrap'},
                   Object.entries(FREQS).map(([v,l])=>h('button',{key:v,type:'button',onClick:()=>sf('frequency',v),
+                    'aria-pressed':form.frequency===v,
                     className:`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${form.frequency===v?'bg-indigo-600 text-white border-indigo-600':(dark?'text-gray-400 border-gray-600 hover:bg-gray-700':'text-gray-600 border-gray-200 hover:bg-gray-50')}`
                   },l))
                 )
               ),
-              h('div',{className:'grid grid-cols-2 gap-2'},
-                h('div',null,
-                  h('label',{className:lbl},'開始日'),
-                  h('input',{type:'date',className:inp,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
-                ),
-                h('div',null,
-                  h('label',{className:lbl},'終了日（任意）'),
-                  h('input',{type:'date',className:inp,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
-                )
+              h('div',null,
+                h('label',{htmlFor:'quick-end-date',className:lbl},'終了日（任意）'),
+                h('input',{id:'quick-end-date',type:'date',className:inp,value:form.endDate,onChange:e=>sf('endDate',e.target.value)})
               )
-            )
-          : h('div',null,
-              h('label',{className:lbl},'日付'),
-              h('input',{type:'date',className:inp,value:form.startDate,onChange:e=>sf('startDate',e.target.value)})
             ),
-        err&&h('p',{className:'text-rose-500 text-xs'},err),
-        h('div',{className:'flex gap-2 pt-1'},
-          h('button',{type:'submit',className:'flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-indigo-700'},editTx?'更新':'追加'),
-          h('button',{type:'button',onClick:onClose,className:`flex-1 border py-2 rounded-lg text-sm ${dark?'border-gray-600 text-gray-300 hover:bg-gray-800':'border-gray-300 text-gray-600 hover:bg-gray-50'}`},'キャンセル')
+        h('div',{className:`sticky bottom-0 pt-3 pb-1 border-t ${dark?'bg-gray-900 border-gray-700':'bg-white border-gray-100'}`},
+          err&&h('p',{role:'alert',className:'text-rose-600 dark:text-rose-400 text-sm font-medium mb-2'},err),
+          h('div',{className:'flex gap-2'},
+            h('button',{type:'submit',className:'flex-1 bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-indigo-700'},editTx?'変更を保存':'取引を登録'),
+            h('button',{type:'button',onClick:onClose,className:`flex-1 border py-2 rounded-lg text-sm ${dark?'border-gray-600 text-gray-300 hover:bg-gray-800':'border-gray-300 text-gray-600 hover:bg-gray-50'}`},'キャンセル')
+          )
         )
       )
     )
