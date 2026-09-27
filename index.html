@@ -1653,7 +1653,7 @@ function MonthBreakdownCard({ actual, forecast }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
+function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
   const [pIdx,setPIdx]=useState(4);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
@@ -1711,6 +1711,8 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate
     const latest=[...(investmentData?.log||[])].filter(item=>Number.isFinite(Number(item.total??item.value))).sort((a,b)=>String(a.date).localeCompare(String(b.date))).at(-1);
     return latest?Number(latest.total??latest.value):null;
   },[investmentData]);
+  const totalDebt=(loans||[]).reduce((sum,loan)=>sum+Number(loan.balance||0),0);
+  const netWorth=totalBal+(latestInvestment||0)-totalDebt;
   const monthly=useMemo(()=>{
     let inc=0,exp=0;
     txs.filter(tx=>tx.recurring&&tx.type!=='transfer').forEach(tx=>{
@@ -1749,9 +1751,9 @@ function Dashboard({ accounts, txs, dark, onAddTx, onUpdAcc, onUpdTx, onNavigate
       h('div',{className:'rounded-2xl bg-slate-950 dark:bg-slate-900 text-white p-5 sm:p-7 border border-slate-900 dark:border-slate-700'},
         h('div',{className:'flex items-start justify-between gap-4'},
           h('div',{className:'min-w-0'},
-            h('p',{className:'text-sm font-medium text-slate-400'},'現在の総資産'),
-            h('p',{className:'mt-2 text-[2.35rem] sm:text-5xl font-bold tabular-nums tracking-[-0.04em] leading-none break-words'},`${totalBal<0?'-':''}¥${Math.abs(totalBal).toLocaleString()}`),
-            h('p',{className:'text-xs text-slate-500 mt-3'},`${accounts.length}口座の合計 ・ ${fmtDisp(todayStr())}`)
+            h('p',{className:'text-sm font-medium text-slate-400'},'総純資産'),
+            h('p',{className:'mt-2 text-[2.35rem] sm:text-5xl font-bold tabular-nums tracking-[-0.04em] leading-none break-words'},`${netWorth<0?'-':''}¥${Math.abs(Math.round(netWorth)).toLocaleString()}`),
+            h('p',{className:'text-xs text-slate-500 mt-3'},`現預金 ¥${Math.round(totalBal).toLocaleString()} ＋ 投資 ¥${Math.round(latestInvestment||0).toLocaleString()} − 借入 ¥${Math.round(totalDebt).toLocaleString()}`)
           ),
           h('span',{className:'w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-lg flex-shrink-0'},'¥')
         ),
@@ -2257,7 +2259,11 @@ function investmentTicker(stock){
   if(/^\d{7}$/.test(ticker)) return '0'+ticker+'.T';
   return ticker+'.T';
 }
-function InvestmentView({data,onReload}){
+function canonicalInvestmentStocks(items){
+  return items.map(stock=>({...stock}));
+}
+const EMPTY_INVESTMENT_FORM={market:'JP',tradeType:'spot',accountType:'specific',ticker:'',name:'',sector:'',quantity:'',avgPrice:'',note:''};
+function InvestmentView({data,onReload,onStocksChange}){
   const stocks=data?.stocks||[];
   const collateral=data?.collateral||[];
   const log=data?.log||[];
@@ -2265,6 +2271,11 @@ function InvestmentView({data,onReload}){
   const [usdJpy,setUsdJpy]=useState(150);
   const [priceLoading,setPriceLoading]=useState(false);
   const [priceError,setPriceError]=useState('');
+  const [showEditor,setShowEditor]=useState(false);
+  const [editId,setEditId]=useState(null);
+  const [form,setForm]=useState(EMPTY_INVESTMENT_FORM);
+  const [formError,setFormError]=useState('');
+  const [deleteTarget,setDeleteTarget]=useState(null);
   const signature=useMemo(()=>stocks.map(s=>`${s.id}:${investmentTicker(s)}`).join('|'),[stocks]);
 
   async function refreshPrices(){
@@ -2291,6 +2302,35 @@ function InvestmentView({data,onReload}){
     finally{setPriceLoading(false);}
   }
   useEffect(()=>{refreshPrices();},[signature]);
+
+  function startAdd(){setEditId(null);setForm(EMPTY_INVESTMENT_FORM);setFormError('');setShowEditor(true);}
+  function startEdit(stock){
+    setEditId(stock.id);
+    setForm({market:stock.market||'JP',tradeType:stock.tradeType||'spot',accountType:stock.accountType||'specific',ticker:stock.ticker||'',name:stock.name||'',sector:stock.sector||'',quantity:String(stock.quantity??''),avgPrice:String(stock.avgPrice??''),note:stock.note||''});
+    setFormError('');setShowEditor(true);window.scrollTo({top:0,behavior:'smooth'});
+  }
+  function closeEditor(){setShowEditor(false);setEditId(null);setForm(EMPTY_INVESTMENT_FORM);setFormError('');}
+  function saveHolding(e){
+    e.preventDefault();
+    const ticker=form.ticker.trim().toUpperCase(),name=form.name.trim();
+    const quantity=Number(form.quantity),avgPrice=Number(form.avgPrice);
+    if(!ticker||!name||!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(avgPrice)||avgPrice<=0){setFormError('銘柄コード・名称・数量・平均取得価格を正しく入力してください');return;}
+    const duplicate=stocks.some(stock=>stock.id!==editId&&String(stock.ticker).toUpperCase()===ticker&&stock.market===form.market&&stock.tradeType===form.tradeType&&stock.accountType===form.accountType);
+    if(duplicate){setFormError(`${ticker} は同じ区分ですでに登録されています`);return;}
+    const currency=(form.market==='US'||form.market==='CRYPTO')?'USD':'JPY';
+    const base={ticker,name,market:form.market,tradeType:form.tradeType,accountType:form.accountType,sector:form.sector.trim(),currency,avgCurrency:currency,quantity,avgPrice,note:form.note.trim(),_perKuchi:true};
+    const normalized={...base,yahooTicker:investmentTicker(base)};
+    const next=editId
+      ?stocks.map(stock=>stock.id===editId?{...stock,...normalized}:stock)
+      :[...stocks,{id:genId(),...normalized,currentPrice:avgPrice,prevClose:null,dayChange:null,lastFetched:null,fetchError:null}];
+    onStocksChange&&onStocksChange(canonicalInvestmentStocks(next),editId?'銘柄を更新しました':'銘柄を追加しました');
+    closeEditor();
+  }
+  function deleteHolding(){
+    if(!deleteTarget)return;
+    onStocksChange&&onStocksChange(canonicalInvestmentStocks(stocks.filter(stock=>stock.id!==deleteTarget.id)),`${deleteTarget.ticker} を削除しました`);
+    setDeleteTarget(null);
+  }
 
   const rows=useMemo(()=>stocks.map(stock=>{
     const key=investmentTicker(stock);
@@ -2331,17 +2371,47 @@ function InvestmentView({data,onReload}){
   },[log]);
 
   return h('div',{className:'space-y-5'},
+    deleteTarget&&h(ConfirmDialog,{
+      title:'保有銘柄を削除',
+      message:`「${deleteTarget.name||deleteTarget.ticker}」を削除しますか？株式管理アプリからも削除されます。`,
+      onConfirm:deleteHolding,
+      onCancel:()=>setDeleteTarget(null)
+    }),
     h('div',{className:'flex flex-wrap items-end justify-between gap-3'},
       h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資'),h('p',{className:'text-sm text-gray-400 mt-1'},'株式・投資信託・暗号資産をまとめて確認')),
-      h('div',{className:'flex items-center gap-2'},
+      h('div',{className:'flex flex-wrap items-center gap-2'},
+        h('button',{onClick:startAdd,className:'rounded-xl bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900'},'＋ 銘柄を追加'),
         h('button',{onClick:()=>{onReload&&onReload();refreshPrices();},disabled:priceLoading,className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50'},priceLoading?'更新中…':'価格を更新'),
-        h('a',{href:INVESTMENT_API,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900'},'詳細管理 ↗')
+        h('a',{href:INVESTMENT_API,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300'},'詳細管理 ↗')
       )
     ),
     data?.error&&h('div',{className:'rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700'},data.error),
     priceError&&h('div',{className:'rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700'},priceError+'。保存済みデータを表示しています。'),
+    showEditor&&h('section',{className:cardCls+' p-5 sm:p-6'},
+      h('div',{className:'flex items-start justify-between gap-4 mb-5'},
+        h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},editId?'銘柄を編集':'銘柄を追加'),h('p',{className:'text-xs text-gray-400 mt-1'},'ここでの変更は株式管理アプリにも反映されます。')),
+        h('button',{type:'button',onClick:closeEditor,className:'text-sm text-gray-400 hover:text-gray-700 dark:hover:text-gray-200','aria-label':'閉じる'},'✕')
+      ),
+      h('form',{onSubmit:saveHolding,className:'grid sm:grid-cols-2 lg:grid-cols-4 gap-4'},
+        h('div',null,h('label',{className:labelCls},'資産区分'),h('select',{className:inputCls,value:form.market,onChange:e=>setForm(current=>({...current,market:e.target.value}))},h('option',{value:'JP'},'日本株'),h('option',{value:'US'},'米国株'),h('option',{value:'FUND'},'投資信託'),h('option',{value:'CRYPTO'},'暗号資産'))),
+        h('div',null,h('label',{className:labelCls},'取引区分'),h('select',{className:inputCls,value:form.tradeType,onChange:e=>setForm(current=>({...current,tradeType:e.target.value}))},h('option',{value:'spot'},'現物'),h('option',{value:'margin'},'信用'))),
+        h('div',null,h('label',{className:labelCls},'口座区分'),h('select',{className:inputCls,value:form.accountType,onChange:e=>setForm(current=>({...current,accountType:e.target.value}))},h('option',{value:'specific'},'特定口座'),h('option',{value:'nisa'},'NISA'))),
+        h('div',null,h('label',{className:labelCls},'銘柄コード *'),h('input',{className:inputCls,placeholder:form.market==='JP'?'例: 7203':form.market==='US'?'例: AAPL':'銘柄コード',value:form.ticker,onChange:e=>setForm(current=>({...current,ticker:e.target.value}))})),
+        h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'銘柄名 *'),h('input',{className:inputCls,placeholder:'例: トヨタ自動車',value:form.name,onChange:e=>setForm(current=>({...current,name:e.target.value}))})),
+        h('div',null,h('label',{className:labelCls},form.market==='FUND'?'数量（口） *':'数量 *'),h('input',{type:'number',min:'0',step:'any',className:inputCls,placeholder:'0',value:form.quantity,onChange:e=>setForm(current=>({...current,quantity:e.target.value}))})),
+        h('div',null,h('label',{className:labelCls},form.market==='FUND'?'平均取得価格（1口） *':'平均取得価格 *'),h('input',{type:'number',min:'0',step:'any',className:inputCls,placeholder:'0',value:form.avgPrice,onChange:e=>setForm(current=>({...current,avgPrice:e.target.value}))})),
+        h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'セクター'),h('input',{className:inputCls,placeholder:'例: 自動車・輸送機',value:form.sector,onChange:e=>setForm(current=>({...current,sector:e.target.value}))})),
+        h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'メモ'),h('input',{className:inputCls,placeholder:'任意',value:form.note,onChange:e=>setForm(current=>({...current,note:e.target.value}))})),
+        form.market==='FUND'&&h('p',{className:'sm:col-span-2 lg:col-span-4 text-xs text-gray-400'},'投資信託は保有口数と1口あたりの平均取得価格を入力してください。'),
+        formError&&h('p',{className:'sm:col-span-2 lg:col-span-4 text-sm text-rose-500'},formError),
+        h('div',{className:'sm:col-span-2 lg:col-span-4 flex justify-end gap-2 pt-1'},
+          h('button',{type:'button',onClick:closeEditor,className:'rounded-xl border border-gray-200 dark:border-gray-700 px-4 py-2.5 text-sm font-semibold text-gray-600 dark:text-gray-300'},'キャンセル'),
+          h('button',{type:'submit',className:'rounded-xl bg-slate-900 dark:bg-white px-5 py-2.5 text-sm font-semibold text-white dark:text-slate-900'},editId?'更新する':'追加する')
+        )
+      )
+    ),
     stocks.length===0
-      ?h('section',{className:cardCls+' px-6 py-14 text-center'},h('div',{className:'text-3xl mb-3'},'📈'),h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'保有銘柄がありません'),h('p',{className:'text-sm text-gray-400 mt-1 mb-5'},'株式管理アプリで銘柄を登録すると、ここへ自動で反映されます。'),h('a',{href:INVESTMENT_API,target:'_blank',rel:'noopener noreferrer',className:'inline-flex rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-semibold'},'株式管理を開く ↗'))
+      ?h('section',{className:cardCls+' px-6 py-14 text-center'},h('div',{className:'text-3xl mb-3'},'📈'),h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'保有銘柄がありません'),h('p',{className:'text-sm text-gray-400 mt-1 mb-5'},'最初の銘柄を登録すると、資産全体に自動で反映されます。'),h('button',{onClick:startAdd,className:'inline-flex rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-5 py-2.5 text-sm font-semibold'},'最初の銘柄を追加'))
       :h(React.Fragment,null,
         h('div',{className:'grid grid-cols-2 lg:grid-cols-4 gap-3'},
           [
@@ -2362,14 +2432,18 @@ function InvestmentView({data,onReload}){
         h('section',{className:cardCls+' overflow-hidden'},
           h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between'},h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'保有銘柄'),h('p',{className:'text-xs text-gray-400 mt-1'},`USD/JPY ${usdJpy.toFixed(2)}円`)),priceLoading&&h('span',{className:'text-xs text-gray-400'},'価格取得中…')),
           h('div',{className:'overflow-x-auto'},h('table',{className:'w-full text-sm'},
-            h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs'},h('tr',null,['銘柄','区分','数量','現在値','評価額','損益'].map((label,i)=>h('th',{key:label,className:`px-4 py-3 font-medium whitespace-nowrap ${i>=2?'text-right':'text-left'}`},label)))),
+            h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs'},h('tr',null,['銘柄','区分','数量','現在値','評価額','損益','操作'].map((label,i)=>h('th',{key:label,className:`px-4 py-3 font-medium whitespace-nowrap ${i>=2?'text-right':'text-left'}`},label)))),
             h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},sortedRows.map(row=>h('tr',{key:row.id,className:'hover:bg-gray-50 dark:hover:bg-gray-800/60'},
               h('td',{className:'px-4 py-3 min-w-[170px]'},h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},row.name||row.ticker),h('p',{className:'text-xs text-gray-400 mt-0.5'},row.ticker)),
               h('td',{className:'px-4 py-3 text-xs text-gray-500 whitespace-nowrap'},marketLabel[row.market]||row.market,row.tradeType==='margin'&&h('span',{className:'ml-1 text-amber-600'},'・信用')),
               h('td',{className:'px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums'},Number(row.quantity||0).toLocaleString()),
               h('td',{className:'px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums whitespace-nowrap'},formatPrice(row)),
               h('td',{className:'px-4 py-3 text-right font-semibold text-gray-800 dark:text-gray-100 tabular-nums whitespace-nowrap'},row.price?`¥${Math.round(row.value).toLocaleString()}`:'—'),
-              h('td',{className:`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${row.pl>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'}`},row.price?`${row.pl>=0?'+':'-'}¥${Math.abs(Math.round(row.pl)).toLocaleString()} (${row.plPct>=0?'+':''}${row.plPct.toFixed(1)}%)`:'—')
+              h('td',{className:`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${row.pl>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'}`},row.price?`${row.pl>=0?'+':'-'}¥${Math.abs(Math.round(row.pl)).toLocaleString()} (${row.plPct>=0?'+':''}${row.plPct.toFixed(1)}%)`:'—'),
+              h('td',{className:'px-4 py-3 text-right whitespace-nowrap'},
+                h('button',{onClick:()=>startEdit(row),className:'text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white mr-3'},'編集'),
+                h('button',{onClick:()=>setDeleteTarget(row),className:'text-xs font-semibold text-rose-500 hover:text-rose-700'},'削除')
+              )
             )))
           ))
         )
@@ -2415,6 +2489,7 @@ function App(){
   const [toasts,setToasts]=useState([]);
   const txSaveQueue=useRef(Promise.resolve());
   const retryRef=useRef(null);
+  const investmentDirtyRef=useRef(false);
 
   function addToast(message,type='success'){
     const id=Date.now()+Math.random();
@@ -2510,9 +2585,9 @@ function App(){
     if(!navigator.onLine){setSyncStatus({state:'offline',message:'オフラインです'});return;}
     setSyncStatus({state:'saving',message:'すべてのデータを同期しています'});
     try{
-      await Promise.all([
-        _sbSet('accounts',accounts),_sbSet('transactions',txs),_sbSet('loans',loans),_sbSet('budgets',budgets),_sbSet('skipped',skippedOccurrences),_sbSet('preferences',preferences)
-      ]);
+      const tasks=[_sbSet('accounts',accounts),_sbSet('transactions',txs),_sbSet('loans',loans),_sbSet('budgets',budgets),_sbSet('skipped',skippedOccurrences),_sbSet('preferences',preferences)];
+      if(investmentDirtyRef.current)tasks.push(_sbSet('sp_stocks',canonicalInvestmentStocks(investmentData.stocks||[])).then(()=>{investmentDirtyRef.current=false;}));
+      await Promise.all(tasks);
       setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
     }catch(e){setSyncStatus({state:'error',message:e.message});addToast('再同期に失敗しました','error');}
   }
@@ -2530,6 +2605,27 @@ function App(){
     }catch(e){
       setInvestmentData(current=>({...current,loading:false,error:'投資データを更新できませんでした'}));
     }
+  }
+  function updateInvestmentStocks(next,successMessage){
+    const clean=canonicalInvestmentStocks(next);
+    const cached={stocks:clean,log:investmentData.log||[],collateral:investmentData.collateral||[]};
+    investmentDirtyRef.current=true;
+    setInvestmentData(current=>({...current,stocks:clean,error:''}));
+    writeLocalCache('investmentData',cached);
+    if(!navigator.onLine){
+      setSyncStatus({state:'offline',message:'投資データは端末に保存され、オンライン復帰時に同期されます'});
+      retryRef.current=syncAll;
+      addToast(successMessage+'（端末に保存）');
+      return;
+    }
+    const save=()=>{
+      setSyncStatus({state:'saving',message:'投資データをクラウドへ保存しています'});
+      return _sbSet('sp_stocks',clean)
+        .then(()=>{investmentDirtyRef.current=false;setSyncStatus({state:'synced',message:'投資データを同期済み'});setInvestmentData(current=>({...current,error:''}));addToast(successMessage);})
+        .catch(e=>{setSyncStatus({state:'error',message:e.message});setInvestmentData(current=>({...current,error:'クラウドへの保存に失敗しました。端末には保存されています'}));addToast('投資データの同期に失敗しました','error');});
+    };
+    retryRef.current=save;
+    save();
   }
   function handleSkip(key){
     const next=skippedOccurrences.includes(key)?skippedOccurrences:[...skippedOccurrences,key];
@@ -2609,7 +2705,7 @@ function App(){
       )
     ),
     h('main',{className:'max-w-6xl mx-auto px-3 sm:px-6 py-6 sm:py-9 pb-28'},
-      activeView==='home'&&h(Dashboard,{accounts,txs,dark,
+      activeView==='home'&&h(Dashboard,{accounts,txs,loans,dark,
         onAddTx:tx=>updTxs([...txs,tx]),
         onUpdTx:updated=>{updTxs(txs.map(t=>t.id===updated.id?updated:t));addToast('取引を更新しました');},
         onUpdAcc:updated=>updAcc(accounts.map(a=>a.id===updated.id?updated:a)),
@@ -2622,7 +2718,7 @@ function App(){
       }),
       activeView==='transactions'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),h(TxManager,{accounts,txs,onChange:updTxs,addToast})),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
-      activeView==='investments'&&h(InvestmentView,{data:investmentData,onReload:reloadInvestments}),
+      activeView==='investments'&&h(InvestmentView,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,onChange:updLoans,addToast})),
       activeView==='analysis'&&h(AnalysisView,{txs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
     ),
