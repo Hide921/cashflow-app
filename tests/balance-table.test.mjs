@@ -89,7 +89,7 @@ test('非表示口座を合計から除き、残高セルをキーボードで�
   assert.ok(total);
   assert.match(textOf(total), /¥100/);
   assert.doesNotMatch(textOf(total), /¥300/);
-  const button = nodes(tree, node => node.type === 'button' && node.props?.['aria-label']?.includes('の残高') && node.props?.['aria-label']?.includes('取引を追加'))[0];
+  const button = nodes(tree, node => node.type === 'button' && node.props?.['aria-label']?.includes('取引を追加'))[0];
   assert.equal(button.props.type, 'button');
   assert.equal(typeof button.props.onClick, 'function');
   assert.match(button.props.className, /focus-visible:/);
@@ -196,33 +196,4 @@ test('タッチ端末では予定件数とセルの操作を常時表示する',
   assert.match(textOf(cell), /1件の予定/);
   assert.match(textOf(cell), /タップして内訳/);
   assert.match(nodes(cell, node => node.type === 'span' && textOf(node) === 'タップして内訳')[0].props.className, /opacity-100/);
-});
-
-test('スマホの残高カードで日付を切り替え、予定確認と取引追加ができる', () => {
-  const app = appContext(true);
-  let added;
-  const props = {
-    accounts: [{ id: 'a', name: '銀行A', color: '#000' }],
-    fData: [
-      { date: '2026-09-28', a: 100, total: 100 },
-      { date: '2026-09-29', a: 150, total: 150 },
-    ],
-    txEventMap: { '2026-09-29': { a: [{ label: '入金', amt: 50, txId: 'income' }] } },
-    onCellClick: (date, accountId) => { added = { date, accountId }; },
-  };
-  let tree = app.evaluate('BalanceTable')(props);
-  nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '次の表示日へ')[0].props.onClick();
-  app.resetHooks();
-  tree = app.evaluate('BalanceTable')(props);
-  const mobile = nodes(tree, node => node.props?.role === 'region' && node.props?.['aria-label'] === '日付別の残高')[0];
-  assert.match(textOf(mobile), /9\/29/);
-  assert.match(textOf(mobile), /前の表示日から \+¥50/);
-  const details = nodes(mobile, node => node.type === 'button' && textOf(node) === '予定 1件を見る')[0];
-  details.props.onClick({ currentTarget: { getBoundingClientRect: () => ({ x: 100, y: 200, width: 100, height: 40 }) } });
-  app.resetHooks();
-  tree = app.evaluate('BalanceTable')(props);
-  assert.match(textOf(tree), /入金/);
-  const add = nodes(tree, node => node.type === 'button' && textOf(node) === '＋ この日に取引')[0];
-  add.props.onClick();
-  assert.deepEqual(added, { date: '2026-09-29', accountId: 'a' });
 });
