@@ -1226,6 +1226,24 @@ h('div',{className:'flex justify-end pb-1'},
 }
 
 // ─── Balance Table ────────────────────────────────────
+function buildBalanceTablePeriods(cols, fData, txEventMap){
+  const entries=Object.entries(txEventMap||{}).sort(([a],[b])=>a.localeCompare(b));
+  let eventIndex=0;
+  return cols.map((col,ci)=>{
+    const startDate=ci===0?fData[0].date:fmt(addDays(parseISO(cols[ci-1].date),1));
+    const eventsByAccount={};
+    while(eventIndex<entries.length&&entries[eventIndex][0]<=col.date){
+      const [date,accountEvents]=entries[eventIndex++];
+      if(date<startDate) continue;
+      Object.entries(accountEvents).forEach(([accountId,events])=>{
+        if(!eventsByAccount[accountId]) eventsByAccount[accountId]=[];
+        eventsByAccount[accountId].push(...events.map(event=>({...event,date})));
+      });
+    }
+    return {startDate,eventsByAccount};
+  });
+}
+
 function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds }){
   const [viewMode,setViewMode]=useState('daily');
   const scrollRef=useRef(null);
@@ -1242,6 +1260,8 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
     }
     return fData;
   },[fData,viewMode]);
+  const periods=useMemo(()=>buildBalanceTablePeriods(cols,fData,txEventMap),[cols,fData,txEventMap]);
+  const visibleAccounts=accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id));
   const fmtCol=s=>{
     const [y,mo,d]=s.split('-');
     const dt=new Date(Number(y),Number(mo)-1,Number(d));
@@ -1265,17 +1285,18 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
     const maxTouch=(navigator.maxTouchPoints||0)>0;
     return !!(mqlNoHover||maxTouch);
   },[]);
-  const openTipForCell=(el,evs,date,accountId)=>{
+  const openTipForCell=(el,evs,date,accountId,startDate)=>{
     if(!evs||!evs.length) return;
     const r=el.getBoundingClientRect();
     const vw=window.innerWidth, vh=window.innerHeight;
     const tipW=Math.min(260, vw-16);
-    const estH=44+evs.length*22;
+    const estH=Math.min(44+evs.length*44,vh-16);
     let x=Math.round(r.x+r.width/2-tipW/2);
     x=Math.max(8,Math.min(vw-tipW-8,x));
     let y=r.y-estH-8;
-    if(y<8) y=Math.min(vh-estH-8, r.y+r.height+8);
-    setTip({x,y,width:tipW,items:evs,date,accountId,touch:true});
+    if(y<8) y=Math.min(vh-estH-8,r.y+r.height+8);
+    y=Math.max(8,Math.min(vh-estH-8,y));
+    setTip({x,y,width:tipW,items:evs,date,accountId,startDate,touch:true});
   };
   const scrollDates=direction=>{
     const el=scrollRef.current;
@@ -1289,7 +1310,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
       h('div',{className:'flex items-center gap-2 flex-wrap'},
         h('div',{className:'flex gap-1 rounded-lg bg-gray-100 dark:bg-gray-900 p-0.5','aria-label':'残高表の表示単位'},
           [['daily','日次'],['weekly','週次'],['monthly','月次']].map(([v,l])=>
-            h('button',{key:v,onClick:()=>setViewMode(v),'aria-pressed':viewMode===v,
+            h('button',{key:v,onClick:()=>{setViewMode(v);setTip(null);},'aria-pressed':viewMode===v,
               className:`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode===v?'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`
             },l)
           )
@@ -1312,7 +1333,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
           )
         ),
         h('tbody',null,
-          accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id)).map((a,ai)=>{
+          visibleAccounts.map((a,ai)=>{
             const prev=cols.map(col=>col[a.id]??0);
             const hasNeg=cols.some(col=>(col[a.id]??0)<0);
             const rowBg=ai%2===0?'bg-white dark:bg-gray-800':'bg-gray-50/60 dark:bg-gray-800/40';
@@ -1330,32 +1351,38 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
                 const val=col[a.id]??0;
                 const diff=ci>0?(val-(prev[ci-1]??val)):0;
                 const neg=val<0;
+                const evs=periods[ci].eventsByAccount[a.id];
+                const startDate=periods[ci].startDate;
                 return h('td',{key:col.date,
-                  className:`px-3 py-3 text-right whitespace-nowrap tabular-nums${col.date===todayStr()?' bg-indigo-50/70 dark:bg-indigo-950/20':''}${neg?' bg-red-50 dark:bg-red-950/20':''}${onCellClick?' cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 group':''}`,
-                  onClick:e=>{
-                    const evs=txEventMap?.[col.date]?.[a.id];
-                    if(isTouch && evs?.length){
-                      openTipForCell(e.currentTarget,evs,col.date,a.id);
-                      return;
-                    }
-                    if(onCellClick) onCellClick(col.date,a.id);
-                  },
-                  onMouseEnter:e=>{if(isTouch) return;clearTipTimer();const evs=txEventMap?.[col.date]?.[a.id];if(evs?.length)setTip({x:e.clientX,y:e.clientY,items:evs,date:col.date,accountId:a.id});},
-                  onMouseLeave:()=>{if(!isTouch) startTipClose();}
+                  className:`p-0 text-right whitespace-nowrap tabular-nums${col.date===todayStr()?' bg-indigo-50/70 dark:bg-indigo-950/20':''}${neg?' bg-red-50 dark:bg-red-950/20':''}`
                 },
-                  h('span',{className:`font-semibold ${neg?'text-red-600 dark:text-red-400':'text-gray-800 dark:text-gray-200'}`},`${neg?'-':''}¥${fmtYen(val)}`),
-                  ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500 dark:text-emerald-400':'text-red-400'}`},
-                    `${diff>=0?'+':'-'}${fmtYen(diff)}`),
-                  onCellClick&&h('span',{className:'block text-[10px] text-indigo-400 opacity-0 group-hover:opacity-100 leading-none mt-0.5'},'+取引')
+                  h(onCellClick?'button':'div',{
+                    ...(onCellClick?{
+                      type:'button',
+                      'aria-label':`${fmtDisp(col.date)} ${a.name}の残高 ${neg?'-':''}¥${fmtYen(val)}。${isTouch&&evs?.length?'取引の内訳を表示して追加':'取引を追加'}`,
+                      onClick:e=>{
+                        if(isTouch&&evs?.length){openTipForCell(e.currentTarget,evs,col.date,a.id,startDate);return;}
+                        onCellClick(col.date,a.id);
+                      },
+                      onMouseEnter:e=>{if(isTouch)return;clearTipTimer();if(evs?.length)setTip({x:e.clientX,y:e.clientY,items:evs,date:col.date,accountId:a.id,startDate});},
+                      onMouseLeave:()=>{if(!isTouch)startTipClose();}
+                    }:{}),
+                    className:`block w-full px-3 py-3 text-right group${onCellClick?' cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:-outline-offset-2':''}`
+                  },
+                    h('span',{className:`font-semibold ${neg?'text-red-600 dark:text-red-400':'text-gray-800 dark:text-gray-200'}`},`${neg?'-':''}¥${fmtYen(val)}`),
+                    ci>0&&diff!==0&&h('span',{className:`block text-xs ${diff>=0?'text-emerald-500 dark:text-emerald-400':'text-red-400'}`},
+                      `${diff>=0?'+':'-'}${fmtYen(diff)}`),
+                    onCellClick&&h('span',{className:'block text-[10px] text-indigo-400 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 leading-none mt-0.5'},'+取引')
+                  )
                 );
               })
             );
           }),
           h('tr',{className:'font-bold border-t-2 border-indigo-200 dark:border-indigo-800'},
-            h('td',{className:'px-3 sm:px-4 py-3 whitespace-nowrap border-r border-gray-200 dark:border-gray-700 sticky left-0 z-10 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/30'},'合計'),
+            h('td',{className:'px-3 sm:px-4 py-3 whitespace-nowrap border-r border-gray-200 dark:border-gray-700 sticky left-0 z-10 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/30'},visibleAccounts.length===accounts.length?'合計':'表示口座合計'),
             cols.map((col,ci)=>{
-              const val=col.total??0;
-              const prevVal=ci>0?(cols[ci-1].total??val):val;
+              const val=visibleAccounts.reduce((sum,a)=>sum+(col[a.id]??0),0);
+              const prevVal=ci>0?visibleAccounts.reduce((sum,a)=>sum+(cols[ci-1][a.id]??0),0):val;
               const diff=ci>0?(val-prevVal):0;
               const neg=val<0;
               return h('td',{key:col.date,className:`px-3 py-3 text-right whitespace-nowrap tabular-nums ${neg?'bg-red-100 dark:bg-red-950/20':col.date===todayStr()?'bg-indigo-100 dark:bg-indigo-900/40':'bg-indigo-50 dark:bg-indigo-950/20'}`},
@@ -1374,20 +1401,21 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
     }),
     tip&&h('div',{
       style:tip.touch
-        ?{position:'fixed',left:tip.x,top:tip.y,width:tip.width,zIndex:9999}
-        :{position:'fixed',left:tip.x+12,top:tip.y-8,zIndex:9999,maxWidth:'calc(100vw - 16px)'},
+        ?{position:'fixed',left:tip.x,top:tip.y,width:tip.width,maxHeight:'calc(100vh - 16px)',overflowY:'auto',zIndex:9999}
+        :{position:'fixed',left:tip.x+12,top:tip.y-8,zIndex:9999,maxWidth:'calc(100vw - 16px)',maxHeight:'calc(100vh - 16px)',overflowY:'auto'},
       className:`bg-gray-900 text-white rounded-lg shadow-xl px-3 py-2 ${tip.touch?'text-sm':'text-xs min-w-[180px]'}`,
       onMouseEnter:tip.touch?undefined:clearTipTimer,
       onMouseLeave:tip.touch?undefined:startTipClose,
       onClick:e=>e.stopPropagation()
     },
       tip.touch&&h('div',{className:'flex items-center justify-between gap-3 pb-1.5 mb-1.5 border-b border-gray-700'},
-        h('span',{className:'text-[11px] text-gray-400 font-medium'},fmtDisp(tip.date)),
+        h('span',{className:'text-[11px] text-gray-400 font-medium'},tip.startDate&&tip.startDate!==tip.date?`${fmtDisp(tip.startDate)}〜${fmtDisp(tip.date)}`:fmtDisp(tip.date)),
         h('button',{onClick:()=>setTip(null),className:'text-gray-400 hover:text-white text-base leading-none -mr-1 px-1','aria-label':'閉じる'},'✕')
       ),
+      !tip.touch&&h('div',{className:'text-[11px] text-gray-400 font-medium border-b border-gray-700 pb-1 mb-1'},tip.startDate&&tip.startDate!==tip.date?`${fmtDisp(tip.startDate)}〜${fmtDisp(tip.date)}`:fmtDisp(tip.date)),
       tip.items.map((it,i)=>h('div',{key:i,className:`flex items-center justify-between gap-3 ${tip.touch?'py-1':'py-0.5'}`},
         h('div',{className:'min-w-0 flex-1'},
-          h('div',{className:'text-gray-300 truncate'},it.label),
+          h('div',{className:'text-gray-300 truncate'},viewMode==='daily'?it.label:`${fmtDisp(it.date)} ${it.label}`),
           h('div',{className:it.amt>=0?'text-emerald-400 font-medium whitespace-nowrap':'text-rose-400 font-medium whitespace-nowrap'},
             `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`)
         ),
@@ -1398,7 +1426,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
             title:'この取引を編集'
           },'編集'),
           it.txId&&onSkip&&h('button',{
-            onClick:e=>{e.stopPropagation();onSkip(`${it.txId}_${tip.date}`);setTip(null);},
+            onClick:e=>{e.stopPropagation();onSkip(`${it.txId}_${it.date}`);setTip(null);},
             className:'text-gray-500 hover:text-red-400 transition-colors leading-none flex-shrink-0 px-1',
             title:'この回を残高推移から除外（取引管理には残ります）'
           },'✕')
