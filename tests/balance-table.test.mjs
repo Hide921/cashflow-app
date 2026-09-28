@@ -157,3 +157,43 @@ test('過去期間を開くと今日の列へ移動し、ボタンから戻れ�
   nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '今日へ移動')[0].props.onClick();
   assert.equal(target.left, 800);
 });
+
+test('残高表で口座の表示を切り替え、すべて非表示から復帰できる', () => {
+  const app = appContext();
+  const props = {
+    accounts: [{ id: 'a', name: '銀行A', color: '#000' }],
+    fData: [{ date: '2026-09-28', a: 100, total: 100 }],
+    txEventMap: {},
+    hiddenAccIds: new Set(),
+    onToggleAcc: id => { props.hiddenAccIds = new Set([id]); },
+    onShowAllAccounts: () => { props.hiddenAccIds = new Set(); },
+  };
+  let tree = app.evaluate('BalanceTable')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node).includes('表示口座'))[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  nodes(tree, node => node.type === 'button' && node.props?.['aria-pressed'] === true && textOf(node).includes('銀行A'))[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  assert.match(textOf(tree), /表示口座 0\/1/);
+  assert.match(textOf(tree), /表示する口座がありません/);
+  nodes(tree, node => node.type === 'button' && textOf(node) === 'すべて表示')[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  assert.match(textOf(tree), /表示口座 1\/1/);
+  assert.match(textOf(tree), /¥100/);
+});
+
+test('タッチ端末では予定件数とセルの操作を常時表示する', () => {
+  const app = appContext(true);
+  const tree = app.evaluate('BalanceTable')({
+    accounts: [{ id: 'a', name: '銀行A', color: '#000' }],
+    fData: [{ date: '2026-09-28', a: 100, total: 100 }],
+    txEventMap: { '2026-09-28': { a: [{ label: '家賃', amt: -50, txId: 'rent' }] } },
+    onCellClick: () => {},
+  });
+  const cell = nodes(tree, node => node.type === 'button' && node.props?.['aria-label']?.includes('銀行Aの残高'))[0];
+  assert.match(textOf(cell), /1件の予定/);
+  assert.match(textOf(cell), /タップして内訳/);
+  assert.match(nodes(cell, node => node.type === 'span' && textOf(node) === 'タップして内訳')[0].props.className, /opacity-100/);
+});
