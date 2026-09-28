@@ -252,3 +252,24 @@ test('過去の取引明細には概算ではなく確定額が表示される',
   const list = app.evaluate('buildPastTxList([testTx],addMonths(todayD(),-2),new Set())');
   assert.equal(list.find(item => item.date === date)?.amount, 37240);
 });
+
+test('翌月初の予定が前営業日に移ると前月の予測に含まれる', () => {
+  const app = appContext();
+  app.context.testTx = { id: 'rent', type: 'expense', amount: 100, recurring: true, frequency: 'monthly', startDate: '2026-01-01', adjustBizDay: 'prev' };
+  const dates = app.evaluate('expandRec(testTx,parseISO("2026-10-01"),parseISO("2026-10-31"),new Set()).map(e=>fmt(e.date))');
+  assert.deepEqual(Array.from(dates), ['2026-10-01', '2026-10-30']);
+});
+
+test('次営業日に移った予定を前月の予測へ混ぜない', () => {
+  const app = appContext();
+  app.context.testTx = { id: 'card', type: 'expense', amount: 100, recurring: true, frequency: 'monthly', startDate: '2026-01-31', adjustBizDay: 'next' };
+  const dates = app.evaluate('expandRec(testTx,parseISO("2026-10-01"),parseISO("2026-10-31"),new Set()).map(e=>fmt(e.date))');
+  assert.deepEqual(Array.from(dates), []);
+});
+
+test('数年以上前に開始した毎日の定期取引も現在の期間へ展開する', () => {
+  const app = appContext();
+  app.context.testTx = { id: 'daily', type: 'income', amount: 100, recurring: true, frequency: 'daily', startDate: '2020-01-01' };
+  const dates = app.evaluate('expandRec(testTx,parseISO("2026-09-28"),parseISO("2026-09-30"),new Set()).map(e=>fmt(e.date))');
+  assert.deepEqual(Array.from(dates), ['2026-09-28', '2026-09-29', '2026-09-30']);
+});

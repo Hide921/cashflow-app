@@ -134,9 +134,19 @@ function genId(){ return Date.now().toString(36)+Math.random().toString(36).slic
 function expandRec(tx, startD, endD, skippedKeys){
   const evts=[];
   const base=sod(parseISO(tx.startDate));
-  const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),endD)) : endD;
+  const biz=tx.adjustBizDay;
+  // 前営業日への移動では、期間外の予定日が期間内に繰り上がることがある。
+  const searchEnd=biz==='prev'||biz===true ? addDays(endD,7) : endD;
+  const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),searchEnd)) : searchEnd;
   const overrides=tx.overrides||{};
-  for(let n=0;n<1500;n++){
+  const daysBetween=Math.floor((startD-base)/86400000);
+  const monthsBetween=(startD.getFullYear()-base.getFullYear())*12+startD.getMonth()-base.getMonth();
+  let first=0;
+  if(tx.frequency==='daily') first=Math.max(0,daysBetween-7);
+  else if(tx.frequency==='weekly') first=Math.max(0,Math.floor(daysBetween/7)-2);
+  else if(tx.frequency==='monthly') first=Math.max(0,monthsBetween-2);
+  else if(tx.frequency==='yearly') first=Math.max(0,Math.floor(monthsBetween/12)-2);
+  for(let n=first;n<first+1500;n++){
     let cur;
     if(tx.frequency==='daily') cur=addDays(base,n);
     else if(tx.frequency==='weekly') cur=addDays(base,n*7);
@@ -145,9 +155,8 @@ function expandRec(tx, startD, endD, skippedKeys){
     else break;
     cur=sod(cur);
     if(isAfter(cur,lim)) break;
-    const biz=tx.adjustBizDay;
     const adj=biz==='prev'||biz===true ? sod(prevBizDay(cur)) : biz==='next' ? sod(nextBizDay(cur)) : cur;
-    if(!isBefore(adj,startD)){
+    if(!isBefore(adj,startD)&&!isAfter(adj,endD)){
       const ds=fmt(adj);
       if(!skippedKeys||!skippedKeys.has(`${tx.id}_${ds}`)){
         const raw=overrides[ds]!==undefined ? overrides[ds] : tx.amount;
