@@ -2450,7 +2450,11 @@ function InvestmentView({data,onReload,onStocksChange}){
   const collateral=data?.collateral||[];
   const log=data?.log||[];
   const [quotes,setQuotes]=useState({});
-  const [usdJpy,setUsdJpy]=useState(150);
+  const [fxInfo,setFxInfo]=useState(()=>{
+    const saved=Number(localStorage.getItem('usdjpy_rate'));
+    return {rate:Number.isFinite(saved)&&saved>0?saved:null,checkedAt:null};
+  });
+  const [priceCheckedAt,setPriceCheckedAt]=useState(null);
   const [priceLoading,setPriceLoading]=useState(false);
   const [priceError,setPriceError]=useState('');
   const [showEditor,setShowEditor]=useState(false);
@@ -2461,7 +2465,7 @@ function InvestmentView({data,onReload,onStocksChange}){
   const signature=useMemo(()=>stocks.map(s=>`${s.id}:${investmentTicker(s)}`).join('|'),[stocks]);
 
   async function refreshPrices(){
-    if(!stocks.length){setQuotes({});return;}
+    if(!stocks.length){setQuotes({});setPriceCheckedAt(null);return;}
     setPriceLoading(true);setPriceError('');
     try{
       const tickers=[...new Set([...stocks.map(investmentTicker).filter(Boolean),'USDJPY=X'])];
@@ -2478,8 +2482,9 @@ function InvestmentView({data,onReload,onStocksChange}){
         pending=tickers.filter(ticker=>!Number.isFinite(Number(merged[ticker]?.price))||Number(merged[ticker]?.price)<=0);
       }
       setQuotes(merged);
+      setPriceCheckedAt(new Date().toISOString());
       const rate=Number(merged['USDJPY=X']?.price);
-      if(Number.isFinite(rate)&&rate>0)setUsdJpy(rate);
+      if(Number.isFinite(rate)&&rate>0)setFxInfo({rate,checkedAt:new Date().toISOString()});
     }catch(e){setPriceError('現在価格を取得できませんでした');}
     finally{setPriceLoading(false);}
   }
@@ -2518,30 +2523,33 @@ function InvestmentView({data,onReload,onStocksChange}){
     const key=investmentTicker(stock);
     const quote=quotes[key];
     const divisor=stock.market==='FUND'?10000:1;
-    const price=Number.isFinite(Number(quote?.price))?Number(quote.price)/divisor:Number(stock.currentPrice)||0;
-    const prev=Number.isFinite(Number(quote?.prev_close))?Number(quote.prev_close)/divisor:Number(stock.prevClose)||0;
+    const live=Number(quote?.price)>0;
+    const price=live?Number(quote.price)/divisor:Number(stock.currentPrice)||0;
+    const prev=Number(quote?.prev_close)>0?Number(quote.prev_close)/divisor:Number(stock.prevClose)||0;
     const currency=quote?.currency||stock.currency||(stock.market==='US'||stock.market==='CRYPTO'?'USD':'JPY');
     const avgCurrency=stock.avgCurrency||currency;
-    const fx=currency==='USD'?usdJpy:1;
-    const costFx=avgCurrency==='USD'?usdJpy:1;
-    const value=price*Number(stock.quantity||0)*fx;
-    const cost=Number(stock.avgPrice||0)*Number(stock.quantity||0)*costFx;
-    const pl=value-cost;
-    const day=(price&&prev)?(price-prev)*Number(stock.quantity||0)*fx:0;
-    return {...stock,key,price,prev,currency,value,cost,pl,day,plPct:cost?pl/cost*100:0};
-  }),[stocks,quotes,usdJpy]);
+    const fx=currency==='USD'?fxInfo.rate:1;
+    const costFx=avgCurrency==='USD'?fxInfo.rate:1;
+    const value=price>0&&fx!==null?price*Number(stock.quantity||0)*fx:null;
+    const cost=costFx!==null?Number(stock.avgPrice||0)*Number(stock.quantity||0)*costFx:null;
+    const pl=value!==null&&cost!==null?value-cost:null;
+    const day=price>0&&prev>0&&fx!==null?(price-prev)*Number(stock.quantity||0)*fx:null;
+    return {...stock,key,price,prev,currency,value,cost,pl,day,live:live&&!quote?.stale,priceSource:live?(quote?.stale?'APIキャッシュ':'API'):'保存値',plPct:cost&&pl!==null?pl/cost*100:0};
+  }),[stocks,quotes,fxInfo]);
   const spotRows=rows.filter(row=>row.tradeType!=='margin');
   const marginRows=rows.filter(row=>row.tradeType==='margin');
-  const spotValue=spotRows.reduce((sum,row)=>sum+row.value,0);
-  const spotCost=spotRows.reduce((sum,row)=>sum+row.cost,0);
-  const marginPL=marginRows.reduce((sum,row)=>sum+row.pl,0);
-  const collateralValue=collateral.reduce((sum,item)=>sum+(Number(item.amount)||0)*(item.currency==='USD'?usdJpy:1),0);
+  const spotValue=spotRows.reduce((sum,row)=>sum+(row.value||0),0);
+  const spotCost=spotRows.reduce((sum,row)=>sum+(row.cost||0),0);
+  const marginPL=marginRows.reduce((sum,row)=>sum+(row.pl||0),0);
+  const collateralValue=collateral.reduce((sum,item)=>sum+(Number(item.amount)||0)*(item.currency==='USD'?(fxInfo.rate||0):1),0);
   const latestLog=[...log].sort((a,b)=>String(a.date).localeCompare(String(b.date))).at(-1);
-  const liveReady=rows.some(row=>row.price>0);
-  const totalValue=liveReady?spotValue+collateralValue+marginPL:Number(latestLog?.total??latestLog?.value??collateralValue);
-  const totalPL=spotValue-spotCost;
-  const dayPL=rows.reduce((sum,row)=>sum+row.day,0);
-  const sortedRows=[...rows].sort((a,b)=>b.value-a.value);
+  const missingValue=rows.some(row=>row.value===null||row.pl===null)||collateral.some(item=>item.currency==='USD'&&!fxInfo.rate);
+  const totalValue=missingValue?null:spotValue+collateralValue+marginPL;
+  const totalPL=missingValue?null:spotValue-spotCost;
+  const dayPL=rows.some(row=>row.day===null)?null:rows.reduce((sum,row)=>sum+row.day,0);
+  const approximate=rows.some(row=>!row.live)||rows.some(row=>row.currency==='USD')&&!fxInfo.checkedAt;
+  const checkedTime=value=>value?new Date(value).toLocaleString('ja-JP'):'時刻不明';
+  const sortedRows=[...rows].sort((a,b)=>(b.value||0)-(a.value||0));
   const marketLabel={JP:'日本株',US:'米国株',FUND:'投資信託',CRYPTO:'暗号資産'};
   const formatPrice=row=>row.price?(row.currency==='USD'?`$${row.price.toLocaleString('en-US',{maximumFractionDigits:4})}`:`¥${row.price.toLocaleString('ja-JP',{maximumFractionDigits:4})}`):'—';
   const chartPoints=useMemo(()=>{
@@ -2597,11 +2605,17 @@ function InvestmentView({data,onReload,onStocksChange}){
       :h(React.Fragment,null,
         h('div',{className:'grid grid-cols-2 lg:grid-cols-4 gap-3'},
           [
-            ['投資資産',`¥${Math.round(totalValue).toLocaleString()}`,'text-gray-900 dark:text-gray-100'],
-            ['含み損益',`${totalPL>=0?'+':'-'}¥${Math.abs(Math.round(totalPL)).toLocaleString()}`,totalPL>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'],
-            ['本日損益',`${dayPL>=0?'+':'-'}¥${Math.abs(Math.round(dayPL)).toLocaleString()}`,dayPL>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'],
+            ['投資資産',totalValue===null?'—':`¥${Math.round(totalValue).toLocaleString()}`,'text-gray-900 dark:text-gray-100'],
+            ['含み損益',totalPL===null?'—':`${totalPL>=0?'+':'-'}¥${Math.abs(Math.round(totalPL)).toLocaleString()}`,totalPL>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'],
+            ['本日損益',dayPL===null?'—':`${dayPL>=0?'+':'-'}¥${Math.abs(Math.round(dayPL)).toLocaleString()}`,dayPL>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'],
             ['保有銘柄',`${stocks.length}銘柄`,'text-gray-900 dark:text-gray-100']
           ].map(([label,value,color])=>h('section',{key:label,className:cardCls+' p-4 sm:p-5'},h('p',{className:'text-xs text-gray-400 mb-2'},label),h('p',{className:`text-lg sm:text-2xl font-bold tabular-nums ${color}`},value)))
+        ),
+        h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},
+          approximate?'保存値などを含む概算です。':'API価格による概算です。',
+          ` 価格の確認: ${checkedTime(priceCheckedAt)}。`,
+          ` USD/JPY: ${fxInfo.rate?fxInfo.rate.toFixed(2)+'円':'未取得'}（${fxInfo.checkedAt?'確認 '+checkedTime(fxInfo.checkedAt):'保存値・取得時刻不明'}）。`,
+          missingValue&&'価格または為替がない銘柄は合計を表示していません。'
         ),
         chartPoints&&h('section',{className:cardCls+' p-5'},
           h('div',{className:'flex items-center justify-between mb-4'},h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'資産推移'),h('p',{className:'text-xs text-gray-400 mt-1'},`直近${Math.min(60,log.length)}記録`)),latestLog&&h('span',{className:'text-xs text-gray-400'},latestLog.date)),
@@ -2612,16 +2626,16 @@ function InvestmentView({data,onReload,onStocksChange}){
           )
         ),
         h('section',{className:cardCls+' overflow-hidden'},
-          h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between'},h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'保有銘柄'),h('p',{className:'text-xs text-gray-400 mt-1'},`USD/JPY ${usdJpy.toFixed(2)}円`)),priceLoading&&h('span',{className:'text-xs text-gray-400'},'価格取得中…')),
+          h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between'},h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'保有銘柄'),h('p',{className:'text-xs text-gray-400 mt-1'},`USD/JPY ${fxInfo.rate?fxInfo.rate.toFixed(2)+'円':'未取得'}`)),priceLoading&&h('span',{className:'text-xs text-gray-400'},'価格取得中…')),
           h('div',{className:'overflow-x-auto'},h('table',{className:'w-full text-sm'},
             h('thead',{className:'bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400 text-xs'},h('tr',null,['銘柄','区分','数量','現在値','評価額','損益','操作'].map((label,i)=>h('th',{key:label,className:`px-4 py-3 font-medium whitespace-nowrap ${i>=2?'text-right':'text-left'}`},label)))),
             h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},sortedRows.map(row=>h('tr',{key:row.id,className:'hover:bg-gray-50 dark:hover:bg-gray-800/60'},
               h('td',{className:'px-4 py-3 min-w-[170px]'},h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},row.name||row.ticker),h('p',{className:'text-xs text-gray-400 mt-0.5'},row.ticker)),
               h('td',{className:'px-4 py-3 text-xs text-gray-500 whitespace-nowrap'},marketLabel[row.market]||row.market,row.tradeType==='margin'&&h('span',{className:'ml-1 text-amber-600'},'・信用')),
               h('td',{className:'px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums'},Number(row.quantity||0).toLocaleString()),
-              h('td',{className:'px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums whitespace-nowrap'},formatPrice(row)),
-              h('td',{className:'px-4 py-3 text-right font-semibold text-gray-800 dark:text-gray-100 tabular-nums whitespace-nowrap'},row.price?`¥${Math.round(row.value).toLocaleString()}`:'—'),
-              h('td',{className:`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${row.pl>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'}`},row.price?`${row.pl>=0?'+':'-'}¥${Math.abs(Math.round(row.pl)).toLocaleString()} (${row.plPct>=0?'+':''}${row.plPct.toFixed(1)}%)`:'—'),
+              h('td',{className:'px-4 py-3 text-right text-gray-600 dark:text-gray-300 tabular-nums whitespace-nowrap'},formatPrice(row),h('div',{className:`text-[11px] ${row.live?'text-gray-400':'text-amber-600 dark:text-amber-400'}`},row.live?`API確認 ${checkedTime(priceCheckedAt)}`:row.priceSource==='APIキャッシュ'?`概算・APIキャッシュ ${checkedTime(priceCheckedAt)}`:`概算・保存値 ${checkedTime(row.lastFetched)}`)),
+              h('td',{className:'px-4 py-3 text-right font-semibold text-gray-800 dark:text-gray-100 tabular-nums whitespace-nowrap'},row.value!==null?`¥${Math.round(row.value).toLocaleString()}`:'—'),
+              h('td',{className:`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${row.pl===null||row.pl>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'}`},row.pl!==null?`${row.pl>=0?'+':'-'}¥${Math.abs(Math.round(row.pl)).toLocaleString()} (${row.plPct>=0?'+':''}${row.plPct.toFixed(1)}%)`:'—'),
               h('td',{className:'px-4 py-3 text-right whitespace-nowrap'},
                 h('button',{onClick:()=>startEdit(row),className:'text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white mr-3'},'編集'),
                 h('button',{onClick:()=>setDeleteTarget(row),className:'text-xs font-semibold text-rose-500 hover:text-rose-700'},'削除')

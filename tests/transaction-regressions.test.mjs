@@ -309,3 +309,12 @@ test('オフラインの投資銘柄編集は再読込後も残り、オンラ�
   assert.equal(cloud.sp_stocks[0].id, 'new');
   assert.deepEqual(JSON.parse(second.storage.get('cf_pending_v1')), {});
 });
+
+test('概要は為替未取得時に仮の150円で米国株を評価しない', () => {
+  const app = appContext();
+  const stock = { id: 'us', ticker: 'AAPL', market: 'US', tradeType: 'spot', currency: 'USD', quantity: 10, avgPrice: 100, currentPrice: 120 };
+  app.context.testStock = stock;
+  const view = app.evaluate('InvestmentView({data:{stocks:[testStock],log:[],collateral:[]}})');
+  assert.ok(findElement(view, node => node.type === 'p' && node.props.children.some(child => typeof child === 'string' && child.includes('USD/JPY: 未取得'))));
+  assert.ok(findElement(view, node => node.type === 'p' && node.props.children.includes('価格または為替がない銘柄は合計を表示していません。')));
+});
