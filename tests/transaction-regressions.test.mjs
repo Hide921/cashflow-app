@@ -10,7 +10,7 @@ assert.ok(start >= 0 && end > start);
 const source = html.slice(html.indexOf('>', start) + 1, end)
   .replace(/ReactDOM\.createRoot[\s\S]*$/, '');
 
-function appContext(cloud = {}, storage = new Map()) {
+function appContext(cloud = {}, storage = new Map(), options = {}) {
   const state = [];
   const refs = [];
   const effects = [];
@@ -33,7 +33,7 @@ function appContext(cloud = {}, storage = new Map()) {
   };
   const localStorage = {
     getItem: key => storage.has(key) ? storage.get(key) : null,
-    setItem: (key, value) => storage.set(key, String(value)),
+    setItem: (key, value) => { if (options.failLocalSet || (options.failCacheSet && key === 'cf_cache_v2:legacy')) throw new Error('保存領域が利用できません'); storage.set(key, String(value)); },
   };
   const listeners = new Map();
   const supabase = {
@@ -308,6 +308,61 @@ test('オフラインの投資銘柄編集は再読込後も残り、オンラ�
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(cloud.sp_stocks[0].id, 'new');
   assert.deepEqual(JSON.parse(second.storage.get('cf_pending_v1')), {});
+});
+
+test('端末保存が失敗しても警告し、オンライン復帰時にメモリ内の変更を同期する', async () => {
+  const cloud = { accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} };
+  const app = appContext(cloud, new Map(), { failLocalSet: true });
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.resetHooks();
+  const dashboard = findNode(app.evaluate('App()'), 'Dashboard');
+  app.context.navigator.onLine = false;
+  dashboard.props.onAddTx({ id: 'offline', label: '予定', type: 'expense', amount: 100 });
+  assert.equal(cloud.transactions.length, 0);
+  app.resetHooks();
+  assert.ok(findElement(app.evaluate('App()'), node => node.props?.role === 'alert'));
+  app.effects[2]();
+  app.context.navigator.onLine = true;
+  app.listeners.get('online')();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(cloud.transactions[0].id, 'offline');
+});
+
+test('端末キャッシュだけが失敗したら、クラウド保存後も再読込用の変更を保持する', async () => {
+  const cloud = { accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} };
+  const app = appContext(cloud, new Map(), { failCacheSet: true });
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.resetHooks();
+  findNode(app.evaluate('App()'), 'Dashboard').props.onAddTx({ id: 'cached', label: '予定' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(cloud.transactions[0].id, 'cached');
+  assert.equal(JSON.parse(app.storage.get('cf_pending_v1')).transactions[0].id, 'cached');
+  app.resetHooks();
+  assert.ok(findElement(app.evaluate('App()'), node => node.props?.role === 'alert'));
+});
+
+test('同じ描画中の取引と借入の連続更新を両方残す', async () => {
+  const cloud = { accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} };
+  const app = appContext(cloud);
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.resetHooks();
+  const dashboard = findNode(app.evaluate('App()'), 'Dashboard');
+  dashboard.props.onAddTx({ id: 'one' });
+  dashboard.props.onAddTx({ id: 'two' });
+  assert.deepEqual(Array.from(app.state[1], tx => tx.id), ['one', 'two']);
+  app.resetHooks();
+  findNode(app.evaluate('App()'), 'AppNavigation').props.onChange('loans');
+  app.resetHooks();
+  const manager = findNode(app.evaluate('App()'), 'LoanManager');
+  manager.props.onChange(current => [...current, { id: 'loan-one' }]);
+  manager.props.onChange(current => [...current, { id: 'loan-two' }]);
+  assert.deepEqual(Array.from(app.state[2], loan => loan.id), ['loan-one', 'loan-two']);
 });
 
 test('概要は為替未取得時に仮の150円で米国株を評価しない', () => {

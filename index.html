@@ -22,7 +22,7 @@
 </head>
 <body class="min-h-screen">
 <!-- Apply dark class before React renders to avoid flash -->
-<script>if(localStorage.getItem('cf_dark')==='1')document.documentElement.classList.add('dark')</script>
+<script>try{if(localStorage.getItem('cf_dark')==='1')document.documentElement.classList.add('dark')}catch{}</script>
 <div id="root"></div>
 <script>
 const { useState, useEffect, useMemo, useRef, createElement: h } = React;
@@ -85,26 +85,28 @@ const INVESTMENT_LOCAL_ONLY=new URLSearchParams(window.location.search).get('loc
 const INVESTMENT_FULL_SRC=`${INVESTMENT_FULL_URL}?api=${encodeURIComponent(INVESTMENT_API)}${INVESTMENT_LOCAL_ONLY?'&local-only=1':''}`;
 const LS_CACHE_PREFIX='cf_cache_v2:';
 const LS_PENDING='cf_pending_v1';
+function localGet(key){try{return localStorage.getItem(key);}catch{return null;}}
+function localSet(key,value){try{localStorage.setItem(key,value);return true;}catch{return false;}}
 function readLocalCache(){
-  try{return JSON.parse(localStorage.getItem(LS_CACHE_PREFIX+'legacy')||'{}');}catch{return {};}
+  try{return JSON.parse(localGet(LS_CACHE_PREFIX+'legacy')||'{}');}catch{return {};}
 }
 function readPending(){
-  try{return JSON.parse(localStorage.getItem(LS_PENDING)||'{}')||{};}catch{return {};}
+  try{return JSON.parse(localGet(LS_PENDING)||'{}')||{};}catch{return {};}
 }
 function markPending(key,value){
-  localStorage.setItem(LS_PENDING,JSON.stringify({...readPending(),[key]:value}));
+  return localSet(LS_PENDING,JSON.stringify({...readPending(),[key]:value}));
 }
 function clearPendingIfCurrent(key,value){
   const pending=readPending();
-  if(JSON.stringify(pending[key])!==JSON.stringify(value))return;
+  if(JSON.stringify(pending[key])!==JSON.stringify(value))return true;
   delete pending[key];
-  localStorage.setItem(LS_PENDING,JSON.stringify(pending));
+  return localSet(LS_PENDING,JSON.stringify(pending));
 }
 function writeLocalCache(key,value){
   const cache=readLocalCache();
   cache[key]=value;
   cache.updatedAt=new Date().toISOString();
-  localStorage.setItem(LS_CACHE_PREFIX+'legacy',JSON.stringify(cache));
+  return localSet(LS_CACHE_PREFIX+'legacy',JSON.stringify(cache));
 }
 async function _sbGet(key){
   const {data,error}=await _sb.from('user_data').select('value').eq('key',key).maybeSingle();
@@ -881,11 +883,11 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     const original=editId?txs.find(t=>t.id===editId):null;
     const tx={...form,label:form.type==='transfer'?(original?.type==='transfer'?original.label:'資金振替'):form.label.trim(),amount:parsedAmt,endDate:form.endDate||null};
     if(editId){
-      onChange(txs.map(t=>t.id===editId?{...tx,id:editId}:t));
+      onChange(current=>current.map(t=>t.id===editId?{...tx,id:editId}:t));
       setEditId(null);
       addToast&&addToast('取引を更新しました');
     } else {
-      onChange([...txs,{...tx,id:genId()}]);
+      onChange(current=>[...current,{...tx,id:genId()}]);
       addToast&&addToast('取引を追加しました');
     }
     setForm({...DEF,accountId:form.accountId});
@@ -941,7 +943,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
   return h('div',{className:'space-y-6'},
     amountTarget&&txs.find(tx=>tx.id===amountTarget.txId)&&h(ConfirmAmountDialog,{
       tx:txs.find(tx=>tx.id===amountTarget.txId),date:amountTarget.date,
-      onSave:updated=>{onChange(txs.map(tx=>tx.id===updated.id?updated:tx));addToast&&addToast('この回の金額を更新しました');setAmountTarget(null);},
+      onSave:updated=>{onChange(current=>current.map(tx=>tx.id===updated.id?updated:tx));addToast&&addToast('この回の金額を更新しました');setAmountTarget(null);},
       onClose:()=>setAmountTarget(null)
     }),
     confirmTarget&&h(ConfirmDialog,{
@@ -1244,8 +1246,8 @@ function buildBalanceTablePeriods(cols, fData, txEventMap){
   });
 }
 
-function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds }){
-  const [viewMode,setViewMode]=useState('daily');
+function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds, periodMonths, isPast }){
+  const [viewMode,setViewMode]=useState(()=>Math.abs(periodMonths)>3?'weekly':'daily');
   const scrollRef=useRef(null);
   const cols=useMemo(()=>{
     if(viewMode==='daily') return fData;
@@ -1256,17 +1258,18 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
         const m=fData[i].date.slice(0,7);
         if(!seen.has(m)){seen.add(m);res.unshift(fData[i]);}
       }
+      if(!isPast&&fData.length&&res[0]?.date!==fData[0].date)res.unshift(fData[0]);
       return res;
     }
     return fData;
-  },[fData,viewMode]);
+  },[fData,viewMode,isPast]);
   const periods=useMemo(()=>buildBalanceTablePeriods(cols,fData,txEventMap),[cols,fData,txEventMap]);
   const visibleAccounts=accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id));
   const fmtCol=s=>{
     const [y,mo,d]=s.split('-');
     const dt=new Date(Number(y),Number(mo)-1,Number(d));
     const m=mo.startsWith('0')?mo.slice(1):mo;
-    if(viewMode==='monthly') return `${y}/${m}`;
+    if(viewMode==='monthly') return !isPast&&s===fData[0]?.date?`${m}/${d}（今日）`:`${y}/${m}`;
     return `${m}/${d}(${DOW[dt.getDay()]})`;
   };
   const fmtYen=v=>Math.abs(v).toLocaleString();
@@ -1302,6 +1305,14 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
     const el=scrollRef.current;
     if(el) el.scrollBy({left:direction*Math.max(240,el.clientWidth*0.7),behavior:'smooth'});
   };
+  const scrollToToday=()=>{
+    const el=scrollRef.current;
+    if(el)el.scrollTo({left:isPast?el.scrollWidth-el.clientWidth:0,behavior:'smooth'});
+  };
+  useEffect(()=>{
+    const el=scrollRef.current;
+    if(el)el.scrollLeft=isPast?el.scrollWidth-el.clientWidth:0;
+  },[viewMode,isPast]);
   if(!accounts.length) return null;
 
   return h('div',{className:cardCls+' overflow-hidden'},
@@ -1316,6 +1327,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
           )
         ),
         h('div',{className:'flex gap-1 border-l border-gray-200 dark:border-gray-700 pl-2'},
+          h('button',{onClick:scrollToToday,className:'px-2 h-8 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700','aria-label':'今日へ移動'},'今日へ'),
           h('button',{onClick:()=>scrollDates(-1),className:'w-8 h-8 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700','aria-label':'前の日付へ移動',title:'前の日付へ移動'},'‹'),
           h('button',{onClick:()=>scrollDates(1),className:'w-8 h-8 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700','aria-label':'次の日付へ移動',title:'次の日付へ移動'},'›')
         )
@@ -1945,7 +1957,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
         )
       ),
       accounts.length>0
-        ?h(BalanceTable,{accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,hiddenAccIds})
+        ?h(BalanceTable,{key:pIdx,accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,hiddenAccIds,periodMonths:PERIODS[pIdx].months,isPast})
         :h('div',{className:cardCls+' p-6 text-center'},
           h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-200'},'口座を登録すると残高表が表示されます'),
           onNavigate&&h('button',{onClick:()=>onNavigate('accounts'),className:'mt-3 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 text-sm font-semibold'},'口座を登録')
@@ -2374,8 +2386,8 @@ function LoanManager({loans,onChange,addToast}){
     if(original<balance){setErr('借入総額は現在残高以上で入力してください');return;}
     if(Number(form.interestRate||0)<0||Number(form.monthlyPayment||0)<0){setErr('金利・返済額は0以上で入力してください');return;}
     const item={...form,name:form.name.trim(),lender:form.lender.trim(),originalAmount:original,balance,interestRate:Number(form.interestRate||0),monthlyPayment:Number(form.monthlyPayment||0),nextPaymentDate:form.nextPaymentDate||'',notes:form.notes.trim()};
-    if(editId){onChange(loans.map(loan=>loan.id===editId?{...loan,...item,id:editId}:loan));addToast('借入を更新しました');}
-    else{onChange([...loans,{...item,id:genId(),payments:[]}]);addToast('借入を追加しました');}
+    if(editId){onChange(current=>current.map(loan=>loan.id===editId?{...loan,...item,id:editId}:loan));addToast('借入を更新しました');}
+    else{onChange(current=>[...current,{...item,id:genId(),payments:[]}]);addToast('借入を追加しました');}
     setForm(blank);setEditId(null);setErr('');setShowAddForm(false);
   }
   function edit(loan){
@@ -2390,18 +2402,18 @@ function LoanManager({loans,onChange,addToast}){
     if(!amount||amount<=0){setPaymentErr('返済額を入力してください');return;}
     if(amount>Number(loan.balance||0)){setPaymentErr('返済額が現在残高を超えています');return;}
     const item={id:genId(),amount,paidAt:payment.paidAt,note:payment.note.trim()};
-    onChange(loans.map(current=>current.id===loan.id?{...current,balance:Number(current.balance)-amount,payments:[...(current.payments||[]),item]}:current));
+    onChange(items=>items.map(current=>current.id===loan.id?{...current,balance:Number(current.balance)-amount,payments:[...(current.payments||[]),item]}:current));
     setPayment({loanId:loan.id,amount:'',paidAt:todayStr(),note:''});setPaymentErr('');addToast('返済を記録しました');
   }
   function removePayment(loan,paymentId){
     const item=(loan.payments||[]).find(paymentItem=>paymentItem.id===paymentId);
     if(!item||!window.confirm(`${loanYen(item.amount)}の返済記録を削除し、残高を元に戻しますか？`))return;
-    onChange(loans.map(current=>current.id===loan.id?{...current,balance:Number(current.balance)+Number(item.amount),payments:(current.payments||[]).filter(paymentItem=>paymentItem.id!==paymentId)}:current));
+    onChange(items=>items.map(current=>current.id===loan.id?{...current,balance:Number(current.balance)+Number(item.amount),payments:(current.payments||[]).filter(paymentItem=>paymentItem.id!==paymentId)}:current));
     addToast('返済記録を削除しました');
   }
   function removeLoan(loan){
     if(!window.confirm(`「${loan.name}」と返済履歴を削除しますか？`))return;
-    onChange(loans.filter(current=>current.id!==loan.id));addToast('借入を削除しました');
+    onChange(current=>current.filter(item=>item.id!==loan.id));addToast('借入を削除しました');
   }
   function startQuickPayment(loan){
     setPayment(current=>({...current,loanId:loan.id}));
@@ -2479,7 +2491,7 @@ function InvestmentView({data,onReload,onStocksChange}){
   const log=data?.log||[];
   const [quotes,setQuotes]=useState({});
   const [fxInfo,setFxInfo]=useState(()=>{
-    const saved=Number(localStorage.getItem('usdjpy_rate'));
+    const saved=Number(localGet('usdjpy_rate'));
     return {rate:Number.isFinite(saved)&&saved>0?saved:null,checkedAt:null};
   });
   const [priceCheckedAt,setPriceCheckedAt]=useState(null);
@@ -2677,8 +2689,8 @@ function InvestmentView({data,onReload,onStocksChange}){
 
 const LS_INVESTMENT_MODE='cf_investment_mode';
 function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
-  const [mode,setMode]=useState(()=>new URLSearchParams(window.location.search).get('investment')==='summary'?'summary':localStorage.getItem(LS_INVESTMENT_MODE)||'full');
-  function changeMode(next){setMode(next);localStorage.setItem(LS_INVESTMENT_MODE,next);if(next==='summary')onReload&&onReload();}
+  const [mode,setMode]=useState(()=>new URLSearchParams(window.location.search).get('investment')==='summary'?'summary':localGet(LS_INVESTMENT_MODE)||'full');
+  function changeMode(next){setMode(next);localSet(LS_INVESTMENT_MODE,next);if(next==='summary')onReload&&onReload();}
   useEffect(()=>{
     const receive=e=>{
       if(e.origin!==window.location.origin||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
@@ -2732,18 +2744,23 @@ function App(){
   const [accounts,setAccounts]=useState([]);
   const accountsRef=useRef([]);
   const [txs,setTxs]=useState([]);
+  const txsRef=useRef([]);
   const [loans,setLoans]=useState([]);
+  const loansRef=useRef([]);
   const [budgets,setBudgets]=useState({});
   const [skippedOccurrences,setSkippedOccurrences]=useState([]);
   const [preferences,setPreferences]=useState(DEFAULT_PREFS);
   const [investmentData,setInvestmentData]=useState({stocks:[],log:[],collateral:[],loading:true,error:''});
   const [loading,setLoading]=useState(true);
-  const [dark,setDark]=useState(()=>localStorage.getItem(LS_DARK)==='1');
+  const [dark,setDark]=useState(()=>localGet(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
   const [activeView,setActiveView]=useState('home');
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
+  const [localSaveFailed,setLocalSaveFailed]=useState(false);
   const [toasts,setToasts]=useState([]);
   const saveQueues=useRef({});
+  const volatilePending=useRef({});
+  const cacheRetry=useRef({});
   const retryRef=useRef(null);
   const hydratedRef=useRef(false);
   const loadFailedRef=useRef(false);
@@ -2765,20 +2782,20 @@ function App(){
         const data=await loadAllData();
         if(!alive)return;
         loadFailedRef.current=false;
-        const legacySkipped=(()=>{try{return JSON.parse(localStorage.getItem(LS_SKIPPED)||'[]');}catch{return [];}})();
+        const legacySkipped=(()=>{try{return JSON.parse(localGet(LS_SKIPPED)||'[]');}catch{return [];}})();
         const a=pendingOr('accounts',data.accounts??cache.accounts??[]);
         const t=pendingOr('transactions',data.transactions??cache.transactions??[]);
         const l=pendingOr('loans',data.loans??cache.loans??[]);
         const b=pendingOr('budgets',data.budgets??cache.budgets??{});
         const s=pendingOr('skipped',data.skipped??cache.skipped??legacySkipped);
         const p={...DEFAULT_PREFS,...pendingOr('preferences',data.preferences??cache.preferences??{})};
-        accountsRef.current=a;setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
-        DATA_KEYS.forEach(k=>writeLocalCache(k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p}[k]));
+        accountsRef.current=a;txsRef.current=t;loansRef.current=l;setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
+        DATA_KEYS.forEach(k=>cacheLocally(k,k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p}[k],Object.prototype.hasOwnProperty.call(pending,k)?pending[k]:null));
         try{
           const investments=await loadInvestmentData();
           if(!alive)return;
           setInvestmentData({...investments,loading:false,error:''});
-          writeLocalCache('investmentData',investments);
+          cacheLocally('investmentData','investmentData',investments,null);
         }catch(investmentError){
           const saved=withPendingInvestmentStocks(cache.investmentData||{stocks:[],log:[],collateral:[]});
           setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
@@ -2788,7 +2805,8 @@ function App(){
         if(!alive)return;
         loadFailedRef.current=true;
         const cachedAccounts=pendingOr('accounts',cache.accounts||[]);
-        accountsRef.current=cachedAccounts;setAccounts(cachedAccounts);setTxs(pendingOr('transactions',cache.transactions||[]));setLoans(pendingOr('loans',cache.loans||[]));setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
+        const cachedTxs=pendingOr('transactions',cache.transactions||[]),cachedLoans=pendingOr('loans',cache.loans||[]);
+        accountsRef.current=cachedAccounts;txsRef.current=cachedTxs;loansRef.current=cachedLoans;setAccounts(cachedAccounts);setTxs(cachedTxs);setLoans(cachedLoans);setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
         const saved=withPendingInvestmentStocks(cache.investmentData||{stocks:[],log:[],collateral:[]});
         setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         setSyncStatus({state:navigator.onLine?'error':'offline',message:`ローカルデータを表示中: ${e.message}`});
@@ -2796,7 +2814,7 @@ function App(){
         if(alive){
           hydratedRef.current=true;
           setLoading(false);
-          if(navigator.onLine&&Object.keys(readPending()).length)syncAll();
+          if(navigator.onLine&&(Object.keys(readPending()).length||Object.keys(volatilePending.current).length||Object.keys(cacheRetry.current).length))syncAll();
         }
       }
     }
@@ -2807,11 +2825,11 @@ function App(){
   useEffect(()=>{
     if(dark){ document.documentElement.classList.add('dark'); }
     else { document.documentElement.classList.remove('dark'); }
-    localStorage.setItem(LS_DARK,dark?'1':'0');
+    localSet(LS_DARK,dark?'1':'0');
   },[dark]);
 
   useEffect(()=>{
-    const offline=()=>setSyncStatus({state:'offline',message:'オフラインです。変更は端末に保存されています'});
+    const offline=()=>setSyncStatus(Object.keys(volatilePending.current).length?{state:'error',message:'オフラインです。端末保存にも失敗しているため、ページを閉じずに再試行してください'}:{state:'offline',message:'オフラインです。変更は端末に保存されています'});
     const online=()=>syncAll();
     window.addEventListener('offline',offline);window.addEventListener('online',online);
     return()=>{window.removeEventListener('offline',offline);window.removeEventListener('online',online);};
@@ -2820,7 +2838,7 @@ function App(){
   useEffect(()=>{
     if(!preferences.notifications||typeof Notification==='undefined'||Notification.permission!=='granted'||!txs.length)return;
     const stamp=`cf_notified_${todayStr()}`;
-    if(localStorage.getItem(stamp)==='1')return;
+    if(localGet(stamp)==='1')return;
     const start=todayD(),end=addDays(start,preferences.notifyDays||7),keys=new Set(skippedOccurrences);
     let largeCount=0,largeTotal=0;
     txs.filter(tx=>tx.type==='expense').forEach(tx=>{
@@ -2835,43 +2853,79 @@ function App(){
     if(risks.length)parts.push(`${risks.length}口座で残高不足の可能性`);
     else if(lowAccounts.length)parts.push(`${lowAccounts.length}口座が注意ラインを下回る見込み`);
     if(largeCount)parts.push(`大口支払い${largeCount}件・計¥${largeTotal.toLocaleString()}`);
-    if(parts.length){new Notification('資金管理のお知らせ',{body:parts.join('／')});localStorage.setItem(stamp,'1');}
+    if(parts.length){new Notification('資金管理のお知らせ',{body:parts.join('／')});localSet(stamp,'1');}
   },[accounts,txs,preferences,skippedOccurrences]);
 
   function savePendingKey(key,value){
     const task=(saveQueues.current[key]||Promise.resolve()).then(()=>_sbSet(key,value));
     saveQueues.current[key]=task.catch(()=>{});
-    return task.then(()=>{clearPendingIfCurrent(key,value);});
+    return task.then(()=>{
+      const retry=cacheRetry.current[key];
+      if(retry&&JSON.stringify(retry.pendingValue)===JSON.stringify(value)){
+        if(writeLocalCache(retry.cacheKey,retry.data))delete cacheRetry.current[key];
+        else{setLocalSaveFailed(true);return;}
+      }
+      if(JSON.stringify(volatilePending.current[key])===JSON.stringify(value)){
+        delete volatilePending.current[key];
+        const pending=readPending();
+        if(Object.prototype.hasOwnProperty.call(pending,key)){
+          delete pending[key];
+          if(!localSet(LS_PENDING,JSON.stringify(pending))){volatilePending.current[key]=value;setLocalSaveFailed(true);}
+        }
+      }else if(!clearPendingIfCurrent(key,value)){
+        setLocalSaveFailed(true);
+        setSyncStatus({state:'error',message:'端末の未同期記録を更新できません。再試行してください'});
+      }
+      if(!Object.keys(volatilePending.current).length&&!Object.keys(cacheRetry.current).length)setLocalSaveFailed(false);
+    });
+  }
+  function cacheLocally(key,cacheKey,data,pendingValue){
+    if(writeLocalCache(cacheKey,data)){
+      delete cacheRetry.current[key];
+      if(!Object.keys(cacheRetry.current).length&&!Object.keys(volatilePending.current).length)setLocalSaveFailed(false);
+    }
+    else{cacheRetry.current[key]={cacheKey,data,pendingValue};setLocalSaveFailed(true);}
+  }
+  function rememberPending(key,value){
+    if(markPending(key,value)){
+      delete volatilePending.current[key];
+      if(!Object.keys(volatilePending.current).length&&!Object.keys(cacheRetry.current).length)setLocalSaveFailed(false);
+    }
+    else{volatilePending.current[key]=value;setLocalSaveFailed(true);}
   }
   function persist(key,value){
-    writeLocalCache(key,value);
-    markPending(key,value);
+    rememberPending(key,value);
+    cacheLocally(key,key,value,value);
     retryRef.current=syncAll;
-    if(!navigator.onLine){setSyncStatus({state:'offline',message:'変更は端末に保存され、オンライン復帰時に同期されます'});return;}
+    if(!navigator.onLine){setSyncStatus(Object.keys(volatilePending.current).length?{state:'error',message:'端末への保存に失敗しました。ページを閉じずにオンラインで再試行してください'}:{state:'offline',message:'変更は端末に保存され、オンライン復帰時に同期されます'});return;}
     setSyncStatus({state:'saving',message:'クラウドへ保存しています'});
     savePendingKey(key,value)
-      .then(()=>{if(!Object.keys(readPending()).length)setSyncStatus({state:'synced',message:`${new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} に同期済み`});})
-      .catch(e=>{setSyncStatus({state:'error',message:e.message});addToast('同期に失敗しました。端末には保存されています','error');});
+      .then(()=>{if(!Object.keys(readPending()).length&&!Object.keys(volatilePending.current).length&&!Object.keys(cacheRetry.current).length)setSyncStatus({state:'synced',message:`${new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} に同期済み`});else if(Object.keys(cacheRetry.current).length)setSyncStatus({state:'error',message:'端末キャッシュの保存に失敗しました。再試行してください'});})
+      .catch(e=>{setSyncStatus({state:'error',message:e.message});addToast(Object.keys(volatilePending.current).length?'同期に失敗し、端末にも保存できていません。ページを閉じずに再試行してください':'同期に失敗しました。端末には保存されています','error');});
   }
   async function syncAll(){
-    if(!navigator.onLine||!hydratedRef.current){setSyncStatus({state:'offline',message:'オフラインです。変更は端末に保存されています'});return;}
+    if(!navigator.onLine||!hydratedRef.current){setSyncStatus(Object.keys(volatilePending.current).length?{state:'error',message:'端末保存に失敗しています。オンラインで再試行してください'}:{state:'offline',message:'オフラインです。変更は端末に保存されています'});return;}
     setSyncStatus({state:'saving',message:'すべてのデータを同期しています'});
     try{
       await Promise.all(Object.values(saveQueues.current));
-      const tasks=Object.entries(readPending()).map(([key,value])=>savePendingKey(key,value));
+      Object.entries(cacheRetry.current).forEach(([key,retry])=>{
+        if(retry.pendingValue!==null)return;
+        if(writeLocalCache(retry.cacheKey,retry.data))delete cacheRetry.current[key];
+      });
+      const tasks=Object.entries({...readPending(),...volatilePending.current}).map(([key,value])=>savePendingKey(key,value));
       await Promise.all(tasks);
-      if(Object.keys(readPending()).length)throw new Error('未同期の変更が残っています');
+      if(Object.keys(readPending()).length||Object.keys(volatilePending.current).length||Object.keys(cacheRetry.current).length)throw new Error('端末保存または同期が完了していません');
       if(loadFailedRef.current){
         await loadAllData();
         window.location.reload();
         return;
       }
-      setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
+      setLocalSaveFailed(false);setSyncStatus({state:'synced',message:'すべて同期済み'});addToast('クラウドと同期しました');
     }catch(e){setSyncStatus({state:'error',message:e.message});addToast('再同期に失敗しました','error');}
   }
   function updAcc(next){const value=typeof next==='function'?next(accountsRef.current):next;accountsRef.current=value;setAccounts(value);persist('accounts',value);}
-  function updTxs(next){setTxs(next);persist('transactions',next);}
-  function updLoans(next){setLoans(next);persist('loans',next);}
+  function updTxs(next){const value=typeof next==='function'?next(txsRef.current):next;txsRef.current=value;setTxs(value);persist('transactions',value);}
+  function updLoans(next){const value=typeof next==='function'?next(loansRef.current):next;loansRef.current=value;setLoans(value);persist('loans',value);}
   function updBudgets(next){setBudgets(next);persist('budgets',next);addToast('予算を保存しました');}
   function updPreferences(next){setPreferences(next);persist('preferences',next);}
   async function reloadInvestments(){
@@ -2888,18 +2942,18 @@ function App(){
     const clean=canonicalInvestmentStocks(next);
     const cached={stocks:clean,log:investmentData.log||[],collateral:investmentData.collateral||[]};
     setInvestmentData(current=>({...current,stocks:clean,error:''}));
-    writeLocalCache('investmentData',cached);
-    markPending('sp_stocks',clean);
+    rememberPending('sp_stocks',clean);
+    cacheLocally('sp_stocks','investmentData',cached,clean);
     retryRef.current=syncAll;
     if(!navigator.onLine){
-      setSyncStatus({state:'offline',message:'投資データは端末に保存され、オンライン復帰時に同期されます'});
-      addToast(successMessage+'（端末に保存）');
+      setSyncStatus(Object.keys(volatilePending.current).length?{state:'error',message:'端末への保存に失敗しました。ページを閉じずにオンラインで再試行してください'}:{state:'offline',message:'投資データは端末に保存され、オンライン復帰時に同期されます'});
+      addToast(successMessage+(Object.keys(volatilePending.current).length?'（端末保存失敗）':'（端末に保存）'));
       return;
     }
     setSyncStatus({state:'saving',message:'投資データをクラウドへ保存しています'});
     savePendingKey('sp_stocks',clean)
-      .then(()=>{if(!Object.keys(readPending()).length)setSyncStatus({state:'synced',message:'投資データを同期済み'});setInvestmentData(current=>({...current,error:''}));addToast(successMessage);})
-      .catch(e=>{setSyncStatus({state:'error',message:e.message});setInvestmentData(current=>({...current,error:'クラウドへの保存に失敗しました。端末には保存されています'}));addToast('投資データの同期に失敗しました','error');});
+      .then(()=>{if(!Object.keys(readPending()).length&&!Object.keys(volatilePending.current).length&&!Object.keys(cacheRetry.current).length)setSyncStatus({state:'synced',message:'投資データを同期済み'});else if(Object.keys(cacheRetry.current).length)setSyncStatus({state:'error',message:'端末キャッシュの保存に失敗しました。再試行してください'});setInvestmentData(current=>({...current,error:''}));addToast(successMessage);})
+      .catch(e=>{setSyncStatus({state:'error',message:e.message});setInvestmentData(current=>({...current,error:Object.keys(volatilePending.current).length?'クラウドと端末への保存に失敗しました':'クラウドへの保存に失敗しました。端末には保存されています'}));addToast('投資データの同期に失敗しました','error');});
   }
   function applyEmbeddedInvestmentData(next){
     if(!next||!Array.isArray(next.stocks))return;
@@ -2910,19 +2964,19 @@ function App(){
   function handleSkip(key){
     const next=skippedOccurrences.includes(key)?skippedOccurrences:[...skippedOccurrences,key];
     setSkippedOccurrences(next);
-    localStorage.setItem(LS_SKIPPED,JSON.stringify(next));
+    localSet(LS_SKIPPED,JSON.stringify(next));
     persist('skipped',next);
     addToast('支払済みとして予測から除外しました');
   }
   function handleRestore(key){
     const next=skippedOccurrences.filter(k=>k!==key);
     setSkippedOccurrences(next);
-    localStorage.setItem(LS_SKIPPED,JSON.stringify(next));
+    localSet(LS_SKIPPED,JSON.stringify(next));
     persist('skipped',next);
     addToast('予定を予測に戻しました');
   }
   function deleteTx(id){
-    updTxs(txs.filter(t=>t.id!==id));
+    updTxs(current=>current.filter(t=>t.id!==id));
     const next=skippedOccurrences.filter(k=>!k.startsWith(id+'_'));
     setSkippedOccurrences(next);persist('skipped',next);
   }
@@ -2930,14 +2984,14 @@ function App(){
     if(!data||!Array.isArray(data.accounts)||!Array.isArray(data.transactions)){addToast('対応していないバックアップ形式です','error');return;}
     if(!window.confirm(`口座${data.accounts.length}件・取引${data.transactions.length}件で現在のデータを置き換えますか？`))return;
     const nextLoans=data.loans||[],nextBudgets=data.budgets||{},nextSkipped=data.skipped||[],nextPrefs={...DEFAULT_PREFS,...(data.preferences||{})};
-    accountsRef.current=data.accounts;setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
+    accountsRef.current=data.accounts;txsRef.current=data.transactions;loansRef.current=nextLoans;setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
     persist('accounts',data.accounts);persist('transactions',data.transactions);persist('loans',nextLoans);persist('budgets',nextBudgets);persist('skipped',nextSkipped);persist('preferences',nextPrefs);
     addToast('バックアップを復元しました');setShowSettings(false);
   }
   function importCsv(text){
     const {items,skipped}=transactionsFromCsv(text,accounts);
     if(!items.length){addToast('追加できる取引がありませんでした','error');return;}
-    updTxs([...txs,...items]);addToast(`${items.length}件を追加しました${skipped?`（${skipped}件スキップ）`:''}`);setShowSettings(false);setActiveView('transactions');
+    updTxs(current=>[...current,...items]);addToast(`${items.length}件を追加しました${skipped?`（${skipped}件スキップ）`:''}`);setShowSettings(false);setActiveView('transactions');
   }
 
   if(loading) return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center'},
@@ -2985,9 +3039,13 @@ function App(){
       )
     ),
     h('main',{className:activeView==='investments'?'w-full px-2 sm:px-3 py-3 sm:py-4 pb-24':'max-w-[1600px] mx-auto px-3 sm:px-6 py-4 sm:py-6 pb-28'},
+      localSaveFailed&&h('div',{role:'alert',className:'mb-4 rounded-xl border border-rose-300 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200'},
+        '端末の保存領域に問題があります。同期が完了するまでページを閉じず、オンラインで再試行してください。',
+        h('button',{type:'button',onClick:syncAll,className:'ml-3 font-semibold underline'},'再試行')
+      ),
       activeView==='home'&&h(Dashboard,{accounts,txs,loans,dark,
-        onAddTx:tx=>updTxs([...txs,tx]),
-        onUpdTx:updated=>{updTxs(txs.map(t=>t.id===updated.id?updated:t));addToast('取引を更新しました');},
+        onAddTx:tx=>updTxs(current=>[...current,tx]),
+        onUpdTx:updated=>{updTxs(current=>current.map(t=>t.id===updated.id?updated:t));addToast('取引を更新しました');},
         onUpdAcc:updated=>updAcc(current=>current.map(a=>a.id===updated.id?{...a,balance:updated.balance,balanceAsOf:updated.balanceAsOf}:a)),
         onNavigate:setActiveView,
         skippedOccurrences,

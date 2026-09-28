@@ -11,7 +11,10 @@ const source = html.slice(html.indexOf('>', start) + 1, end)
 
 function appContext(touch = false) {
   const state = [];
+  const refs = [];
+  const effects = [];
   let stateCursor = 0;
+  let refCursor = 0;
   const h = (type, props, ...children) => ({ type, props: { ...props, children } });
   const React = {
     useState(initial) {
@@ -19,9 +22,9 @@ function appContext(touch = false) {
       if (!(index in state)) state[index] = typeof initial === 'function' ? initial() : initial;
       return [state[index], value => { state[index] = typeof value === 'function' ? value(state[index]) : value; }];
     },
-    useEffect() {},
+    useEffect(effect) { effects.push(effect); },
     useMemo(calculate) { return calculate(); },
-    useRef(initial) { return { current: initial }; },
+    useRef(initial) { const index = refCursor++; return refs[index] ??= { current: initial }; },
     createElement: h,
   };
   const context = {
@@ -35,7 +38,7 @@ function appContext(touch = false) {
     console,
   };
   runInNewContext(source, context);
-  return { evaluate: code => runInNewContext(code, context), resetHooks: () => { stateCursor = 0; } };
+  return { evaluate: code => runInNewContext(code, context), refs, effects, resetHooks: () => { stateCursor = 0; refCursor = 0; effects.length = 0; } };
 }
 
 function nodes(root, predicate) {
@@ -115,4 +118,42 @@ test('週次内訳から除外すると、列の日付ではなく取引の発�
   assert.ok(skip);
   skip.props.onClick({ stopPropagation() {} });
   assert.equal(props.skipped, 'tx_2026-09-03');
+});
+
+test('長期間は週次で始まり、月次でも今日の列と移動ボタンを表示する', () => {
+  const app = appContext();
+  const dates = Array.from({ length: 15 }, (_, i) => `2026-${i < 3 ? '09' : '10'}-${String(i < 3 ? 28 + i : i - 2).padStart(2, '0')}`);
+  const props = {
+    accounts: [{ id: 'a', name: 'A', color: '#000' }],
+    fData: dates.map(date => ({ date, a: 100, total: 100 })),
+    txEventMap: {},
+    periodMonths: 12,
+    isPast: false,
+  };
+  let tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.type === 'th').length, 4);
+  assert.ok(nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '今日へ移動')[0]);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '月次')[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.type === 'th').length, 4);
+  assert.match(textOf(nodes(tree, node => node.type === 'thead')[0]), /9\/28（今日）/);
+});
+
+test('過去期間を開くと今日の列へ移動し、ボタンから戻れる', () => {
+  const app = appContext();
+  const props = {
+    accounts: [{ id: 'a', name: 'A', color: '#000' }],
+    fData: [{ date: '2026-09-01', a: 100 }, { date: '2026-09-28', a: 110 }],
+    txEventMap: {},
+    periodMonths: -6,
+    isPast: true,
+  };
+  const tree = app.evaluate('BalanceTable')(props);
+  let target;
+  app.refs[0].current = { scrollWidth: 1000, clientWidth: 200, scrollLeft: 0, scrollTo: value => { target = value; } };
+  app.effects[0]();
+  assert.equal(app.refs[0].current.scrollLeft, 800);
+  nodes(tree, node => node.type === 'button' && node.props?.['aria-label'] === '今日へ移動')[0].props.onClick();
+  assert.equal(target.left, 800);
 });
