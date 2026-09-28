@@ -35,6 +35,7 @@ function appContext(cloud = {}, storage = new Map()) {
     getItem: key => storage.has(key) ? storage.get(key) : null,
     setItem: (key, value) => storage.set(key, String(value)),
   };
+  const listeners = new Map();
   const supabase = {
     createClient: () => ({
       from: () => ({
@@ -43,10 +44,15 @@ function appContext(cloud = {}, storage = new Map()) {
       }),
     }),
   };
-  const context = { React, supabase, localStorage, window: { location: { hostname: 'localhost', search: '' } }, navigator: { onLine: true }, setTimeout, URLSearchParams, console };
+  const window = {
+    location: { hostname: 'localhost', search: '' },
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    removeEventListener: name => listeners.delete(name),
+  };
+  const context = { React, supabase, localStorage, window, navigator: { onLine: true }, setTimeout, URLSearchParams, console };
   runInNewContext(source, context);
   return {
-    cloud, storage, state, effects, context,
+    cloud, storage, state, effects, context, listeners,
     resetHooks() { stateCursor = 0; refCursor = 0; effects.length = 0; },
     evaluate(code) { return runInNewContext(code, context); },
   };
@@ -272,4 +278,34 @@ test('数年以上前に開始した毎日の定期取引も現在の期間へ�
   app.context.testTx = { id: 'daily', type: 'income', amount: 100, recurring: true, frequency: 'daily', startDate: '2020-01-01' };
   const dates = app.evaluate('expandRec(testTx,parseISO("2026-09-28"),parseISO("2026-09-30"),new Set()).map(e=>fmt(e.date))');
   assert.deepEqual(Array.from(dates), ['2026-09-28', '2026-09-29', '2026-09-30']);
+});
+test('オフラインの投資銘柄編集は再読込後も残り、オンライン復帰時に同期される', async () => {
+  const oldStock = { id: 'old', ticker: 'OLD' };
+  const newStock = { id: 'new', ticker: 'NEW' };
+  const cloud = { accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {}, sp_stocks: [oldStock] };
+  const first = appContext(cloud);
+  first.context.navigator.onLine = false;
+  first.evaluate('App()');
+  first.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  first.state[10] = 'investments';
+  first.resetHooks();
+  const hub = findNode(first.evaluate('App()'), 'InvestmentHub');
+  assert.ok(hub);
+  hub.props.onStocksChange([newStock], '銘柄を更新しました');
+  assert.equal(cloud.sp_stocks[0].id, 'old');
+  assert.equal(JSON.parse(first.storage.get('cf_pending_v1')).sp_stocks[0].id, 'new');
+
+  const second = appContext(cloud, first.storage);
+  second.context.navigator.onLine = false;
+  second.evaluate('App()');
+  second.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(second.state[6].stocks[0].id, 'new');
+  second.effects[2]();
+  second.context.navigator.onLine = true;
+  second.listeners.get('online')();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(cloud.sp_stocks[0].id, 'new');
+  assert.deepEqual(JSON.parse(second.storage.get('cf_pending_v1')), {});
 });

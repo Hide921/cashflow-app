@@ -122,15 +122,29 @@ async function loadAllData(){
 }
 async function loadInvestmentData(){
   const values=await Promise.all(INVESTMENT_KEYS.map(key=>_sbGet(key)));
-  return {
+  return withPendingInvestmentStocks({
     stocks:Array.isArray(values[0])?values[0]:[],
     log:Array.isArray(values[1])?values[1]:[],
     collateral:Array.isArray(values[2])?values[2]:[]
-  };
+  });
+}
+function withPendingInvestmentStocks(data){
+  const pending=readPending();
+  return {...data,stocks:Array.isArray(pending.sp_stocks)?pending.sp_stocks:data.stocks};
 }
 function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2); }
 
 // ─── Forecast ─────────────────────────────────────────
+function recurrenceStartIndex(base,startD,frequency){
+  const days=Math.floor((Date.UTC(startD.getFullYear(),startD.getMonth(),startD.getDate())-
+    Date.UTC(base.getFullYear(),base.getMonth(),base.getDate()))/86400000);
+  const months=(startD.getFullYear()-base.getFullYear())*12+startD.getMonth()-base.getMonth();
+  if(frequency==='daily') return Math.max(0,days-14);
+  if(frequency==='weekly') return Math.max(0,Math.floor(days/7)-2);
+  if(frequency==='monthly') return Math.max(0,months-2);
+  if(frequency==='yearly') return Math.max(0,Math.floor(months/12)-2);
+  return 0;
+}
 function expandRec(tx, startD, endD, skippedKeys){
   const evts=[];
   const base=sod(parseISO(tx.startDate));
@@ -139,13 +153,7 @@ function expandRec(tx, startD, endD, skippedKeys){
   const searchEnd=biz==='prev'||biz===true ? addDays(endD,7) : endD;
   const lim=tx.endDate ? new Date(Math.min(sod(parseISO(tx.endDate)),searchEnd)) : searchEnd;
   const overrides=tx.overrides||{};
-  const daysBetween=Math.floor((startD-base)/86400000);
-  const monthsBetween=(startD.getFullYear()-base.getFullYear())*12+startD.getMonth()-base.getMonth();
-  let first=0;
-  if(tx.frequency==='daily') first=Math.max(0,daysBetween-7);
-  else if(tx.frequency==='weekly') first=Math.max(0,Math.floor(daysBetween/7)-2);
-  else if(tx.frequency==='monthly') first=Math.max(0,monthsBetween-2);
-  else if(tx.frequency==='yearly') first=Math.max(0,Math.floor(monthsBetween/12)-2);
+  const first=recurrenceStartIndex(base,startD,tx.frequency);
   for(let n=first;n<first+1500;n++){
     let cur;
     if(tx.frequency==='daily') cur=addDays(base,n);
@@ -839,7 +847,8 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     const cap=f.endDate?new Date(Math.min(sod(parseISO(f.endDate)).getTime(),addMonths(today2,24).getTime())):addMonths(today2,24);
     const max=maxN||(f.frequency==='daily'?31:f.frequency==='weekly'?16:f.frequency==='yearly'?5:13);
     const res=[];
-    for(let n=0;n<1500&&res.length<max;n++){
+    const first=recurrenceStartIndex(base,today2,f.frequency);
+    for(let n=first;n<first+1500&&res.length<max;n++){
       let cur;
       if(f.frequency==='daily') cur=addDays(base,n);
       else if(f.frequency==='weekly') cur=addDays(base,n*7);
@@ -2696,7 +2705,6 @@ function App(){
   const retryRef=useRef(null);
   const hydratedRef=useRef(false);
   const loadFailedRef=useRef(false);
-  const investmentDirtyRef=useRef(false);
 
   function addToast(message,type='success'){
     const id=Date.now()+Math.random();
@@ -2730,7 +2738,7 @@ function App(){
           setInvestmentData({...investments,loading:false,error:''});
           writeLocalCache('investmentData',investments);
         }catch(investmentError){
-          const saved=cache.investmentData||{stocks:[],log:[],collateral:[]};
+          const saved=withPendingInvestmentStocks(cache.investmentData||{stocks:[],log:[],collateral:[]});
           setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         }
         setSyncStatus({state:'synced',message:'クラウドと同期済み'});
@@ -2739,7 +2747,7 @@ function App(){
         loadFailedRef.current=true;
         const cachedAccounts=pendingOr('accounts',cache.accounts||[]);
         accountsRef.current=cachedAccounts;setAccounts(cachedAccounts);setTxs(pendingOr('transactions',cache.transactions||[]));setLoans(pendingOr('loans',cache.loans||[]));setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
-        const saved=cache.investmentData||{stocks:[],log:[],collateral:[]};
+        const saved=withPendingInvestmentStocks(cache.investmentData||{stocks:[],log:[],collateral:[]});
         setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         setSyncStatus({state:navigator.onLine?'error':'offline',message:`ローカルデータを表示中: ${e.message}`});
       }finally{
@@ -2809,7 +2817,6 @@ function App(){
     try{
       await Promise.all(Object.values(saveQueues.current));
       const tasks=Object.entries(readPending()).map(([key,value])=>savePendingKey(key,value));
-      if(investmentDirtyRef.current)tasks.push(_sbSet('sp_stocks',canonicalInvestmentStocks(investmentData.stocks||[])).then(()=>{investmentDirtyRef.current=false;}));
       await Promise.all(tasks);
       if(Object.keys(readPending()).length)throw new Error('未同期の変更が残っています');
       if(loadFailedRef.current){
@@ -2838,28 +2845,24 @@ function App(){
   function updateInvestmentStocks(next,successMessage){
     const clean=canonicalInvestmentStocks(next);
     const cached={stocks:clean,log:investmentData.log||[],collateral:investmentData.collateral||[]};
-    investmentDirtyRef.current=true;
     setInvestmentData(current=>({...current,stocks:clean,error:''}));
     writeLocalCache('investmentData',cached);
+    markPending('sp_stocks',clean);
+    retryRef.current=syncAll;
     if(!navigator.onLine){
       setSyncStatus({state:'offline',message:'投資データは端末に保存され、オンライン復帰時に同期されます'});
-      retryRef.current=syncAll;
       addToast(successMessage+'（端末に保存）');
       return;
     }
-    const save=()=>{
-      setSyncStatus({state:'saving',message:'投資データをクラウドへ保存しています'});
-      return _sbSet('sp_stocks',clean)
-        .then(()=>{investmentDirtyRef.current=false;setSyncStatus({state:'synced',message:'投資データを同期済み'});setInvestmentData(current=>({...current,error:''}));addToast(successMessage);})
-        .catch(e=>{setSyncStatus({state:'error',message:e.message});setInvestmentData(current=>({...current,error:'クラウドへの保存に失敗しました。端末には保存されています'}));addToast('投資データの同期に失敗しました','error');});
-    };
-    retryRef.current=save;
-    save();
+    setSyncStatus({state:'saving',message:'投資データをクラウドへ保存しています'});
+    savePendingKey('sp_stocks',clean)
+      .then(()=>{if(!Object.keys(readPending()).length)setSyncStatus({state:'synced',message:'投資データを同期済み'});setInvestmentData(current=>({...current,error:''}));addToast(successMessage);})
+      .catch(e=>{setSyncStatus({state:'error',message:e.message});setInvestmentData(current=>({...current,error:'クラウドへの保存に失敗しました。端末には保存されています'}));addToast('投資データの同期に失敗しました','error');});
   }
   function applyEmbeddedInvestmentData(next){
     if(!next||!Array.isArray(next.stocks))return;
     const merged={stocks:next.stocks,log:Array.isArray(next.log)?next.log:investmentData.log||[],collateral:Array.isArray(next.collateral)?next.collateral:investmentData.collateral||[]};
-    setInvestmentData(current=>({...current,...merged,loading:false,error:''}));
+    setInvestmentData(current=>({...current,...withPendingInvestmentStocks(merged),loading:false,error:''}));
     writeLocalCache('investmentData',merged);
   }
   function handleSkip(key){
