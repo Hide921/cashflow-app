@@ -755,6 +755,31 @@ function parseJpAmt(s){
   return null;
 }
 
+function salaryTransactionFromDraft(draft,existing){
+  const gross=parseJpAmt(draft.gross),deductions=parseJpAmt(draft.deductions);
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(draft.month||'')) return {error:'対象月を選択してください'};
+  if(!validTxDate(draft.payDate)) return {error:'有効な支給日を入力してください'};
+  if(!Number.isSafeInteger(gross)||gross<=0) return {error:'額面を入力してください'};
+  if(!Number.isSafeInteger(deductions)||deductions<0) return {error:'控除額は0円以上で入力してください'};
+  if(deductions>=gross) return {error:'控除額は額面より少なくしてください'};
+  if(!draft.accountId) return {error:'入金口座を選択してください'};
+  const employer=(draft.employer||'').trim();
+  return {transaction:{
+    ...(existing||{}),id:existing?.id||genId(),type:'income',category:'給与',
+    label:employer?`給与（${employer}）`:'給与',amount:gross-deductions,
+    accountId:draft.accountId,startDate:draft.payDate,recurring:false,
+    salary:{month:draft.month,employer,gross,deductions}
+  }};
+}
+
+function salaryYearTotals(records,year){
+  return records.filter(tx=>tx.salary?.month?.startsWith(`${year}-`)).reduce((sum,tx)=>({
+    gross:sum.gross+Number(tx.salary.gross||0),
+    deductions:sum.deductions+Number(tx.salary.deductions||0),
+    net:sum.net+Number(tx.amount||0)
+  }),{gross:0,deductions:0,net:0});
+}
+
 function setOccurrenceAmount(tx,date,amount){
   const overrides={...(tx.overrides||{})};
   if(amount===null) delete overrides[date];
@@ -800,6 +825,96 @@ function ConfirmAmountDialog({tx,date,onSave,onClose}){
           h('button',{type:'submit',className:'rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'},'確定額を保存'))
       )
     )
+  );
+}
+
+// ─── Salary Manager ───────────────────────────────────
+function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
+  const [year,setYear]=useState(todayD().getFullYear());
+  const [form,setForm]=useState(null);
+  const [editId,setEditId]=useState(null);
+  const [error,setError]=useState('');
+  const [deleteTarget,setDeleteTarget]=useState(null);
+  const records=txs.filter(tx=>tx.salary&&tx.type==='income');
+  const existingSalaryCount=txs.filter(tx=>tx.type==='income'&&tx.category==='給与'&&!tx.salary).length;
+  const selected=records.filter(tx=>tx.salary.month?.startsWith(`${year}-`))
+    .sort((a,b)=>b.salary.month.localeCompare(a.salary.month)||b.startDate.localeCompare(a.startDate));
+  const totals=salaryYearTotals(records,year);
+  const money=n=>`¥${Number(n||0).toLocaleString()}`;
+  const change=(key,value)=>setForm(current=>({...current,[key]:value}));
+  const close=()=>{setForm(null);setEditId(null);setError('');};
+  useEffect(()=>{
+    if(!form)return;
+    const onKey=e=>{if(e.key==='Escape')close();};
+    document.addEventListener('keydown',onKey);
+    return()=>document.removeEventListener('keydown',onKey);
+  },[form]);
+  function add(){
+    const month=todayStr().slice(0,7);
+    setYear(Number(month.slice(0,4)));
+    setEditId(null);
+    setForm({month,payDate:todayStr(),employer:'',gross:'',deductions:'0',accountId:accounts[0]?.id||''});
+    setError('');
+  }
+  function edit(tx){
+    setYear(Number(tx.salary.month.slice(0,4)));
+    setEditId(tx.id);
+    setForm({month:tx.salary.month,payDate:tx.startDate,employer:tx.salary.employer||'',gross:String(tx.salary.gross),deductions:String(tx.salary.deductions),accountId:tx.accountId||''});
+    setError('');
+  }
+  function save(e){
+    e.preventDefault();
+    if(!accounts.some(a=>a.id===form.accountId)){setError('入金口座を選択してください');return;}
+    const result=salaryTransactionFromDraft(form,editId?txs.find(tx=>tx.id===editId):null);
+    if(result.error){setError(result.error);return;}
+    const tx=result.transaction;
+    onChange(current=>editId?current.map(item=>item.id===editId?tx:item):[...current,tx]);
+    setYear(Number(form.month.slice(0,4)));
+    addToast(editId?'給与を更新しました':'給与を登録しました');
+    close();
+  }
+  const gross=parseJpAmt(form?.gross),deductions=parseJpAmt(form?.deductions);
+  const net=Number.isSafeInteger(gross)&&Number.isSafeInteger(deductions)?gross-deductions:null;
+  return h('div',{className:'space-y-4'},
+    h('div',{className:'flex flex-wrap items-center justify-between gap-3'},
+      h('div',null,h('h3',{className:'text-base font-semibold text-gray-900 dark:text-gray-100'},'給与所得'),h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'手取りを支給日の収入として残高予測に反映します。')),
+      h('button',{type:'button',onClick:add,className:'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700'},'＋ 給与を登録')
+    ),
+    existingSalaryCount>0&&h('p',{className:'rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-800 dark:text-amber-300'},`一般の取引に給与が${existingSalaryCount}件あります。同じ入金をここにも登録すると収入が重複します。`),
+    accounts.length===0&&h('p',{className:'rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-800 dark:text-amber-300'},'給与を登録するには、先に「口座」タブで入金口座を追加してください。'),
+    form&&h('section',{className:cardCls+' p-4 sm:p-5'},
+      h('div',{className:'flex items-center justify-between gap-3 mb-4'},
+        h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},editId?'給与を編集':'給与を登録'),
+        h('button',{type:'button',onClick:close,'aria-label':'給与フォームを閉じる',className:'p-2 text-gray-500 dark:text-gray-400'},'✕')
+      ),
+      error&&h('p',{role:'alert',className:'mb-3 text-sm text-rose-600 dark:text-rose-400'},error),
+      h('form',{onSubmit:save,className:'grid grid-cols-1 sm:grid-cols-2 gap-4'},
+        h('div',null,h('label',{htmlFor:'salary-month',className:labelCls},'対象月 *'),h('input',{id:'salary-month',type:'month',required:true,value:form.month,onChange:e=>change('month',e.target.value),className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-pay-date',className:labelCls},'支給日 *'),h('input',{id:'salary-pay-date',type:'date',required:true,value:form.payDate,onChange:e=>change('payDate',e.target.value),className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-employer',className:labelCls},'勤務先（任意）'),h('input',{id:'salary-employer',type:'text',value:form.employer,onChange:e=>change('employer',e.target.value),placeholder:'例: 株式会社〇〇',className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-account',className:labelCls},'入金口座 *'),h('select',{id:'salary-account',required:true,value:form.accountId,onChange:e=>change('accountId',e.target.value),className:inputCls},h('option',{value:''},'口座を選択'),accounts.map(a=>h('option',{key:a.id,value:a.id},a.name)))),
+        h('div',null,h('label',{htmlFor:'salary-gross',className:labelCls},'額面（円） *'),h('input',{id:'salary-gross',type:'text',inputMode:'numeric',required:true,value:form.gross,onChange:e=>change('gross',e.target.value),placeholder:'例: 300000',className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-deductions',className:labelCls},'控除合計（円） *'),h('input',{id:'salary-deductions',type:'text',inputMode:'numeric',required:true,value:form.deductions,onChange:e=>change('deductions',e.target.value),placeholder:'例: 50000',className:inputCls})),
+        h('div',{className:'sm:col-span-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 flex items-center justify-between gap-3'},h('span',{className:'text-sm font-medium text-emerald-800 dark:text-emerald-300'},'手取り（入金額）'),h('strong',{className:'text-lg tabular-nums text-emerald-700 dark:text-emerald-300'},net!==null&&net>0?money(net):'—')),
+        h('div',{className:'sm:col-span-2 flex justify-end gap-2'},h('button',{type:'button',onClick:close,className:'rounded-xl border border-gray-200 dark:border-gray-600 px-4 py-2.5 text-sm text-gray-600 dark:text-gray-300'},'キャンセル'),h('button',{type:'submit',className:'rounded-xl bg-slate-900 dark:bg-white px-4 py-2.5 text-sm font-semibold text-white dark:text-slate-900'},editId?'変更を保存':'給与を保存'))
+      )
+    ),
+    h('div',{className:cardCls+' p-4 sm:p-5'},
+      h('div',{className:'flex items-center justify-between gap-3 mb-4'},
+        h('div',null,h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${year}年の給与`),h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},'登録分の合計・予定を含む')),
+        h('div',{className:'flex items-center gap-1'},h('button',{type:'button',onClick:()=>setYear(y=>y-1),'aria-label':'前年の給与',className:'rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300'},'←'),h('button',{type:'button',onClick:()=>setYear(todayD().getFullYear()),className:'rounded-lg border border-gray-200 dark:border-gray-600 px-2 py-1.5 text-xs text-gray-600 dark:text-gray-300'},'今年'),h('button',{type:'button',onClick:()=>setYear(y=>y+1),'aria-label':'翌年の給与',className:'rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300'},'→'))
+      ),
+      h('div',{className:'grid grid-cols-3 gap-2 mb-4'},[['額面',totals.gross],['控除',totals.deductions],['手取り',totals.net]].map(([label,value])=>h('div',{key:label,className:'rounded-xl bg-gray-50 dark:bg-gray-900/50 p-3 min-w-0'},h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},label),h('p',{className:'mt-1 text-sm sm:text-lg font-bold tabular-nums text-gray-900 dark:text-gray-100 break-all'},money(value))))),
+      selected.length===0?h('p',{className:'py-8 text-center text-sm text-gray-500 dark:text-gray-400'},'この年の給与はまだ登録されていません'):
+      h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},selected.map(tx=>h('article',{key:tx.id,className:'py-3 first:pt-0 last:pb-0'},
+        h('div',{className:'flex flex-wrap items-start justify-between gap-2'},
+          h('div',null,h('p',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${Number(tx.salary.month.slice(5))}月の給与${tx.salary.employer?` · ${tx.salary.employer}`:''}`),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},`${fmtDisp(tx.startDate)}支給 · ${accounts.find(a=>a.id===tx.accountId)?.name||'口座なし'}${tx.startDate>todayStr()?' · 予定':''}`)),
+          h('p',{className:'font-bold text-emerald-700 dark:text-emerald-300 tabular-nums'},money(tx.amount))
+        ),
+        h('div',{className:'mt-2 flex flex-wrap items-center justify-between gap-2'},h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},`額面 ${money(tx.salary.gross)} − 控除 ${money(tx.salary.deductions)}`),h('div',{className:'flex gap-2'},h('button',{type:'button',onClick:()=>edit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},'編集'),h('button',{type:'button',onClick:()=>setDeleteTarget(tx),className:'rounded-lg px-3 py-1.5 text-xs text-rose-600 dark:text-rose-400'},'削除')))
+      )))
+    ),
+    deleteTarget&&h(ConfirmDialog,{title:'給与を削除',message:`${deleteTarget.salary.month}の給与を削除しますか？残高予測からも取り除かれます。`,onConfirm:()=>{onDelete(deleteTarget.id);addToast('給与を削除しました');setDeleteTarget(null);},onCancel:()=>setDeleteTarget(null)})
   );
 }
 
@@ -2779,6 +2894,7 @@ function App(){
   const [dark,setDark]=useState(()=>localGet(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
   const [activeView,setActiveView]=useState('home');
+  const [transactionSection,setTransactionSection]=useState('all');
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [localSaveFailed,setLocalSaveFailed]=useState(false);
   const [toasts,setToasts]=useState([]);
@@ -3078,7 +3194,15 @@ function App(){
         onDeleteTx:deleteTx,
         investmentData
       }),
-      activeView==='transactions'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),h(TxManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})),
+      activeView==='transactions'&&h('div',{className:'space-y-4'},
+        h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),
+        h('div',{className:'inline-flex rounded-xl bg-gray-200/70 dark:bg-gray-800 p-1','aria-label':'取引の表示'},
+          [['all','一般の取引'],['salary','給与所得']].map(([key,label])=>h('button',{key,type:'button',onClick:()=>setTransactionSection(key),'aria-pressed':transactionSection===key,className:`rounded-lg px-4 py-2 text-sm font-semibold ${transactionSection===key?'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm':'text-gray-600 dark:text-gray-300'}`},label))
+        ),
+        transactionSection==='all'
+          ?h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
+          :h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})
+      ),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,onChange:updLoans,addToast})),
