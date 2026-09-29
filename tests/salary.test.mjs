@@ -40,7 +40,7 @@ test('給与編集でIDを維持し、年別集計は対象月を使う', () => 
   assert.equal(tx.id, 'salary-1');
   assert.equal(tx.amount, 300000);
   context.tx = tx;
-  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('salaryYearTotals([tx],2026)'))), { gross: 400000, deductions: 100000, net: 300000 });
+  assert.deepEqual(JSON.parse(JSON.stringify(evaluate('salaryYearTotals([tx],2026)'))), { gross: 400000, socialInsurance: 0, incomeTax: 0, residentTax: 0, otherDeductions: 100000, deductions: 100000, net: 300000 });
   assert.equal(evaluate('salaryYearTotals([tx],2027).net'), 0);
 });
 
@@ -51,5 +51,27 @@ test('不正な控除額や日付は給与として保存できない', () => {
   context.draft.deductions = '300000';
   assert.match(evaluate('salaryTransactionFromDraft(draft).error'), /控除額/);
   context.draft.deductions = '-1';
-  assert.match(evaluate('salaryTransactionFromDraft(draft).error'), /控除額/);
+  assert.match(evaluate('salaryTransactionFromDraft(draft).error'), /控除/);
+});
+
+test('社保・税金から振込額を計算し、賞与を月給とは別の行に集計する', () => {
+  context.draft = { month: '2026-06', payDate: '2026-06-25', kind: 'summerBonus', gross: '500000', socialInsurance: '70000', incomeTax: '40000', residentTax: '0', otherDeductions: '5000', accountId: 'bank' };
+  const { transaction: bonus } = evaluate('salaryTransactionFromDraft(draft)');
+  assert.equal(bonus.amount, 385000);
+  assert.equal(bonus.label, '夏季賞与');
+  assert.equal(bonus.salary.deductions, 115000);
+  context.bonus = bonus;
+  const rows = evaluate('salaryAnnualRows([bonus],2026)');
+  assert.equal(rows.length, 14);
+  assert.equal(rows[5].items.length, 0);
+  assert.equal(rows[12].label, '夏季賞与');
+  assert.equal(rows[12].net, 385000);
+  assert.equal(rows[13].net, 0);
+});
+
+test('従来の控除合計はその他控除として表示できる', () => {
+  context.legacy = { amount: 250000, salary: { month: '2026-04', gross: 300000, deductions: 50000 } };
+  const parts = evaluate('salaryBreakdown(legacy)');
+  assert.equal(parts.otherDeductions, 50000);
+  assert.equal(parts.net, 250000);
 });

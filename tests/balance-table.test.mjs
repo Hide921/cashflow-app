@@ -95,6 +95,23 @@ test('非表示口座を合計から除き、残高セルをキーボードで�
   assert.match(button.props.className, /focus-visible:/);
 });
 
+test('給与モードの年別表は横スクロールで月給と賞与の内訳を表示する', () => {
+  const app = appContext(true);
+  const year = app.evaluate('todayD().getFullYear()');
+  const tree = app.evaluate('SalaryManager')({
+    accounts: [{ id: 'bank', name: '銀行' }],
+    txs: [{ id: 'bonus', type: 'income', amount: 385000, startDate: `${year}-06-25`, accountId: 'bank', salary: { month: `${year}-06`, kind: 'summerBonus', gross: 500000, socialInsurance: 70000, incomeTax: 40000, residentTax: 0, otherDeductions: 5000, deductions: 115000 } }],
+    onChange: () => {}, onDelete: () => {}, addToast: () => {},
+  });
+  assert.ok(nodes(tree, node => node.type === 'div' && node.props?.className?.includes('overflow-x-auto')).length);
+  const table = nodes(tree, node => node.type === 'table')[0];
+  assert.match(textOf(table), /社保/);
+  assert.match(textOf(table), /源泉所得税/);
+  assert.match(textOf(table), /住民税/);
+  assert.match(textOf(table), /夏季賞与/);
+  assert.match(textOf(table), /385,000/);
+});
+
 test('週次内訳から除外すると、列の日付ではなく取引の発生日を使う', () => {
   const app = appContext(true);
   const dates = Array.from({ length: 8 }, (_, i) => `2026-09-${String(i + 1).padStart(2, '0')}`);
