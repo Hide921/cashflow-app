@@ -365,6 +365,26 @@ test('同じ描画中の取引と借入の連続更新を両方残す', async ()
   assert.deepEqual(Array.from(app.state[2], loan => loan.id), ['loan-one', 'loan-two']);
 });
 
+test('ホームから給与モードを開き、専用画面から戻れる', async () => {
+  const app = appContext({ accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} });
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.resetHooks();
+  const dashboard = findNode(app.evaluate('App()'), 'Dashboard');
+  assert.ok(dashboard);
+  dashboard.props.onNavigate('salary');
+  app.resetHooks();
+  const salaryPage = app.evaluate('App()');
+  assert.ok(findNode(salaryPage, 'SalaryManager'));
+  assert.ok(!findNode(salaryPage, 'TxManager'));
+  const back = findElement(salaryPage, node => node.type === 'button' && node.props?.children?.includes('← ホームに戻る'));
+  assert.ok(back);
+  back.props.onClick();
+  app.resetHooks();
+  assert.ok(findNode(app.evaluate('App()'), 'Dashboard'));
+});
+
 test('概要は為替未取得時に仮の150円で米国株を評価しない', () => {
   const app = appContext();
   const stock = { id: 'us', ticker: 'AAPL', market: 'US', tradeType: 'spot', currency: 'USD', quantity: 10, avgPrice: 100, currentPrice: 120 };

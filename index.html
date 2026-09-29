@@ -2075,10 +2075,21 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
 
   const net=monthly.inc-monthly.exp;
   const editTx=editTxId?txs.find(t=>t.id===editTxId):null;
+  const currentSalary=txs.filter(tx=>tx.salary?.month===todayStr().slice(0,7));
+  const currentSalaryNet=currentSalary.reduce((sum,tx)=>sum+Number(tx.amount||0),0);
+  function openTxEditor(txId){
+    const tx=txs.find(item=>item.id===txId);
+    if(tx?.salary){onNavigate&&onNavigate('salary');return;}
+    setEditTxId(txId);
+  }
 
   return h('div',{className:'space-y-5'},
     addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
     editTx&&onUpdTx&&h(AddTxModal,{date:editTx.startDate||todayStr(),accounts,dark,editTx,onClose:()=>setEditTxId(null),onSave:tx=>{onUpdTx(tx);setEditTxId(null);}}),
+    onNavigate&&h('button',{type:'button',onClick:()=>onNavigate('salary'),className:'w-full flex items-center justify-between gap-3 rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3 text-left hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors','aria-label':'給与モードを開く'},
+      h('span',{className:'flex items-center gap-3 min-w-0'},h('span',{className:'w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold text-xl flex-shrink-0'},'¥'),h('span',{className:'min-w-0'},h('span',{className:'block font-semibold text-emerald-950 dark:text-emerald-100'},'給与モード'),h('span',{className:'block text-xs text-emerald-800 dark:text-emerald-300 mt-0.5'},currentSalary.length?`今月の手取り ${currentSalaryNet.toLocaleString()}円`:'額面・控除・手取りを月ごとに管理'))),
+      h('span',{className:'text-emerald-700 dark:text-emerald-300 font-bold'},'→')
+    ),
     h('section',{className:'space-y-3','aria-labelledby':'balance-table-title'},
       h('div',{className:'flex items-end justify-between gap-3 px-1 flex-wrap'},
         h('div',null,
@@ -2096,7 +2107,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
         )
       ),
       accounts.length>0
-        ?h(BalanceTable,{key:pIdx,accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,hiddenAccIds,onToggleAcc:toggleAccId,onShowAllAccounts:()=>setHiddenAccIds(new Set()),periodMonths:PERIODS[pIdx].months,isPast})
+        ?h(BalanceTable,{key:pIdx,accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?openTxEditor:undefined,hiddenAccIds,onToggleAcc:toggleAccId,onShowAllAccounts:()=>setHiddenAccIds(new Set()),periodMonths:PERIODS[pIdx].months,isPast})
         :h('div',{className:cardCls+' p-6 text-center'},
           h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-200'},'口座を登録すると残高表が表示されます'),
           onNavigate&&h('button',{onClick:()=>onNavigate('accounts'),className:'mt-3 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 text-sm font-semibold'},'口座を登録')
@@ -2233,7 +2244,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
         )
       ),
       h('div',{className:'border-t border-gray-100 dark:border-gray-700'},
-        h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onEditTx:onUpdTx?(txId)=>setEditTxId(txId):undefined,onUpdTx,onDeleteTx,embedded:true})
+        h(TxDetails,{txs,endD,startD,isPast,accounts,skippedKeys,skippedOccurrences,onSkip,onRestore,onEditTx:onUpdTx?openTxEditor:undefined,onUpdTx,onDeleteTx,embedded:true})
       )
     ),
     fabOpen&&h('div',{className:'fixed inset-0 z-30',onClick:()=>setFabOpen(false)}),
@@ -2894,7 +2905,6 @@ function App(){
   const [dark,setDark]=useState(()=>localGet(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
   const [activeView,setActiveView]=useState('home');
-  const [transactionSection,setTransactionSection]=useState('all');
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [localSaveFailed,setLocalSaveFailed]=useState(false);
   const [toasts,setToasts]=useState([]);
@@ -3147,7 +3157,7 @@ function App(){
           ),
           h('h1',{className:'hidden sm:block text-base font-bold text-gray-900 dark:text-gray-100 tracking-tight'},'Cashflow')
         ),
-        h(AppNavigation,{active:activeView,onChange:setActiveView}),
+        h(AppNavigation,{active:activeView==='salary'?'home':activeView,onChange:setActiveView}),
         h('div',{className:'flex items-center gap-1.5'},
           h(SyncStatus,{status:syncStatus,onRetry:()=>retryRef.current?retryRef.current():syncAll()}),
           h('button',{
@@ -3196,12 +3206,12 @@ function App(){
       }),
       activeView==='transactions'&&h('div',{className:'space-y-4'},
         h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),
-        h('div',{className:'inline-flex rounded-xl bg-gray-200/70 dark:bg-gray-800 p-1','aria-label':'取引の表示'},
-          [['all','一般の取引'],['salary','給与所得']].map(([key,label])=>h('button',{key,type:'button',onClick:()=>setTransactionSection(key),'aria-pressed':transactionSection===key,className:`rounded-lg px-4 py-2 text-sm font-semibold ${transactionSection===key?'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm':'text-gray-600 dark:text-gray-300'}`},label))
-        ),
-        transactionSection==='all'
-          ?h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
-          :h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})
+        h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
+      ),
+      activeView==='salary'&&h('div',{className:'space-y-4'},
+        h('button',{type:'button',onClick:()=>setActiveView('home'),className:'inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'},'← ホームに戻る'),
+        h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'給与モード'),h('p',{className:'text-sm text-gray-500 dark:text-gray-400 mt-1'},'月ごとの給与を確認・登録')),
+        h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})
       ),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
