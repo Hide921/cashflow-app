@@ -471,7 +471,7 @@ function transactionsFromCsv(text,accounts){
 }
 
 // ─── Reusable class strings ────────────────────────────
-const inputCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-300 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
+const inputCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
 const selectCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-white/30 transition-shadow';
 const labelCls='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1';
 const cardCls='bg-white dark:bg-gray-800 rounded-2xl shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none border border-gray-100 dark:border-gray-700/60';
@@ -917,7 +917,7 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
   const columns=[['gross','額面'],['socialInsurance','社保'],['incomeTax','源泉所得税'],['residentTax','住民税'],...(showOther?[['otherDeductions','その他控除']]:[]),['net','振込']];
   const amountText=value=>Number(value||0).toLocaleString();
   const salaryName=tx=>tx.salary.kind==='summerBonus'?'夏季賞与':tx.salary.kind==='winterBonus'?'冬季賞与':`${Number(tx.salary.month.slice(5))}月の給与`;
-  return h('div',{className:'space-y-4'},
+  return h('div',{className:'space-y-4 text-gray-800 dark:text-gray-100'},
     h('div',{className:'flex flex-wrap items-center justify-between gap-3'},
       h('div',null,h('h3',{className:'text-base font-semibold text-gray-900 dark:text-gray-100'},'給与・賞与'),h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'振込額を支給日の収入として残高予測に反映します。')),
       h('button',{type:'button',onClick:add,className:'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700'},'＋ 給与・賞与を登録')
@@ -949,13 +949,13 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
       ),
       h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-2 sm:hidden'},'表は左右にスクロールできます'),
       h('div',{className:'overflow-x-auto overscroll-x-contain rounded-xl border border-gray-200 dark:border-gray-700'},
-        h('table',{className:'w-full min-w-[740px] border-collapse text-sm tabular-nums','aria-label':`${year}年の給与・賞与一覧`},
+        h('table',{className:'w-full min-w-[740px] border-collapse text-sm tabular-nums text-gray-800 dark:text-gray-100','aria-label':`${year}年の給与・賞与一覧`},
           h('thead',{className:'bg-orange-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200'},h('tr',null,
             h('th',{scope:'col',className:'sticky left-0 z-10 bg-orange-50 dark:bg-gray-900 px-3 py-2 text-left font-semibold whitespace-nowrap'},`${year}年`),
             columns.map(([key,label])=>h('th',{key,scope:'col',className:'px-3 py-2 text-right font-semibold whitespace-nowrap'},label))
           )),
           h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},annualRows.map(row=>h('tr',{key:row.key,className:'hover:bg-gray-50 dark:hover:bg-gray-900/40'},
-            h('th',{scope:'row',className:'sticky left-0 bg-white dark:bg-gray-800 px-3 py-2 text-left font-medium whitespace-nowrap'},row.label,row.items.length>1&&h('span',{className:'ml-1 text-[10px] text-gray-400'},`×${row.items.length}`)),
+            h('th',{scope:'row',className:'sticky left-0 bg-white dark:bg-gray-800 px-3 py-2 text-left font-medium whitespace-nowrap text-gray-800 dark:text-gray-100'},row.label,row.items.length>1&&h('span',{className:'ml-1 text-[10px] text-gray-400 dark:text-gray-400'},`×${row.items.length}`)),
             columns.map(([key])=>h('td',{key,className:`px-3 py-2 text-right whitespace-nowrap ${key==='net'?'font-semibold text-emerald-700 dark:text-emerald-300':'text-gray-700 dark:text-gray-200'}`},row.items.length?amountText(row[key]):'—'))
           ))),
           h('tfoot',{className:'bg-indigo-50 dark:bg-indigo-950/40 font-bold'},h('tr',null,
