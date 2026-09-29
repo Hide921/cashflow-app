@@ -112,6 +112,27 @@ test('給与モードの年別表は横スクロールで月給と賞与の内�
   assert.match(textOf(table), /385,000/);
 });
 
+test('前月コピーは入力欄を埋め、保存操作までは取引を追加しない', () => {
+  const app = appContext();
+  const previous = app.evaluate('fmt(addMonths(todayD(),-1)).slice(0,7)');
+  const payDate = app.evaluate('fmt(addMonths(todayD(),-1))');
+  let changes = 0;
+  const props = {
+    accounts: [{ id: 'bank', name: '銀行' }],
+    txs: [{ id: 'previous', type: 'income', accountId: 'bank', startDate: payDate, amount: 250000, salary: { month: previous, kind: 'monthly', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 10000, otherDeductions: 0, deductions: 50000 } }],
+    onChange: () => { changes++; }, onDelete: () => {}, addToast: () => {},
+  };
+  const first = app.evaluate('SalaryManager')(props);
+  const copy = nodes(first, node => node.type === 'button' && textOf(node) === '前月コピー')[0];
+  assert.ok(copy);
+  copy.props.onClick();
+  app.resetHooks();
+  const form = app.evaluate('SalaryManager')(props);
+  assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-gross')[0].props.value, '300000');
+  assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-month')[0].props.value, app.evaluate('todayStr().slice(0,7)'));
+  assert.equal(changes, 0);
+});
+
 test('週次内訳から除外すると、列の日付ではなく取引の発生日を使う', () => {
   const app = appContext(true);
   const dates = Array.from({ length: 8 }, (_, i) => `2026-09-${String(i + 1).padStart(2, '0')}`);

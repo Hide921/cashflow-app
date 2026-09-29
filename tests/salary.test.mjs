@@ -75,3 +75,24 @@ test('従来の控除合計はその他控除として表示できる', () => {
   assert.equal(parts.otherDeductions, 50000);
   assert.equal(parts.net, 250000);
 });
+
+test('前月の月給を翌月の入力欄へコピーし、元データは変更しない', () => {
+  context.previous = { id: 'salary-dec', type: 'income', accountId: 'bank', startDate: '2027-01-25', amount: 255000,
+    salary: { month: '2026-12', kind: 'monthly', employer: '勤務先', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 5000, otherDeductions: 0, deductions: 45000 } };
+  const draft = evaluate('salaryDraftFromPrevious(previous,"2027-01")');
+  assert.equal(draft.month, '2027-01');
+  assert.equal(draft.payDate, '2027-02-25');
+  assert.equal(draft.gross, '300000');
+  assert.equal(draft.socialInsurance, '30000');
+  assert.equal(draft.accountId, 'bank');
+  assert.equal(draft.id, undefined);
+  assert.equal(context.previous.salary.month, '2026-12');
+  context.copied = draft;
+  assert.equal(evaluate('salaryTransactionFromDraft(copied).transaction.amount'), 255000);
+  assert.equal(evaluate('salaryDraftFromPrevious(previous,"2027-02")'), null);
+});
+
+test('賞与は前月の月給としてコピーしない', () => {
+  context.bonusPrevious = { startDate: '2026-06-25',salary: {month:'2026-06',kind:'summerBonus',gross:500000,deductions:50000} };
+  assert.equal(evaluate('salaryDraftFromPrevious(bonusPrevious,"2026-07")'), null);
+});
