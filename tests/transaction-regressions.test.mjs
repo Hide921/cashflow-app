@@ -97,6 +97,26 @@ test('未同期の削除は再読込時にクラウドの古い取引で復活�
   assert.deepEqual(JSON.parse(first.storage.get('cf_pending_v1')), {});
 });
 
+test('オフラインで移動した定期予定は再読込後も残り、クラウドへ保存される', async () => {
+  const old = { id: 'rent', label: '家賃', type: 'expense', amount: 100, accountId: 'bank', recurring: true, frequency: 'monthly', startDate: '2026-10-01', overrides: { '2026-10-01': 150 } };
+  const cloud = { accounts: [], transactions: [old], skipped: [] };
+  const first = appContext(cloud);
+  first.evaluate('App()'); first.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  first.resetHooks();
+  const dashboard = findNode(first.evaluate('App()'), 'Dashboard');
+  first.context.navigator.onLine = false;
+  const moved = first.evaluate('moveScheduledTransaction') (old,'2026-10-01','2026-10-05','2026-09-30').transaction;
+  dashboard.props.onUpdTx(moved);
+  assert.equal(cloud.transactions[0].dateMoves, undefined);
+  const second = appContext(cloud, first.storage);
+  second.evaluate('App()'); second.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(second.state[1][0].dateMoves['2026-10-01'], '2026-10-05');
+  assert.equal(cloud.transactions[0].dateMoves['2026-10-01'], '2026-10-05');
+  assert.equal(cloud.transactions[0].overrides['2026-10-05'], 150);
+});
+
 test('保存中に次の編集が入ったら、古い保存では未同期印を消さない', () => {
   const app = appContext();
   app.evaluate('markPending("transactions", [{id:"first"}])');

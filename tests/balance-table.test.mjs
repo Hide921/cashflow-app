@@ -54,6 +54,74 @@ function textOf(root) {
   return textOf(root.props?.children);
 }
 
+test('定期予定の移動はその回だけ変更し、確定額・再移動・元の日への復帰を保つ', () => {
+  const app = appContext();
+  const move = app.evaluate('moveScheduledTransaction');
+  const expand = app.evaluate('(tx,start,end,skips)=>expandRec(tx,parseISO(start),parseISO(end),skips).map(e=>[fmt(e.date),e.amt])');
+  const original = { id: 'rent', type: 'expense', amount: 100, recurring: true, frequency: 'monthly', startDate: '2026-10-01', overrides: { '2026-10-01': 150 } };
+  const moved = move(original,'2026-10-01','2026-10-05','2026-09-30').transaction;
+  assert.equal(original.overrides['2026-10-01'], 150);
+  assert.deepEqual(Array.from(expand(moved,'2026-10-01','2026-11-02'), row => Array.from(row)), [['2026-10-05',-150],['2026-11-01',-100]]);
+  assert.equal(expand(moved,'2026-10-01','2026-10-10',new Set(['rent_2026-10-05'])).length, 0);
+  const again = move(moved,'2026-10-05','2026-10-09','2026-09-30').transaction;
+  assert.equal(again.dateMoves['2026-10-01'], '2026-10-09');
+  assert.equal(again.overrides['2026-10-09'], 150);
+  const restored = move(again,'2026-10-09','2026-10-01','2026-09-30').transaction;
+  assert.equal(Object.keys(restored.dateMoves).length, 0);
+  assert.equal(restored.overrides['2026-10-01'], 150);
+});
+
+test('表示期間外の定期予定も移動先で展開され、終了日後に移した回を保持する', () => {
+  const app = appContext();
+  const tx = { id: 'year', type: 'income', amount: 200, recurring: true, frequency: 'yearly', startDate: '2026-12-01', endDate: '2026-12-31' };
+  const moved = app.evaluate('moveScheduledTransaction')(tx,'2026-12-01','2027-02-01','2026-09-30').transaction;
+  const events = app.evaluate('(tx)=>expandRec(tx,parseISO("2027-02-01"),parseISO("2027-02-28"),new Set())')(moved);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].amt, 200);
+});
+
+test('過去・存在しない回・同じ定期取引がある日への移動を拒否する', () => {
+  const app = appContext();
+  const move = app.evaluate('moveScheduledTransaction');
+  const tx = { id: 'rent', type: 'expense', amount: 100, recurring: true, frequency: 'monthly', startDate: '2026-10-01' };
+  assert.ok(move(tx,'2026-10-01','2026-09-29','2026-09-30').error);
+  assert.ok(move(tx,'2026-10-02','2026-10-05','2026-09-30').error);
+  assert.ok(move(tx,'2026-10-01','2026-11-01','2026-09-30').error);
+  assert.ok(move(tx,'2026-10-01','2026-10-05','2026-09-30',new Set(['rent_2026-10-01'])).error);
+});
+
+test('単発給与は対象月を保持し、振替は両口座の残高を同じ移動日に更新する', () => {
+  const app = appContext();
+  const move = app.evaluate('moveScheduledTransaction');
+  const from = app.evaluate('fmt(addDays(todayD(),1))');
+  const to = app.evaluate('fmt(addDays(todayD(),3))');
+  const salary = move({ id: 'pay', type: 'income', startDate: from, amount: 200, salary: { month: '2026-09' } },from,to).transaction;
+  assert.equal(salary.salary.month, '2026-09');
+  assert.equal(salary.startDate, to);
+  const tx = move({ id: 'transfer', type: 'transfer', amount: 100, recurring: true, frequency: 'monthly', startDate: from, fromAccountId: 'a', toAccountId: 'b' },from,to).transaction;
+  const rows = app.evaluate('(tx,to)=>buildForecast([{id:"a",balance:500},{id:"b",balance:0}],[tx],parseISO(to),new Set())')(tx,to);
+  assert.equal(rows.find(row=>row.date===from).a, 500);
+  assert.equal(rows.at(-1).a, 400);
+  assert.equal(rows.at(-1).b, 100);
+});
+
+test('残高表の予定を同じ口座の別日へドロップし、別口座への移動を防ぐ', () => {
+  const app = appContext();
+  const from = app.evaluate('fmt(addDays(todayD(),1))');
+  const to = app.evaluate('fmt(addDays(todayD(),2))');
+  const calls = [];
+  const props = { accounts: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], fData: [{ date: from, a: 400, b: 0 }, { date: to, a: 400, b: 0 }], txEventMap: { [from]: { a: [{ txId: 'rent', label: '家賃', amt: -100 }] } }, onMoveTx: (...args) => { calls.push(args); return {}; } };
+  let tree = app.evaluate('BalanceTable')(props);
+  const item = nodes(tree, node => node.props?.draggable)[0];
+  item.props.onDragStart({ dataTransfer: { setData() {} } });
+  nodes(tree, node => node.props?.['data-drop-date'] === to && node.props?.['data-drop-account'] === 'b')[0].props.onDrop({ preventDefault() {} });
+  assert.equal(calls.length, 0);
+  nodes(tree, node => node.props?.['data-drop-date'] === to && node.props?.['data-drop-account'] === 'a')[0].props.onDrop({ preventDefault() {} });
+  assert.deepEqual(calls, [['rent',from,to]]);
+  app.resetHooks(); tree = app.evaluate('BalanceTable')({ ...props, isPast: true });
+  assert.equal(nodes(tree, node => node.props?.draggable).length, 0);
+});
+
 test('週次・月次の内訳には列間の全取引と元の日付を含める', () => {
   const app = appContext();
   const periods = app.evaluate(`buildBalanceTablePeriods(

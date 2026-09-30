@@ -147,7 +147,7 @@ function recurrenceStartIndex(base,startD,frequency){
   if(frequency==='yearly') return Math.max(0,Math.floor(months/12)-2);
   return 0;
 }
-function expandRec(tx, startD, endD, skippedKeys){
+function expandRecBase(tx, startD, endD, skippedKeys){
   const evts=[];
   const base=sod(parseISO(tx.startDate));
   const biz=tx.adjustBizDay;
@@ -176,6 +176,44 @@ function expandRec(tx, startD, endD, skippedKeys){
     }
   }
   return evts;
+}
+
+function expandRec(tx,startD,endD,skippedKeys){
+  const moves=tx.dateMoves||{};
+  const events=expandRecBase(tx,startD,endD,skippedKeys).filter(event=>!moves[fmt(event.date)]);
+  Object.entries(moves).forEach(([original,target])=>{
+    if(!validTxDate(original)||!validTxDate(target))return;
+    const date=sod(parseISO(target));
+    if(isBefore(date,startD)||isAfter(date,endD)||skippedKeys?.has(`${tx.id}_${original}`)||skippedKeys?.has(`${tx.id}_${target}`))return;
+    const source=expandRecBase(tx,sod(parseISO(original)),sod(parseISO(original)),null)[0];
+    if(!source)return;
+    const raw=tx.overrides?.[target]??Math.abs(source.amt);
+    events.push({date,amt:tx.type==='expense'?-raw:raw});
+  });
+  return events.sort((a,b)=>a.date-b.date);
+}
+
+function moveScheduledTransaction(tx,fromDate,toDate,today=todayStr(),skippedKeys=new Set()){
+  if(!tx||!validTxDate(fromDate)||!validTxDate(toDate))return {error:'有効な移動日を選択してください'};
+  if(fromDate<today||toDate<today)return {error:'今日以降の予定へ移動してください'};
+  if(fromDate===toDate)return {transaction:tx};
+  if(skippedKeys.has(`${tx.id}_${fromDate}`))return {error:'支払済み・除外済みの予定は移動できません'};
+  if(!tx.recurring){
+    if(tx.startDate!==fromDate)return {error:'予定が変更されています。表示を更新してください'};
+    return {transaction:{...tx,startDate:toDate}};
+  }
+  const from=sod(parseISO(fromDate)),to=sod(parseISO(toDate));
+  const sources=expandRec(tx,from,from,skippedKeys);
+  if(!sources.length)return {error:'移動元の予定が見つかりません'};
+  if(sources.length>1)return {error:'同じ定期取引がこの日に複数あります。取引の設定から日付を確認してください'};
+  if(expandRec(tx,to,to,null).length||skippedKeys.has(`${tx.id}_${toDate}`))return {error:'移動先には同じ定期取引の予定があります。別の日を選んでください'};
+  const dateMoves={...(tx.dateMoves||{})};
+  const original=Object.keys(dateMoves).find(date=>dateMoves[date]===fromDate)||fromDate;
+  if(toDate===original)delete dateMoves[original];
+  else dateMoves[original]=toDate;
+  const overrides={...(tx.overrides||{})};
+  if(overrides[fromDate]!==undefined){overrides[toDate]=overrides[fromDate];delete overrides[fromDate];}
+  return {transaction:{...tx,dateMoves,overrides}};
 }
 
 function buildForecast(accounts, txs, endD, skippedKeys){
@@ -1200,26 +1238,10 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
 
   function getOccurrences(f,maxN){
     if(!f.startDate) return [];
-    const base=sod(parseISO(f.startDate));
     const today2=todayD();
-    const cap=f.endDate?new Date(Math.min(sod(parseISO(f.endDate)).getTime(),addMonths(today2,24).getTime())):addMonths(today2,24);
+    const cap=addMonths(today2,24);
     const max=maxN||(f.frequency==='daily'?31:f.frequency==='weekly'?16:f.frequency==='yearly'?5:13);
-    const res=[];
-    const first=recurrenceStartIndex(base,today2,f.frequency);
-    for(let n=first;n<first+1500&&res.length<max;n++){
-      let cur;
-      if(f.frequency==='daily') cur=addDays(base,n);
-      else if(f.frequency==='weekly') cur=addDays(base,n*7);
-      else if(f.frequency==='monthly') cur=addMonths(base,n);
-      else if(f.frequency==='yearly') cur=addMonths(base,n*12);
-      else break;
-      cur=sod(cur);
-      if(isAfter(cur,cap)) break;
-      const biz=f.adjustBizDay;
-      const adj=biz==='prev'||biz===true?sod(prevBizDay(cur)):biz==='next'?sod(nextBizDay(cur)):cur;
-      if(!isBefore(adj,today2)) res.push(fmt(adj));
-    }
-    return res;
+    return expandRec(f,today2,cap,new Set()).slice(0,max).map(event=>fmt(event.date));
   }
 
   function submit(e){
@@ -1237,7 +1259,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     if(form.recurring&&form.endDate&&(!validTxDate(form.endDate)||form.endDate<form.startDate)){setErr('終了日は開始日以降にしてください');return;}
     setErr('');
     const original=editId?txs.find(t=>t.id===editId):null;
-    const tx={...form,label:form.type==='transfer'?(original?.type==='transfer'?original.label:'資金振替'):form.label.trim(),amount:parsedAmt,endDate:form.endDate||null};
+    const tx={...(original||{}),...form,label:form.type==='transfer'?(original?.type==='transfer'?original.label:'資金振替'):form.label.trim(),amount:parsedAmt,endDate:form.endDate||null};
     if(editId){
       onChange(current=>current.map(t=>t.id===editId?{...tx,id:editId}:t));
       setEditId(null);
@@ -1258,7 +1280,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
     setConfirmTarget(null);
   }
 
-  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); setOverrideMonth(todayStr().slice(0,7));setErr('');setShowSugs(false);setShowForm(true); }
+  function startEdit(tx){ setEditId(tx.id); setForm({label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||'その他',accountId:tx.accountId||'',fromAccountId:tx.fromAccountId||'',toAccountId:tx.toAccountId||'',overrides:tx.overrides||{},dateMoves:tx.dateMoves||{},recurring:tx.recurring,frequency:tx.frequency||'monthly',startDate:tx.startDate,endDate:tx.endDate||'',adjustBizDay:tx.adjustBizDay===true?'prev':(tx.adjustBizDay||'')}); setOverrideMonth(todayStr().slice(0,7));setErr('');setShowSugs(false);setShowForm(true); }
   function cancel(){ setEditId(null); setForm(DEF); setErr('');setShowSugs(false);setShowForm(false); }
   function openAddForm(){ setEditId(null); setForm({...DEF,accountId:accounts[0]?.id||'',fromAccountId:accounts[0]?.id||'',toAccountId:accounts[1]?.id||''}); setOverrideMonth(todayStr().slice(0,7));setErr(''); setShowForm(true); }
 
@@ -1612,10 +1634,20 @@ function balanceChangeDays(fData, visibleAccounts, txEventMap){
   });
 }
 
-function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds, onToggleAcc, onShowAllAccounts, periodMonths, isPast }){
+function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, onMoveTx, hiddenAccIds, onToggleAcc, onShowAllAccounts, periodMonths, isPast }){
   const [viewMode,setViewMode]=useState(()=>Math.abs(periodMonths)>3?'weekly':'daily');
   const [showAccountFilter,setShowAccountFilter]=useState(false);
   const scrollRef=useRef(null);
+  const dragRef=useRef(null);
+  const pointerDragRef=useRef(null);
+  const [dropDate,setDropDate]=useState(null);
+  const [moveTarget,setMoveTarget]=useState(null);
+  const [moveError,setMoveError]=useState('');
+  const moveEvent=(item,toDate)=>{
+    const result=onMoveTx?.(item.txId,item.date,toDate);
+    if(result?.error){setMoveError(result.error);return;}
+    setMoveError('');setMoveTarget(null);setTip(null);
+  };
   const visibleAccounts=accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id));
   const cols=useMemo(()=>{
     if(viewMode==='daily') return fData;
@@ -1684,6 +1716,16 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
   if(!accounts.length) return null;
 
   return h('div',{className:cardCls+' overflow-hidden'},
+    moveTarget&&h('div',{className:'fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4'},
+      h('form',{role:'dialog','aria-modal':true,'aria-label':'予定の日付を移動',className:cardCls+' w-full max-w-sm p-5 space-y-4',onKeyDown:e=>{if(e.key==='Escape'){setMoveTarget(null);setMoveError('');}},onSubmit:e=>{e.preventDefault();moveEvent(moveTarget,moveTarget.toDate);}},
+        h('h3',{className:'font-semibold text-gray-900 dark:text-gray-100'},'予定を移動'),
+        h('p',{className:'text-sm text-gray-600 dark:text-gray-300'},`${moveTarget.label} · ${fmtDisp(moveTarget.date)}`),
+        h('label',{className:'block text-sm text-gray-700 dark:text-gray-200'},'移動先の日付',h('input',{type:'date',required:true,min:todayStr(),value:moveTarget.toDate,onInput:e=>setMoveTarget(current=>({...current,toDate:e.target.value})),onChange:e=>setMoveTarget(current=>({...current,toDate:e.target.value})),className:inputCls+' mt-2',autoFocus:true})),
+        moveError&&h('p',{role:'alert',className:'text-sm text-rose-600'},moveError),
+        h('div',{className:'flex justify-end gap-2'},h('button',{type:'button',onClick:()=>{setMoveTarget(null);setMoveError('');},className:'px-3 py-2 text-sm text-gray-600 dark:text-gray-300'},'キャンセル'),h('button',{type:'submit',className:'rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white'},'移動する'))
+      )
+    ),
+    moveError&&!moveTarget&&h('p',{role:'alert',className:'px-4 py-2 text-sm text-rose-600'},moveError),
     h('div',{className:'px-3 sm:px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2 flex-wrap'},
       h('div',{className:'flex items-center gap-2 flex-wrap'},
         h('p',{className:'text-xs font-semibold text-gray-600 dark:text-gray-300'},'表示単位'),
@@ -1717,6 +1759,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
       }))
     ),
     h('p',{className:'px-3 sm:px-5 py-2 text-[11px] text-gray-500 dark:text-gray-400'},viewMode==='daily'?'残高の下に前日からの増減を表示します。':viewMode==='changes'?`残高が変わる日と予定がある日を表示中（${cols.length}/${fData.length}日）。増減と予定の内訳は前の表示日からの合計です。日付を指定して追加するには「日次」へ。`:`${viewMode==='weekly'?'週次':'月次'}の増減は前の表示日からの差です。予定の内訳はその期間をまとめて表示します。`),
+    onMoveTx&&!isPast&&h('p',{className:'px-3 sm:px-5 pb-2 text-[11px] text-indigo-600 dark:text-indigo-300'},viewMode==='daily'?'予定名を同じ口座の別の日へドラッグして移動できます。「移動」から日付を指定することもできます。定期取引はこの回だけ変更します。':'予定をドラッグして移動するには「日次」に切り替えてください。'),
     h('div',{ref:scrollRef,className:'overflow-x-auto overscroll-x-contain'},
       h('table',{className:'text-sm border-collapse w-full'},
         h('thead',null,
@@ -1750,7 +1793,22 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
                 const evs=periods[ci].eventsByAccount[a.id];
                 const startDate=periods[ci].startDate;
                 return h('td',{key:col.date,
-                  className:`p-0 text-right whitespace-nowrap tabular-nums${col.date===todayStr()?' bg-indigo-50/70 dark:bg-indigo-950/20':''}${neg?' bg-red-50 dark:bg-red-950/20':''}`
+                  'data-drop-date':col.date,'data-drop-account':a.id,
+                  onDragOver:e=>{
+                    const item=dragRef.current;
+                    if(!onMoveTx||isPast||viewMode!=='daily'||!item||item.accountId!==a.id||col.date<todayStr())return;
+                    e.preventDefault();e.dataTransfer.dropEffect='move';setDropDate(`${a.id}_${col.date}`);
+                    const el=scrollRef.current,r=el?.getBoundingClientRect();
+                    if(r&&e.clientX>r.right-48)el.scrollBy({left:24});
+                    else if(r&&e.clientX<r.left+48)el.scrollBy({left:-24});
+                  },
+                  onDragLeave:()=>setDropDate(null),
+                  onDrop:e=>{
+                    const item=dragRef.current;
+                    if(!onMoveTx||isPast||viewMode!=='daily'||!item||item.accountId!==a.id||col.date<todayStr())return;
+                    e.preventDefault();dragRef.current=null;setDropDate(null);moveEvent(item,col.date);
+                  },
+                  className:`p-0 align-top text-right whitespace-nowrap tabular-nums${col.date===todayStr()?' bg-indigo-50/70 dark:bg-indigo-950/20':''}${neg?' bg-red-50 dark:bg-red-950/20':''}${dropDate===`${a.id}_${col.date}`?' ring-2 ring-inset ring-indigo-500 bg-indigo-100 dark:bg-indigo-900/40':''}`
                 },
                   h(onCellClick?'button':'div',{
                     ...(onCellClick?{
@@ -1770,7 +1828,40 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
                       `${diff>=0?'+':'-'}${fmtYen(diff)}`),
                     evs?.length>0&&h('span',{className:'block text-[10px] text-indigo-600 dark:text-indigo-300 leading-none mt-1'},`${evs.length}件の予定`),
                     onCellClick&&h('span',{className:`block text-[10px] text-indigo-400 leading-none mt-0.5 ${isTouch?'opacity-100':'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'}`},isTouch&&evs?.length?'タップして内訳':'+取引')
-                  )
+                  ),
+                  onMoveTx&&!isPast&&viewMode==='daily'&&evs?.length>0&&h('div',{className:'px-2 pb-2 space-y-1'},evs.map((item,index)=>h('div',{
+                    key:`${item.txId}_${index}`,draggable:true,
+                    onPointerDown:e=>{
+                      if(e.button!==0||e.target.closest('button'))return;
+                      e.preventDefault();clearTipTimer();setTip(null);setMoveError('');
+                      pointerDragRef.current={item:{...item,accountId:a.id},x:e.clientX,y:e.clientY,active:false,toDate:null};
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    },
+                    onPointerMove:e=>{
+                      const drag=pointerDragRef.current;
+                      if(!drag)return;
+                      if(!drag.active&&Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<6)return;
+                      drag.active=true;
+                      const cell=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-drop-date]');
+                      const date=cell?.dataset.dropDate;
+                      drag.toDate=cell?.dataset.dropAccount===a.id&&date>=todayStr()?date:null;
+                      setDropDate(drag.toDate?`${a.id}_${drag.toDate}`:null);
+                      const el=scrollRef.current,r=el?.getBoundingClientRect();
+                      if(r&&e.clientX>r.right-48)el.scrollBy({left:24});
+                      else if(r&&e.clientX<r.left+48)el.scrollBy({left:-24});
+                    },
+                    onPointerUp:e=>{
+                      const drag=pointerDragRef.current;pointerDragRef.current=null;setDropDate(null);
+                      if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);
+                      if(drag?.active&&drag.toDate)moveEvent(drag.item,drag.toDate);
+                    },
+                    onPointerCancel:()=>{pointerDragRef.current=null;setDropDate(null);},
+                    style:{touchAction:'none'},
+                    onDragStart:e=>{clearTipTimer();setTip(null);setMoveError('');dragRef.current={...item,accountId:a.id};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',item.label);},
+                    onDragEnd:()=>{dragRef.current=null;setDropDate(null);},
+                    className:'flex items-center gap-1 rounded-lg border border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-1.5 cursor-grab active:cursor-grabbing text-left',
+                    title:`${item.label}を別の日へドラッグ`
+                  },h('span',{'aria-hidden':true,className:'text-indigo-400'},'⠿'),h('span',{className:'min-w-0 flex-1 text-[11px] text-gray-700 dark:text-gray-200 max-w-[120px] truncate'},item.label),h('button',{type:'button','aria-label':`${item.label}の予定日を移動`,onClick:e=>{e.stopPropagation();setMoveError('');setMoveTarget({...item,toDate:item.date});},className:'rounded px-1.5 py-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900'},'移動'))))
                 );
               })
             );
@@ -2048,10 +2139,10 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
     if(isTransfer){
       if(!form.fromAccountId||!form.toAccountId){setErr('振替元・振替先の口座を選択してください');return;}
       if(form.fromAccountId===form.toAccountId){setErr('振替元と振替先は別の口座を選択してください');return;}
-      onSave({id:editTx?.id||genId(),label:editTx?.type==='transfer'?editTx.label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
+      onSave({...(editTx||{}),id:editTx?.id||genId(),label:editTx?.type==='transfer'?editTx.label:'資金振替',type:'transfer',amount:amt,category:'',accountId:'',fromAccountId:form.fromAccountId,toAccountId:form.toAccountId,recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     } else {
       if(!form.accountId){setErr('口座を選択してください');return;}
-      onSave({id:editTx?.id||genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
+      onSave({...(editTx||{}),id:editTx?.id||genId(),label:form.label.trim(),type:form.type,amount:amt,category:form.category,accountId:form.accountId,fromAccountId:'',toAccountId:'',recurring:form.recurring,frequency:form.frequency,startDate:form.startDate||date,endDate:form.endDate||null,overrides:editTx?.overrides||{},adjustBizDay:editTx?.adjustBizDay||''});
     }
   }
   const inp=`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${dark?'bg-gray-800 border-gray-600 text-gray-100':'bg-white border-gray-300 text-gray-900'}`;
@@ -2320,6 +2411,11 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
   const net=monthly.inc-monthly.exp;
   const editTx=editTxId?txs.find(t=>t.id===editTxId):null;
   const currentSalary=txs.filter(tx=>tx.salary?.month===todayStr().slice(0,7));
+  const moveScheduledEvent=(txId,fromDate,toDate)=>{
+    const result=moveScheduledTransaction(txs.find(tx=>tx.id===txId),fromDate,toDate,todayStr(),skippedKeys);
+    if(result.transaction&&result.transaction!==txs.find(tx=>tx.id===txId))onUpdTx(result.transaction);
+    return result;
+  };
   const currentSalaryNet=currentSalary.reduce((sum,tx)=>sum+Number(tx.amount||0),0);
   function openTxEditor(txId){
     const tx=txs.find(item=>item.id===txId);
@@ -2351,7 +2447,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
         )
       ),
       accounts.length>0
-        ?h(BalanceTable,{key:pIdx,accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?openTxEditor:undefined,hiddenAccIds,onToggleAcc:toggleAccId,onShowAllAccounts:()=>setHiddenAccIds(new Set()),periodMonths:PERIODS[pIdx].months,isPast})
+        ?h(BalanceTable,{key:pIdx,accounts,fData:fullData,txEventMap,onCellClick:(!isPast&&onAddTx)?(date,accId)=>{setAddDate(date);setAddAccId(accId);}:undefined,onSkip:(!isPast&&onSkip)?onSkip:undefined,onEditTx:onUpdTx?openTxEditor:undefined,onMoveTx:!isPast&&onUpdTx?moveScheduledEvent:undefined,hiddenAccIds,onToggleAcc:toggleAccId,onShowAllAccounts:()=>setHiddenAccIds(new Set()),periodMonths:PERIODS[pIdx].months,isPast})
         :h('div',{className:cardCls+' p-6 text-center'},
           h('p',{className:'text-sm font-medium text-gray-700 dark:text-gray-200'},'口座を登録すると残高表が表示されます'),
           onNavigate&&h('button',{onClick:()=>onNavigate('accounts'),className:'mt-3 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 text-sm font-semibold'},'口座を登録')
