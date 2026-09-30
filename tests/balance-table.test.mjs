@@ -135,7 +135,7 @@ test('給与モードの年別表は横スクロールで月給と賞与の内�
   const app = appContext(true);
   const year = app.evaluate('todayD().getFullYear()');
   const tree = app.evaluate('SalaryManager')({
-    accounts: [{ id: 'bank', name: '銀行' }],
+    accounts: [{ id: 'bank', name: '千葉銀' }],
     txs: [{ id: 'bonus', type: 'income', amount: 385000, startDate: `${year}-06-25`, accountId: 'bank', salary: { month: `${year}-06`, kind: 'summerBonus', gross: 500000, socialInsurance: 70000, incomeTax: 40000, residentTax: 0, otherDeductions: 5000, deductions: 115000 } }],
     onChange: () => {}, onDelete: () => {}, addToast: () => {},
   });
@@ -152,7 +152,7 @@ test('給与モードの年別表は横スクロールで月給と賞与の内�
 
 test('給与フォームは区分と対象月に応じて支給日を設定し、手動変更も戻せる', () => {
   const app = appContext();
-  const props = { accounts: [{ id: 'bank', name: '銀行' }], txs: [], onChange: () => {}, onDelete: () => {}, addToast: () => {} };
+  const props = { accounts: [{ id: 'bank', name: '千葉銀' }], txs: [], onChange: () => {}, onDelete: () => {}, addToast: () => {} };
   let tree = app.evaluate('SalaryManager')(props);
   nodes(tree, node => node.type === 'button' && textOf(node).includes('月給を登録'))[0].props.onClick();
   app.resetHooks();
@@ -184,7 +184,7 @@ test('既存給与の手入力済み支給日は編集画面で保持する', ()
   const month = app.evaluate('todayStr().slice(0,7)');
   const customDate = `${month}-15`;
   const props = {
-    accounts: [{ id: 'bank', name: '銀行' }],
+    accounts: [{ id: 'bank', name: '千葉銀' }],
     txs: [{ id: 'salary', type: 'income', amount: 250000, startDate: customDate, accountId: 'bank', salary: { month, kind: 'monthly', gross: 300000, deductions: 50000 } }],
     onChange: () => {}, onDelete: () => {}, addToast: () => {},
   };
@@ -195,13 +195,44 @@ test('既存給与の手入力済み支給日は編集画面で保持する', ()
   assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-pay-date')[0].props.value, customDate);
 });
 
+test('給与の編集はポップアップで開き、保存時に千葉銀へ変更する', () => {
+  const app = appContext();
+  const month = app.evaluate('todayStr().slice(0,7)');
+  const old = { id: 'salary', type: 'income', amount: 250000, startDate: `${month}-15`, accountId: 'other', salary: { month, kind: 'monthly', gross: 300000, deductions: 50000 } };
+  const props = { accounts: [{ id: 'chiba', name: '千葉銀' }, { id: 'other', name: '別の口座' }], txs: [old],
+    onChange: update => { props.txs = update(props.txs); }, onDelete: () => {}, addToast: () => {} };
+  let tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '編集')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  const dialog = nodes(tree, node => node.type === 'section' && node.props?.role === 'dialog')[0];
+  assert.equal(dialog.props['aria-modal'], true);
+  assert.match(textOf(dialog), /保存すると千葉銀に変更/);
+  assert.equal(props.txs[0].accountId, 'other');
+  nodes(dialog, node => node.type === 'form')[0].props.onSubmit({ preventDefault() {} });
+  assert.equal(props.txs[0].accountId, 'chiba');
+  assert.equal(props.txs[0].startDate, `${month}-15`);
+});
+
+test('千葉銀がなければ給与を保存しない', () => {
+  const app = appContext();
+  let changes = 0;
+  const props = { accounts: [{ id: 'other', name: '別の口座' }], txs: [], onChange: () => { changes++; }, onDelete: () => {}, addToast: () => {} };
+  let tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node).includes('月給を登録'))[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'form')[0].props.onSubmit({ preventDefault() {} });
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(changes, 0);
+  assert.match(textOf(tree), /千葉銀口座が見つかりません/);
+});
+
 test('前月コピーは入力欄を埋め、保存操作までは取引を追加しない', () => {
   const app = appContext();
   const previous = app.evaluate('fmt(addMonths(todayD(),-1)).slice(0,7)');
   const payDate = app.evaluate('fmt(addMonths(todayD(),-1))');
   let changes = 0;
   const props = {
-    accounts: [{ id: 'bank', name: '銀行' }],
+    accounts: [{ id: 'bank', name: '千葉銀' }],
     txs: [{ id: 'previous', type: 'income', accountId: 'bank', startDate: payDate, amount: 250000, salary: { month: previous, kind: 'monthly', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 10000, otherDeductions: 0, deductions: 50000 } }],
     onChange: () => { changes++; }, onDelete: () => {}, addToast: () => {},
   };
@@ -225,7 +256,7 @@ test('9月の月給から5〜8月をプレビューして一括登録し、再�
   const source = { id: 'sep', type: 'income', category: '給与', label: '給与', amount: 250000, startDate: '2026-09-30', accountId: 'bank',
     salary: { month: '2026-09', kind: 'monthly', employer: '勤務先', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 10000, otherDeductions: 0, deductions: 50000 } };
   const original = JSON.stringify(source);
-  const props = { accounts: [{ id: 'bank', name: '銀行' }], txs: [source],
+  const props = { accounts: [{ id: 'bank', name: '千葉銀' }], txs: [source],
     onChange: update => { props.txs = update(props.txs); }, onDelete: () => {}, addToast: () => {} };
   let tree = app.evaluate('SalaryManager')(props);
   nodes(tree, node => node.type === 'button' && textOf(node) === 'まとめてコピー')[0].props.onClick();

@@ -33,6 +33,25 @@ test('月給は月末、賞与は15日を基準に土日を直前の金曜日へ
   assert.equal(evaluate("salaryDefaultPayDate('2026-13','monthly')"), '');
 });
 
+test('定期収支には勤務先ごとの直近月給を含め、賞与・未来月・過去月の重複を除く', () => {
+  const rows = [
+    { type: 'income', recurring: true, frequency: 'monthly', amount: 50000 },
+    { type: 'expense', recurring: true, frequency: 'monthly', amount: 539103 },
+    { type: 'income', recurring: false, amount: 240000, salary: { month: '2026-08', kind: 'monthly', employer: 'A' } },
+    { type: 'income', recurring: false, amount: 250000, salary: { month: '2026-09', kind: 'monthly', employer: 'A' } },
+    { type: 'income', recurring: false, amount: 100000, salary: { month: '2026-08', kind: 'monthly', employer: 'B' } },
+    { type: 'income', recurring: false, amount: 350000, salary: { month: '2026-09', kind: 'summerBonus', employer: 'A' } },
+    { type: 'income', recurring: false, amount: 260000, salary: { month: '2026-10', kind: 'monthly', employer: 'A' } },
+  ];
+  context.runRateRows = rows;
+  const result = evaluate("monthlyRunRate(runRateRows,'2026-09')");
+  assert.equal(result.inc, 400000);
+  assert.equal(result.exp, 539103);
+  assert.equal(result.salary, 350000);
+  assert.deepEqual(Array.from(result.salaryMonths), ['2026-08', '2026-09']);
+  assert.equal(evaluate("monthlyRunRate(runRateRows,'2026-07').salary"), 0);
+});
+
 test('給与の手取りだけが支給日の入金として扱われる', () => {
   const payDate = evaluate('fmt(addDays(todayD(), 2))');
   context.draft = { month: payDate.slice(0, 7), payDate, employer: '勤務先', gross: '30万', deductions: '50000', accountId: 'bank' };
