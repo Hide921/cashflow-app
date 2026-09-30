@@ -117,6 +117,30 @@ test('オフラインで移動した定期予定は再読込後も残り、ク�
   assert.equal(cloud.transactions[0].overrides['2026-10-05'], 150);
 });
 
+test('借入の返済予定変更は借入データへ保存され、再読込で残高表へ戻る', async () => {
+  const loan={id:'loan',name:'カードローン',balance:300000,monthlyPayment:10000,nextPaymentDate:'2026-10-01',repaymentAccountId:'bank'};
+  const cloud={accounts:[{id:'bank',name:'千葉銀',balance:500000}],transactions:[],loans:[loan],skipped:[]};
+  const first=appContext(cloud);
+  first.evaluate('App()');first.effects[0]();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  first.resetHooks();
+  const dashboard=findNode(first.evaluate('App()'),'Dashboard');
+  const plan=dashboard.props.txs.find(tx=>tx.loanPlan);
+  assert.ok(plan);
+  first.context.navigator.onLine=false;
+  dashboard.props.onUpdTx({...plan,overrides:{'2026-10-05':12000},dateMoves:{'2026-10-01':'2026-10-05'}});
+  assert.equal(cloud.loans[0].repaymentDateMoves,undefined);
+  const second=appContext(cloud,first.storage);
+  second.evaluate('App()');second.effects[0]();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  second.resetHooks();
+  const restored=findNode(second.evaluate('App()'),'Dashboard').props.txs.find(tx=>tx.loanPlan);
+  assert.equal(restored.dateMoves['2026-10-01'],'2026-10-05');
+  assert.equal(restored.overrides['2026-10-05'],12000);
+  assert.equal(cloud.transactions.length,0);
+  assert.equal(cloud.loans[0].repaymentDateMoves['2026-10-01'],'2026-10-05');
+});
+
 test('保存中に次の編集が入ったら、古い保存では未同期印を消さない', () => {
   const app = appContext();
   app.evaluate('markPending("transactions", [{id:"first"}])');
