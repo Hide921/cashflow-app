@@ -1467,12 +1467,24 @@ function buildBalanceTablePeriods(cols, fData, txEventMap){
   });
 }
 
+function balanceChangeDays(fData, visibleAccounts, txEventMap){
+  if(fData.length<3) return fData;
+  const visibleIds=new Set(visibleAccounts.map(a=>String(a.id)));
+  return fData.filter((col,i)=>{
+    if(i===0||i===fData.length-1||col.date===todayStr()) return true;
+    if(visibleAccounts.some(a=>(col[a.id]??0)!==(fData[i-1][a.id]??0))) return true;
+    return Object.entries(txEventMap?.[col.date]||{}).some(([id,events])=>visibleIds.has(id)&&events?.length);
+  });
+}
+
 function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEditTx, hiddenAccIds, onToggleAcc, onShowAllAccounts, periodMonths, isPast }){
   const [viewMode,setViewMode]=useState(()=>Math.abs(periodMonths)>3?'weekly':'daily');
   const [showAccountFilter,setShowAccountFilter]=useState(false);
   const scrollRef=useRef(null);
+  const visibleAccounts=accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id));
   const cols=useMemo(()=>{
     if(viewMode==='daily') return fData;
+    if(viewMode==='changes') return balanceChangeDays(fData,visibleAccounts,txEventMap);
     if(viewMode==='weekly') return fData.filter((_,i)=>i%7===0||i===fData.length-1);
     if(viewMode==='monthly'){
       const seen=new Set(); const res=[];
@@ -1484,9 +1496,8 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
       return res;
     }
     return fData;
-  },[fData,viewMode,isPast]);
+  },[fData,viewMode,isPast,accounts,hiddenAccIds,txEventMap]);
   const periods=useMemo(()=>buildBalanceTablePeriods(cols,fData,txEventMap),[cols,fData,txEventMap]);
-  const visibleAccounts=accounts.filter(a=>!hiddenAccIds||!hiddenAccIds.has(a.id));
   const fmtCol=s=>{
     const [y,mo,d]=s.split('-');
     const dt=new Date(Number(y),Number(mo)-1,Number(d));
@@ -1545,7 +1556,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
       ),
       h('div',{className:'flex items-center gap-2 flex-wrap'},
         h('div',{className:'flex gap-1 rounded-lg bg-gray-100 dark:bg-gray-900 p-0.5','aria-label':'残高表の表示単位'},
-          [['daily','日次'],['weekly','週次'],['monthly','月次']].map(([v,l])=>
+          [['daily','日次'],['changes','変動日'],['weekly','週次'],['monthly','月次']].map(([v,l])=>
             h('button',{key:v,onClick:()=>{setViewMode(v);setTip(null);},'aria-pressed':viewMode===v,
               className:`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode===v?'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`
             },l)
@@ -1570,7 +1581,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
         );
       }))
     ),
-    h('p',{className:'px-3 sm:px-5 py-2 text-[11px] text-gray-500 dark:text-gray-400'},viewMode==='daily'?'残高の下に前日からの増減を表示します。':`${viewMode==='weekly'?'週次':'月次'}の増減は前の表示日からの差です。予定の内訳はその期間をまとめて表示します。`),
+    h('p',{className:'px-3 sm:px-5 py-2 text-[11px] text-gray-500 dark:text-gray-400'},viewMode==='daily'?'残高の下に前日からの増減を表示します。':viewMode==='changes'?`残高が変わる日と予定がある日を表示中（${cols.length}/${fData.length}日）。増減と予定の内訳は前の表示日からの合計です。日付を指定して追加するには「日次」へ。`:`${viewMode==='weekly'?'週次':'月次'}の増減は前の表示日からの差です。予定の内訳はその期間をまとめて表示します。`),
     h('div',{ref:scrollRef,className:'overflow-x-auto overscroll-x-contain'},
       h('table',{className:'text-sm border-collapse w-full'},
         h('thead',null,
@@ -1672,7 +1683,7 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
       !tip.touch&&h('div',{className:'text-[11px] text-gray-400 font-medium border-b border-gray-700 pb-1 mb-1'},tip.startDate&&tip.startDate!==tip.date?`${fmtDisp(tip.startDate)}〜${fmtDisp(tip.date)}`:fmtDisp(tip.date)),
       tip.items.map((it,i)=>h('div',{key:i,className:`flex items-center justify-between gap-3 ${tip.touch?'py-1':'py-0.5'}`},
         h('div',{className:'min-w-0 flex-1'},
-          h('div',{className:'text-gray-300 truncate'},viewMode==='daily'?it.label:`${fmtDisp(it.date)} ${it.label}`),
+          h('div',{className:'text-gray-300 truncate'},viewMode==='daily'||tip.startDate===tip.date?it.label:`${fmtDisp(it.date)} ${it.label}`),
           h('div',{className:it.amt>=0?'text-emerald-400 font-medium whitespace-nowrap':'text-rose-400 font-medium whitespace-nowrap'},
             `${it.amt>=0?'+':''}¥${Math.abs(it.amt).toLocaleString()}`)
         ),

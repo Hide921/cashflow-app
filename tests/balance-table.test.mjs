@@ -74,6 +74,42 @@ test('週次・月次の内訳には列間の全取引と元の日付を含め�
   ]);
 });
 
+test('変動日は表示口座の残高変化と相殺された予定を残し、先頭と末尾も保持する', () => {
+  const app = appContext();
+  const dates = Array.from({ length: 7 }, (_, i) => `2026-08-${String(i + 1).padStart(2, '0')}`);
+  const data = dates.map((date, i) => ({ date, a: i >= 2 ? 80 : 100, b: i >= 4 ? 300 : 200 }));
+  const events = { '2026-08-04': { a: [{ label: '入出金が相殺', amt: 0 }] }, '2026-08-06': { b: [{ label: '非表示口座', amt: 10 }] } };
+  const filtered = app.evaluate('balanceChangeDays')(data, [{ id: 'a' }], events);
+  assert.deepEqual(Array.from(filtered, col => col.date), [dates[0], dates[2], dates[3], dates[6]]);
+  const periods = app.evaluate('buildBalanceTablePeriods')(filtered, data, events);
+  assert.deepEqual(Array.from(periods, period => period.startDate), [dates[0], dates[1], dates[3], dates[4]]);
+  assert.deepEqual(Array.from(periods[2].eventsByAccount.a, event => event.date), [dates[3]]);
+});
+
+test('変動日表示から日次に戻すと任意の日付へ取引を追加できる', () => {
+  const app = appContext();
+  const dates = Array.from({ length: 5 }, (_, i) => `2026-08-${String(i + 1).padStart(2, '0')}`);
+  const props = {
+    accounts: [{ id: 'a', name: '銀行A', color: '#000' }],
+    fData: dates.map((date, i) => ({ date, a: i >= 2 ? 80 : 100 })),
+    txEventMap: {},
+    onCellClick: (date, accountId) => { props.added = [date, accountId]; },
+  };
+  let tree = app.evaluate('BalanceTable')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '変動日')[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.type === 'th').length, 4);
+  assert.match(textOf(tree), /3\/5日/);
+  assert.match(textOf(tree), /日付を指定して追加するには「日次」へ/);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '日次')[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.type === 'th').length, 6);
+  nodes(tree, node => node.type === 'button' && node.props?.['aria-label']?.includes('2026/08/02') && node.props?.['aria-label']?.includes('銀行Aの残高'))[0].props.onClick();
+  assert.deepEqual(props.added, [dates[1], 'a']);
+});
+
 test('非表示口座を合計から除き、残高セルをキーボードで操作できるボタンにする', () => {
   const app = appContext();
   const props = {
