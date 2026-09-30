@@ -1093,9 +1093,9 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
           )
         )
       ))),
-      h('details',{className:'mt-5 border-t border-gray-100 dark:border-gray-700 pt-4'},
-        h('summary',{className:'cursor-pointer text-sm font-semibold text-indigo-700 dark:text-indigo-300'},'年別の内訳を見る'),
-        h('p',{className:'mt-3 mb-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除・振込額を月別に表示します。狭い画面では表を左右にスクロールできます。'),
+      h('section',{className:'mt-5 border-t border-gray-100 dark:border-gray-700 pt-4','aria-labelledby':'salary-annual-breakdown'},
+        h('h4',{id:'salary-annual-breakdown',className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},'年別の内訳'),
+        h('p',{className:'mt-1 mb-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除・振込額を月別に表示します。狭い画面では表を左右にスクロールできます。'),
         h('div',{className:'overflow-x-auto overscroll-x-contain rounded-xl border border-gray-200 dark:border-gray-700'},
         h('table',{className:'w-full min-w-[740px] border-collapse text-sm tabular-nums text-gray-800 dark:text-gray-100','aria-label':`${year}年の給与・賞与一覧`},
           h('thead',{className:'bg-orange-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200'},h('tr',null,

@@ -141,7 +141,8 @@ test('給与モードの年別表は横スクロールで月給と賞与の内�
   });
   assert.ok(nodes(tree, node => node.type === 'div' && node.props?.className?.includes('overflow-x-auto')).length);
   const table = nodes(tree, node => node.type === 'table')[0];
-  assert.ok(nodes(tree, node => node.type === 'details' && node.props?.open === undefined)[0]);
+  assert.equal(nodes(tree, node => node.type === 'details').length, 0);
+  assert.ok(nodes(tree, node => node.type === 'section' && node.props?.['aria-labelledby'] === 'salary-annual-breakdown')[0]);
   assert.match(textOf(table), /社保/);
   assert.match(textOf(table), /源泉所得税/);
   assert.match(textOf(table), /住民税/);
