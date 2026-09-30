@@ -141,6 +141,40 @@ test('借入の返済予定変更は借入データへ保存され、再読込�
   assert.equal(cloud.loans[0].repaymentDateMoves['2026-10-01'],'2026-10-05');
 });
 
+test('既存の返済反映は口座と反映印を一緒に保存し、再読込後も二重に減らさない',async()=>{
+  const app=appContext();
+  const date=app.evaluate('todayStr()');
+  const cloud={accounts:[{id:'bank',name:'千葉銀',balance:500000}],transactions:[],loans:[{id:'loan',name:'千葉銀カードローン',balance:300000,payments:[{id:'p',amount:200000,paidAt:date}]}]};
+  const first=appContext(cloud);
+  first.evaluate('App()');first.effects[0]();await new Promise(resolve=>setTimeout(resolve,20));
+  first.resetHooks();findNode(first.evaluate('App()'),'Dashboard').props.onNavigate('loans');
+  first.resetHooks();const manager=findNode(first.evaluate('App()'),'LoanManager');
+  first.context.navigator.onLine=false;
+  manager.props.onReflectPayment('loan','p','bank');manager.props.onReflectPayment('loan','p','bank');
+  const pending=JSON.parse(first.storage.get('cf_pending_v1')).accounts;
+  assert.equal(pending[0].balance,300000);
+  assert.equal(pending[0].loanRepayments.length,1);
+  assert.equal(cloud.loans[0].balance,300000);
+  const second=appContext(cloud,first.storage);second.evaluate('App()');second.effects[0]();await new Promise(resolve=>setTimeout(resolve,20));
+  second.resetHooks();const dashboard=findNode(second.evaluate('App()'),'Dashboard');
+  assert.equal(dashboard.props.accounts[0].balance,300000);
+  assert.equal(dashboard.props.txs.filter(tx=>tx.loanPayment).length,1);
+  assert.equal(cloud.accounts[0].balance,300000);
+  dashboard.props.onNavigate('loans');second.resetHooks();
+  const restored=findNode(second.evaluate('App()'),'LoanManager');
+  restored.props.onReflectPayment('loan','p','bank');
+  const newPayment={id:'new',amount:10000,paidAt:date,note:''};
+  restored.props.onChange(current=>current.map(loan=>({...loan,balance:loan.balance-10000,payments:[...loan.payments,newPayment]})));
+  restored.props.onReflectPayment('loan','new','bank');
+  second.resetHooks();
+  const newManager=findNode(second.evaluate('App()'),'LoanManager');
+  assert.equal(newManager.props.accounts[0].balance,290000);
+  assert.equal(newManager.props.loans[0].balance,290000);
+  restored.props.onUndoPayment('loan','new');
+  restored.props.onUndoPayment('loan','p');
+  second.resetHooks();assert.equal(findNode(second.evaluate('App()'),'LoanManager').props.accounts[0].balance,500000);
+});
+
 test('保存中に次の編集が入ったら、古い保存では未同期印を消さない', () => {
   const app = appContext();
   app.evaluate('markPending("transactions", [{id:"first"}])');

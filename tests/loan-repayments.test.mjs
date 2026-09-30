@@ -12,6 +12,53 @@ const fn=name=>runInNewContext(name,context);
 const accounts=[{id:'bank',name:'千葉銀',balance:500000},{id:'other',name:'別口座',balance:100000}];
 const loan={id:'loan',name:'カードローン',balance:300000,monthlyPayment:10000,nextPaymentDate:'2026-10-01',repaymentAccountId:'bank'};
 
+test('既存の20万円返済は千葉銀だけを減らし、繰り返し反映しても二重に減らさない',()=>{
+  const payment={id:'paid',amount:200000,paidAt:fn('todayStr')()};
+  const result=fn('reflectLoanPayment')(accounts,loan,payment,'bank');
+  assert.equal(result[0].balance,300000);
+  assert.equal(result[1].balance,100000);
+  assert.equal(accounts[0].balance,500000);
+  assert.equal(fn('reflectLoanPayment')(result,loan,payment,'other'),result);
+  const restored=fn('undoLoanPayment')(result,loan.id,payment.id);
+  assert.equal(restored[0].balance,500000);
+  assert.equal(restored[0].loanRepayments.length,0);
+  assert.equal(fn('undoLoanPayment')(restored,loan.id,payment.id)[0].balance,500000);
+});
+
+test('反映済みの返済は明細に残り、予測で二度引かず同日の定期返済を置き換える',()=>{
+  const date=fn('todayStr')(),payment={id:'paid',amount:200000,paidAt:date};
+  const configured={...loan,nextPaymentDate:date};
+  const bank=fn('reflectLoanPayment')(accounts,configured,payment,'bank');
+  const txs=fn('withLoanRepaymentPlans')([],[configured],bank);
+  const plan=txs.find(tx=>tx.loanPlan),actual=txs.find(tx=>tx.loanPayment);
+  assert.equal(actual.amount,200000);
+  assert.equal(fn('expandRec')(plan,fn('todayD')(),fn('todayD')(),new Set()).length,0);
+  const rows=fn('buildForecast')(bank,txs,fn('addDays')(fn('todayD')(),1),new Set());
+  assert.equal(rows[0].bank,300000);
+  assert.equal(rows[1].bank,300000);
+  const events=fn('buildTxList')(txs,fn('todayD')(),new Set());
+  assert.equal(events.length,1);
+  assert.equal(events[0].amount,200000);
+  assert.ok(fn('moveScheduledTransaction')(actual,date,fn('fmt')(fn('addDays')(fn('todayD')(),1))).error);
+});
+
+test('登録済みの返済取引も実際の返済と同日は重複せず、翌月の予定は残る',()=>{
+  const date=fn('todayStr')(),payment={id:'paid',amount:200000,paidAt:date};
+  const existing={id:'existing',type:'expense',recurring:true,frequency:'monthly',amount:10000,accountId:'bank',startDate:date};
+  const linked={...loan,repaymentTransactionId:'existing'};
+  const bank=fn('reflectLoanPayment')(accounts,linked,payment,'bank');
+  const txs=fn('withLoanRepaymentPlans')([existing],[linked],bank);
+  const events=fn('expandRec')(txs[0],fn('todayD')(),fn('addMonths')(fn('todayD')(),1),new Set());
+  assert.equal(events.length,1);
+  assert.equal(fn('fmt')(events[0].date),fn('fmt')(fn('addMonths')(fn('todayD')(),1)));
+});
+
+test('返済の反映は不正な額・日付・未設定口座を拒否する',()=>{
+  const reflect=fn('reflectLoanPayment'),date=fn('todayStr')();
+  for(const payment of [{id:'p',amount:0,paidAt:date},{id:'p',amount:1.5,paidAt:date},{id:'p',amount:100,paidAt:'2026-02-30'},{id:'p',amount:100,paidAt:'2999-01-01'}])assert.throws(()=>reflect(accounts,loan,payment,'bank'));
+  assert.throws(()=>reflect(accounts,loan,{id:'p',amount:100,paidAt:date},'deleted'));
+});
+
 test('借入の月額・次回日・口座から支出予定を作り、毎月残高を減らす',()=>{
   const today=fn('todayD')();
   const date=fn('fmt')(fn('addDays')(today,1));
