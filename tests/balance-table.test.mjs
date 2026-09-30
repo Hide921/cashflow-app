@@ -141,11 +141,57 @@ test('給与モードの年別表は横スクロールで月給と賞与の内�
   });
   assert.ok(nodes(tree, node => node.type === 'div' && node.props?.className?.includes('overflow-x-auto')).length);
   const table = nodes(tree, node => node.type === 'table')[0];
+  assert.ok(nodes(tree, node => node.type === 'details' && node.props?.open === undefined)[0]);
   assert.match(textOf(table), /社保/);
   assert.match(textOf(table), /源泉所得税/);
   assert.match(textOf(table), /住民税/);
   assert.match(textOf(table), /夏季賞与/);
   assert.match(textOf(table), /385,000/);
+});
+
+test('給与フォームは区分と対象月に応じて支給日を設定し、手動変更も戻せる', () => {
+  const app = appContext();
+  const props = { accounts: [{ id: 'bank', name: '銀行' }], txs: [], onChange: () => {}, onDelete: () => {}, addToast: () => {} };
+  let tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node).includes('月給を登録'))[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('SalaryManager')(props);
+  assert.equal(nodes(tree, node => node.type === 'button' && textOf(node).includes('賞与を登録')).length, 0);
+  const input = id => nodes(tree, node => node.type === 'input' && node.props?.id === id)[0];
+  assert.equal(input('salary-pay-date').props.value, app.evaluate('salaryDefaultPayDate(todayStr().slice(0,7),"monthly")'));
+
+  nodes(tree, node => node.type === 'select' && node.props?.id === 'salary-kind')[0].props.onChange({ target: { value: 'summerBonus' } });
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  input('salary-month').props.onChange({ target: { value: '2026-08' } });
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(input('salary-pay-date').props.value, '2026-08-14');
+
+  input('salary-pay-date').props.onChange({ target: { value: '2026-08-20' } });
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(input('salary-pay-date').props.value, '2026-08-20');
+  nodes(tree, node => node.type === 'button' && textOf(node) === '規定日に戻す')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(input('salary-pay-date').props.value, '2026-08-14');
+  input('salary-month').props.onChange({ target: { value: '2026-11' } });
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(input('salary-pay-date').props.value, '2026-11-13');
+  assert.match(textOf(tree), /土日は直前の金曜日/);
+});
+
+test('既存給与の手入力済み支給日は編集画面で保持する', () => {
+  const app = appContext();
+  const month = app.evaluate('todayStr().slice(0,7)');
+  const customDate = `${month}-15`;
+  const props = {
+    accounts: [{ id: 'bank', name: '銀行' }],
+    txs: [{ id: 'salary', type: 'income', amount: 250000, startDate: customDate, accountId: 'bank', salary: { month, kind: 'monthly', gross: 300000, deductions: 50000 } }],
+    onChange: () => {}, onDelete: () => {}, addToast: () => {},
+  };
+  const tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '編集')[0].props.onClick();
+  app.resetHooks();
+  const form = app.evaluate('SalaryManager')(props);
+  assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-pay-date')[0].props.value, customDate);
 });
 
 test('前月コピーは入力欄を埋め、保存操作までは取引を追加しない', () => {
@@ -159,14 +205,50 @@ test('前月コピーは入力欄を埋め、保存操作までは取引を追�
     onChange: () => { changes++; }, onDelete: () => {}, addToast: () => {},
   };
   const first = app.evaluate('SalaryManager')(props);
-  const copy = nodes(first, node => node.type === 'button' && textOf(node) === '前月コピー')[0];
+  nodes(first, node => node.type === 'button' && textOf(node).includes('月給を登録'))[0].props.onClick();
+  app.resetHooks();
+  const opened = app.evaluate('SalaryManager')(props);
+  const copy = nodes(opened, node => node.type === 'button' && textOf(node).includes('の月給をコピー'))[0];
   assert.ok(copy);
   copy.props.onClick();
   app.resetHooks();
   const form = app.evaluate('SalaryManager')(props);
   assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-gross')[0].props.value, '300000');
   assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-month')[0].props.value, app.evaluate('todayStr().slice(0,7)'));
+  assert.equal(nodes(form, node => node.type === 'input' && node.props?.id === 'salary-pay-date')[0].props.value, app.evaluate('salaryDefaultPayDate(todayStr().slice(0,7),"monthly")'));
   assert.equal(changes, 0);
+});
+
+test('9月の月給から5〜8月をプレビューして一括登録し、再操作でも重複しない', () => {
+  const app = appContext();
+  const source = { id: 'sep', type: 'income', category: '給与', label: '給与', amount: 250000, startDate: '2026-09-30', accountId: 'bank',
+    salary: { month: '2026-09', kind: 'monthly', employer: '勤務先', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 10000, otherDeductions: 0, deductions: 50000 } };
+  const original = JSON.stringify(source);
+  const props = { accounts: [{ id: 'bank', name: '銀行' }], txs: [source],
+    onChange: update => { props.txs = update(props.txs); }, onDelete: () => {}, addToast: () => {} };
+  let tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node) === 'まとめてコピー')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.equal(nodes(tree, node => node.type === 'input' && node.props?.id === 'salary-copy-start')[0].props.value, '2026-05');
+  assert.equal(nodes(tree, node => node.type === 'input' && node.props?.id === 'salary-copy-end')[0].props.value, '2026-08');
+  assert.match(textOf(tree), /新規作成 4か月/);
+  assert.equal(props.txs.length, 1);
+
+  const copyForm = nodes(tree, node => node.type === 'form' && node.props?.className?.includes('bg-emerald-50'))[0];
+  copyForm.props.onSubmit({ preventDefault() {} });
+  assert.equal(props.txs.length, 5);
+  assert.equal(JSON.stringify(source), original);
+  assert.deepEqual(Array.from(props.txs.slice(1), tx => [tx.salary.month, tx.startDate, tx.amount]), [
+    ['2026-05', '2026-05-29', 250000],
+    ['2026-06', '2026-06-30', 250000],
+    ['2026-07', '2026-07-31', 250000],
+    ['2026-08', '2026-08-31', 250000],
+  ]);
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  nodes(tree, node => node.type === 'button' && textOf(node) === 'まとめてコピー')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('SalaryManager')(props);
+  assert.match(textOf(tree), /新規作成 0か月/);
+  assert.equal(nodes(tree, node => node.type === 'button' && textOf(node) === '0か月分を登録')[0].props.disabled, true);
 });
 
 test('週次内訳から除外すると、列の日付ではなく取引の発生日を使う', () => {

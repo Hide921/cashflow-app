@@ -799,14 +799,47 @@ function previousSalaryMonth(month){
   return fmt(addMonths(parseISO(`${month}-01`),-1)).slice(0,7);
 }
 
-function salaryDraftFromPrevious(tx,targetMonth){
-  const previousMonth=previousSalaryMonth(targetMonth);
-  if(!previousMonth||!tx?.salary||(tx.salary.kind&&tx.salary.kind!=='monthly')||tx.salary.month!==previousMonth||!validTxDate(tx.startDate))return null;
+function salaryDefaultPayDate(month,kind){
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||!['monthly','summerBonus','winterBonus'].includes(kind))return '';
+  const [year,number]=month.split('-').map(Number);
+  const date=kind==='monthly'?new Date(year,number,0):new Date(year,number-1,15);
+  const day=date.getDay();
+  if(day===0)date.setDate(date.getDate()-2);
+  if(day===6)date.setDate(date.getDate()-1);
+  return fmt(date);
+}
+
+function salaryDraftFromSource(tx,targetMonth){
+  if(!tx?.salary||!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth||''))return null;
   const part=salaryBreakdown(tx);
-  return {month:targetMonth,payDate:fmt(addMonths(parseISO(tx.startDate),1)),kind:'monthly',
+  return {month:targetMonth,payDate:salaryDefaultPayDate(targetMonth,'monthly'),kind:'monthly',
     employer:tx.salary.employer||'',gross:String(part.gross),socialInsurance:String(part.socialInsurance),
     incomeTax:String(part.incomeTax),residentTax:String(part.residentTax),
     otherDeductions:String(part.otherDeductions),accountId:tx.accountId||''};
+}
+
+function salaryDraftFromPrevious(tx,targetMonth){
+  const previousMonth=previousSalaryMonth(targetMonth);
+  if(!previousMonth||!tx?.salary||(tx.salary.kind&&tx.salary.kind!=='monthly')||tx.salary.month!==previousMonth||!validTxDate(tx.startDate))return null;
+  return salaryDraftFromSource(tx,targetMonth);
+}
+
+function salaryBulkCopyPlan(records,source,startMonth,endMonth){
+  if(!source?.salary||source.salary.kind&&source.salary.kind!=='monthly')return {error:'月給の明細をコピー元に選んでください',rows:[]};
+  const validMonth=value=>/^\d{4}-(0[1-9]|1[0-2])$/.test(value||'');
+  if(!validMonth(startMonth)||!validMonth(endMonth))return {error:'開始月と終了月を選択してください',rows:[]};
+  const monthIndex=value=>Number(value.slice(0,4))*12+Number(value.slice(5))-1;
+  const start=monthIndex(startMonth),end=monthIndex(endMonth);
+  if(end<start)return {error:'終了月は開始月以降にしてください',rows:[]};
+  if(end-start>=24)return {error:'一度にコピーできるのは24か月までです',rows:[]};
+  const employer=(source.salary.employer||'').trim();
+  const existing=new Set(records.filter(tx=>tx.type==='income'&&tx.salary&&(!tx.salary.kind||tx.salary.kind==='monthly')&&(tx.salary.employer||'').trim()===employer).map(tx=>tx.salary.month));
+  const rows=[];
+  for(let index=start;index<=end;index++){
+    const month=`${String(Math.floor(index/12)).padStart(4,'0')}-${String(index%12+1).padStart(2,'0')}`;
+    rows.push({month,payDate:salaryDefaultPayDate(month,'monthly'),status:month===source.salary.month?'コピー元':existing.has(month)?'登録済み':'作成'});
+  }
+  return {error:'',rows};
 }
 
 function salaryYearTotals(records,year){
@@ -884,6 +917,8 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
   const [editId,setEditId]=useState(null);
   const [error,setError]=useState('');
   const [deleteTarget,setDeleteTarget]=useState(null);
+  const [bulkCopy,setBulkCopy]=useState(null);
+  const bulkPanelRef=useRef(null);
   const records=txs.filter(tx=>tx.salary&&tx.type==='income');
   const existingSalaryCount=txs.filter(tx=>tx.type==='income'&&tx.category==='給与'&&!tx.salary).length;
   const selected=records.filter(tx=>tx.salary.month?.startsWith(`${year}-`))
@@ -892,21 +927,27 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
   const annualRows=salaryAnnualRows(records,year);
   const showOther=totals.otherDeductions>0;
   const money=n=>`¥${Number(n||0).toLocaleString()}`;
-  const change=(key,value)=>setForm(current=>({...current,[key]:value}));
+  const change=(key,value)=>setForm(current=>({...current,[key]:value,...(key==='kind'?{payDate:salaryDefaultPayDate(current.month,value)}:{})}));
   const close=()=>{setForm(null);setEditId(null);setError('');};
   const previousMonth=previousSalaryMonth(form?.month);
   const previousCandidates=records.filter(tx=>tx.salary.month===previousMonth&&(!tx.salary.kind||tx.salary.kind==='monthly'));
+  const bulkSource=bulkCopy&&records.find(tx=>tx.id===bulkCopy.sourceId);
+  const bulkPlan=bulkSource?salaryBulkCopyPlan(records,bulkSource,bulkCopy.startMonth,bulkCopy.endMonth):null;
   useEffect(()=>{
     if(!form)return;
     const onKey=e=>{if(e.key==='Escape')close();};
     document.addEventListener('keydown',onKey);
     return()=>document.removeEventListener('keydown',onKey);
   },[form]);
-  function add(){
+  useEffect(()=>{
+    if(bulkCopy?.sourceId)bulkPanelRef.current?.scrollIntoView({behavior:'smooth',block:'start'});
+  },[bulkCopy?.sourceId]);
+  function add(kind='monthly'){
     const month=todayStr().slice(0,7);
+    setBulkCopy(null);
     setYear(Number(month.slice(0,4)));
     setEditId(null);
-    setForm({month,payDate:todayStr(),kind:'monthly',employer:'',gross:'',socialInsurance:'0',incomeTax:'0',residentTax:'0',otherDeductions:'0',accountId:accounts[0]?.id||''});
+    setForm({month,payDate:salaryDefaultPayDate(month,kind),kind,employer:'',gross:'',socialInsurance:'0',incomeTax:'0',residentTax:'0',otherDeductions:'0',accountId:accounts[0]?.id||''});
     setError('');
   }
   function copyPrevious(month,sourceId){
@@ -922,17 +963,42 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
     setYear(Number(month.slice(0,4)));
     setError('');
   }
-  function openPreviousCopy(){
-    const month=todayStr().slice(0,7);
-    add();
-    copyPrevious(month);
-  }
   function edit(tx){
+    setBulkCopy(null);
     const part=salaryBreakdown(tx);
     setYear(Number(tx.salary.month.slice(0,4)));
     setEditId(tx.id);
     setForm({month:tx.salary.month,payDate:tx.startDate,kind:tx.salary.kind||'monthly',employer:tx.salary.employer||'',gross:String(part.gross),socialInsurance:String(part.socialInsurance),incomeTax:String(part.incomeTax),residentTax:String(part.residentTax),otherDeductions:String(part.otherDeductions),accountId:tx.accountId||''});
     setError('');
+  }
+  function openBulkCopy(tx){
+    const month=tx.salary.month;
+    setForm(null);
+    setEditId(null);
+    setBulkCopy({sourceId:tx.id,startMonth:fmt(addMonths(parseISO(`${month}-01`),-4)).slice(0,7),endMonth:previousSalaryMonth(month),error:''});
+  }
+  function saveBulkCopy(e){
+    e.preventDefault();
+    if(!bulkSource||!bulkPlan||bulkPlan.error){setBulkCopy(current=>({...current,error:bulkPlan?.error||'コピー元が見つかりません'}));return;}
+    if(!accounts.some(account=>account.id===bulkSource.accountId)){setBulkCopy(current=>({...current,error:'コピー元の入金口座が見つかりません。口座を確認してください。'}));return;}
+    const targets=bulkPlan.rows.filter(row=>row.status==='作成');
+    if(!targets.length){setBulkCopy(current=>({...current,error:'新しく作成する月がありません。範囲を確認してください。'}));return;}
+    const results=targets.map(row=>salaryTransactionFromDraft(salaryDraftFromSource(bulkSource,row.month)));
+    const invalid=results.find(result=>result.error);
+    if(invalid){setBulkCopy(current=>({...current,error:invalid.error}));return;}
+    const copies=results.map(result=>result.transaction);
+    const sourceId=bulkSource.id,startMonth=bulkCopy.startMonth,endMonth=bulkCopy.endMonth;
+    onChange(current=>{
+      const liveSource=current.find(tx=>tx.id===sourceId);
+      if(!liveSource)return current;
+      const livePlan=salaryBulkCopyPlan(current,liveSource,startMonth,endMonth);
+      if(livePlan.error)return current;
+      const allowed=new Set(livePlan.rows.filter(row=>row.status==='作成').map(row=>row.month));
+      return [...current,...copies.filter(tx=>allowed.has(tx.salary.month))];
+    });
+    setYear(Number(startMonth.slice(0,4)));
+    setBulkCopy(null);
+    addToast('月給のコピーを登録しました');
   }
   function save(e){
     e.preventDefault();
@@ -949,35 +1015,37 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
   const deductionValues=['socialInsurance','incomeTax','residentTax','otherDeductions'].map(key=>parseJpAmt(form?.[key]));
   const deductions=deductionValues.every(value=>Number.isSafeInteger(value)&&value>=0)?deductionValues.reduce((sum,value)=>sum+value,0):null;
   const net=Number.isSafeInteger(gross)&&Number.isSafeInteger(deductions)?gross-deductions:null;
+  const defaultPayDate=form?salaryDefaultPayDate(form.month,form.kind):'';
   const columns=[['gross','額面'],['socialInsurance','社保'],['incomeTax','源泉所得税'],['residentTax','住民税'],...(showOther?[['otherDeductions','その他控除']]:[]),['net','振込']];
   const amountText=value=>Number(value||0).toLocaleString();
   const salaryName=tx=>tx.salary.kind==='summerBonus'?'夏季賞与':tx.salary.kind==='winterBonus'?'冬季賞与':`${Number(tx.salary.month.slice(5))}月の給与`;
+  const bonusKind=Number(todayStr().slice(5,7))<=8?'summerBonus':'winterBonus';
   return h('div',{className:'space-y-4 text-gray-800 dark:text-gray-100'},
     h('div',{className:'flex flex-wrap items-center justify-between gap-3'},
-      h('div',null,h('h3',{className:'text-base font-semibold text-gray-900 dark:text-gray-100'},'給与・賞与'),h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'振込額を支給日の収入として残高予測に反映します。')),
-      h('div',{className:'flex flex-wrap gap-2'},
-        h('button',{type:'button',onClick:openPreviousCopy,className:'rounded-xl border border-emerald-300 dark:border-emerald-700 px-4 py-2.5 text-sm font-semibold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'},'前月コピー'),
-        h('button',{type:'button',onClick:add,className:'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700'},'＋ 給与・賞与を登録')
+      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'給与・賞与'),h('p',{className:'text-sm text-gray-500 dark:text-gray-400 mt-1'},'支給額を登録すると、入金日と残高予測に反映します。')),
+      !form&&h('div',{className:'flex flex-wrap gap-2'},
+        h('button',{type:'button',onClick:()=>add('monthly'),className:'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700'},'＋ 月給を登録'),
+        h('button',{type:'button',onClick:()=>add(bonusKind),className:'rounded-xl border border-emerald-300 dark:border-emerald-700 px-4 py-2.5 text-sm font-semibold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'},'＋ 賞与を登録')
       )
     ),
     existingSalaryCount>0&&h('p',{className:'rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-800 dark:text-amber-300'},`一般の取引に給与が${existingSalaryCount}件あります。同じ入金をここにも登録すると収入が重複します。`),
     accounts.length===0&&h('p',{className:'rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-xs text-amber-800 dark:text-amber-300'},'給与を登録するには、先に「口座」タブで入金口座を追加してください。'),
     form&&h('section',{className:cardCls+' p-4 sm:p-5'},
       h('div',{className:'flex items-center justify-between gap-3 mb-4'},
-        h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},editId?'給与・賞与を編集':'給与・賞与を登録'),
+        h('h3',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${form.kind==='monthly'?'月給':'賞与'}を${editId?'編集':'登録'}`),
         h('button',{type:'button',onClick:close,'aria-label':'給与フォームを閉じる',className:'p-2 text-gray-500 dark:text-gray-400'},'✕')
       ),
       error&&h('p',{role:'alert',className:'mb-3 text-sm text-rose-600 dark:text-rose-400'},error),
       h('form',{onSubmit:save,className:'grid grid-cols-1 sm:grid-cols-2 gap-4'},
         h('div',{className:'sm:col-span-2'},h('label',{htmlFor:'salary-kind',className:labelCls},'区分 *'),h('select',{id:'salary-kind',value:form.kind,onChange:e=>change('kind',e.target.value),className:inputCls},[['monthly','月給'],['summerBonus','夏季賞与'],['winterBonus','冬季賞与']].map(([value,label])=>h('option',{key:value,value},label)))),
-        h('div',null,h('label',{htmlFor:'salary-month',className:labelCls},'対象月 *'),h('input',{id:'salary-month',type:'month',required:true,value:form.month,onChange:e=>setForm(current=>({...current,month:e.target.value,copySourceId:'',copiedFrom:''})),className:inputCls})),
-        h('div',null,h('label',{htmlFor:'salary-pay-date',className:labelCls},'支給日 *'),h('input',{id:'salary-pay-date',type:'date',required:true,value:form.payDate,onChange:e=>change('payDate',e.target.value),className:inputCls})),
-        form.kind==='monthly'&&!editId&&h('div',{className:'sm:col-span-2 rounded-xl border border-gray-200 dark:border-gray-700 p-3'},
+        h('div',null,h('label',{htmlFor:'salary-month',className:labelCls},'対象月 *'),h('input',{id:'salary-month',type:'month',required:true,value:form.month,onChange:e=>setForm(current=>({...current,month:e.target.value,payDate:salaryDefaultPayDate(e.target.value,current.kind),copySourceId:'',copiedFrom:''})),className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-pay-date',className:labelCls},'支給日 *'),h('div',{className:'flex items-center gap-2'},h('input',{id:'salary-pay-date',type:'date',required:true,value:form.payDate,onChange:e=>change('payDate',e.target.value),className:inputCls}),form.payDate!==defaultPayDate&&defaultPayDate&&h('button',{type:'button',onClick:()=>change('payDate',defaultPayDate),className:'shrink-0 rounded-lg border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},'規定日に戻す')),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},'月給は月末、賞与は15日。土日は直前の金曜日に繰り上げます。日付は手動で変更できます。')),
+        form.kind==='monthly'&&!editId&&previousCandidates.length>0&&h('div',{className:'sm:col-span-2 rounded-xl border border-gray-200 dark:border-gray-700 p-3'},
           h('div',{className:'flex flex-wrap items-center gap-2'},
             h('button',{type:'button',onClick:()=>copyPrevious(form.month,form.copySourceId),className:'rounded-lg border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300'},`${previousMonth||'前月'}の月給をコピー`),
             previousCandidates.length>1&&h('select',{value:form.copySourceId||'',onChange:e=>change('copySourceId',e.target.value),'aria-label':'コピー元の給与を選択',className:'rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-800 dark:text-gray-100'},h('option',{value:''},'コピー元を選択'),previousCandidates.map(tx=>h('option',{key:tx.id,value:tx.id},`${tx.salary.employer||'勤務先未設定'} · ${fmtDisp(tx.startDate)}`)))
           ),
-          h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除・勤務先・口座を転記し、支給日は1か月進めます。保存前に内容を確認してください。'),
+          h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除・勤務先・口座を転記し、支給日は対象月の月末（土日は直前の金曜日）に設定します。保存前に内容を確認してください。'),
           form.copiedFrom&&h('p',{className:'mt-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},`${form.copiedFrom}の給与をコピーしました。まだ保存されていません。`)
         ),
         h('div',null,h('label',{htmlFor:'salary-employer',className:labelCls},'勤務先（任意）'),h('input',{id:'salary-employer',type:'text',value:form.employer,onChange:e=>change('employer',e.target.value),placeholder:'例: 株式会社〇〇',className:inputCls})),
@@ -990,11 +1058,45 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
     ),
     h('div',{className:cardCls+' p-4 sm:p-5'},
       h('div',{className:'flex items-center justify-between gap-3 mb-4'},
-        h('div',null,h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${year}年の給与`),h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},'登録分の合計・予定を含む')),
+        h('div',null,h('h3',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${year}年の登録済み明細`),h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},`${selected.length}件 · 振込合計 ${money(totals.net)}（予定を含む）`)),
         h('div',{className:'flex items-center gap-1'},h('button',{type:'button',onClick:()=>setYear(y=>y-1),'aria-label':'前年の給与',className:'rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300'},'←'),h('button',{type:'button',onClick:()=>setYear(todayD().getFullYear()),className:'rounded-lg border border-gray-200 dark:border-gray-600 px-2 py-1.5 text-xs text-gray-600 dark:text-gray-300'},'今年'),h('button',{type:'button',onClick:()=>setYear(y=>y+1),'aria-label':'翌年の給与',className:'rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300'},'→'))
       ),
-      h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-2 sm:hidden'},'表は左右にスクロールできます'),
-      h('div',{className:'overflow-x-auto overscroll-x-contain rounded-xl border border-gray-200 dark:border-gray-700'},
+      selected.length===0?h('p',{className:'rounded-xl bg-gray-50 dark:bg-gray-900/50 px-4 py-5 text-center text-sm text-gray-500 dark:text-gray-400'},'この年の給与・賞与はまだ登録されていません。上のボタンから登録できます。'):
+      h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},selected.map(tx=>h('article',{key:tx.id,className:'py-3 first:pt-0 last:pb-0'},
+        h('div',{className:'flex flex-wrap items-start justify-between gap-2'},
+          h('div',null,h('p',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${salaryName(tx)}${tx.salary.employer?` · ${tx.salary.employer}`:''}`),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},`${fmtDisp(tx.startDate)}支給 · ${accounts.find(a=>a.id===tx.accountId)?.name||'口座なし'}${tx.startDate>todayStr()?' · 予定':''}`)),
+          h('p',{className:'font-bold text-emerald-700 dark:text-emerald-300 tabular-nums'},money(tx.amount))
+        ),
+        h('div',{className:'mt-2 flex flex-wrap items-center justify-between gap-2'},
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},`額面 ${money(tx.salary.gross)} − 控除 ${money(tx.salary.deductions)}`),
+          h('div',{className:'flex flex-wrap gap-2'},
+            (!tx.salary.kind||tx.salary.kind==='monthly')&&h('button',{type:'button',onClick:()=>bulkCopy?.sourceId===tx.id?setBulkCopy(null):openBulkCopy(tx),'aria-expanded':bulkCopy?.sourceId===tx.id,className:'rounded-lg border border-emerald-200 dark:border-emerald-800 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},bulkCopy?.sourceId===tx.id?'コピー設定を閉じる':'まとめてコピー'),
+            h('button',{type:'button',onClick:()=>edit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},'編集'),
+            h('button',{type:'button',onClick:()=>setDeleteTarget(tx),className:'rounded-lg px-3 py-1.5 text-xs text-rose-600 dark:text-rose-400'},'削除')
+          )
+        ),
+        bulkCopy?.sourceId===tx.id&&bulkPlan&&h('form',{ref:bulkPanelRef,onSubmit:saveBulkCopy,className:'mt-4 scroll-mt-20 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/20 p-4'},
+          h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${Number(tx.salary.month.slice(5))}月の月給をまとめてコピー`),
+          h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300'},'額面・控除・勤務先・入金口座を同じ内容で複製します。各月の支給日は月末（土日は直前の金曜日）です。'),
+          h('div',{className:'mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3'},
+            h('div',null,h('label',{htmlFor:'salary-copy-start',className:labelCls},'開始月'),h('input',{id:'salary-copy-start',type:'month',required:true,value:bulkCopy.startMonth,onChange:e=>setBulkCopy(current=>({...current,startMonth:e.target.value,error:''})),className:inputCls})),
+            h('div',null,h('label',{htmlFor:'salary-copy-end',className:labelCls},'終了月'),h('input',{id:'salary-copy-end',type:'month',required:true,value:bulkCopy.endMonth,onChange:e=>setBulkCopy(current=>({...current,endMonth:e.target.value,error:''})),className:inputCls}))
+          ),
+          (bulkCopy.error||bulkPlan.error)&&h('p',{role:'alert',className:'mt-3 text-sm text-rose-600 dark:text-rose-400'},bulkCopy.error||bulkPlan.error),
+          !bulkPlan.error&&h('div',{className:'mt-3 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 px-3 py-2'},
+            h('p',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},`新規作成 ${bulkPlan.rows.filter(row=>row.status==='作成').length}か月 · 登録済み・コピー元は除外`),
+            h('div',{className:'mt-2 flex flex-wrap gap-1.5'},bulkPlan.rows.map(row=>h('span',{key:row.month,className:`rounded-md px-2 py-1 text-xs ${row.status==='作成'?'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200':'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`},`${row.month.slice(0,4)}/${row.month.slice(5)} ${row.status==='作成'?fmtDisp(row.payDate).slice(5)+'支給':row.status}`)))
+          ),
+          h('div',{className:'mt-4 flex flex-wrap justify-end gap-2'},
+            h('button',{type:'button',onClick:()=>setBulkCopy(null),className:'rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm text-gray-600 dark:text-gray-300'},'キャンセル'),
+            h('button',{type:'submit',disabled:!!bulkPlan.error||!bulkPlan.rows.some(row=>row.status==='作成'),className:'rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50'},`${bulkPlan.rows.filter(row=>row.status==='作成').length}か月分を登録`)
+          )
+        )
+      ))),
+      h('details',{className:'mt-5 border-t border-gray-100 dark:border-gray-700 pt-4'},
+        h('summary',{className:'cursor-pointer text-sm font-semibold text-indigo-700 dark:text-indigo-300'},'年別の内訳を見る'),
+        h('p',{className:'mt-3 mb-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除・振込額を月別に表示します。狭い画面では表を左右にスクロールできます。'),
+        h('div',{className:'overflow-x-auto overscroll-x-contain rounded-xl border border-gray-200 dark:border-gray-700'},
         h('table',{className:'w-full min-w-[740px] border-collapse text-sm tabular-nums text-gray-800 dark:text-gray-100','aria-label':`${year}年の給与・賞与一覧`},
           h('thead',{className:'bg-orange-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200'},h('tr',null,
             h('th',{scope:'col',className:'sticky left-0 z-10 bg-orange-50 dark:bg-gray-900 px-3 py-2 text-left font-semibold whitespace-nowrap'},`${year}年`),
@@ -1009,16 +1111,8 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
             columns.map(([key])=>h('td',{key,className:'px-3 py-2 text-right whitespace-nowrap text-gray-900 dark:text-gray-100'},amountText(totals[key])))
           ))
         )
-      ),
-      h('h5',{className:'mt-5 mb-2 text-sm font-semibold text-gray-800 dark:text-gray-100'},'登録済みの明細'),
-      selected.length===0?h('p',{className:'py-6 text-center text-sm text-gray-500 dark:text-gray-400'},'この年の給与・賞与はまだ登録されていません'):
-      h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},selected.map(tx=>h('article',{key:tx.id,className:'py-3 first:pt-0 last:pb-0'},
-        h('div',{className:'flex flex-wrap items-start justify-between gap-2'},
-          h('div',null,h('p',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${salaryName(tx)}${tx.salary.employer?` · ${tx.salary.employer}`:''}`),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},`${fmtDisp(tx.startDate)}支給 · ${accounts.find(a=>a.id===tx.accountId)?.name||'口座なし'}${tx.startDate>todayStr()?' · 予定':''}`)),
-          h('p',{className:'font-bold text-emerald-700 dark:text-emerald-300 tabular-nums'},money(tx.amount))
-        ),
-        h('div',{className:'mt-2 flex flex-wrap items-center justify-between gap-2'},h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},`額面 ${money(tx.salary.gross)} − 控除 ${money(tx.salary.deductions)}`),h('div',{className:'flex gap-2'},h('button',{type:'button',onClick:()=>edit(tx),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},'編集'),h('button',{type:'button',onClick:()=>setDeleteTarget(tx),className:'rounded-lg px-3 py-1.5 text-xs text-rose-600 dark:text-rose-400'},'削除')))
-      )))
+        )
+      )
     ),
     deleteTarget&&h(ConfirmDialog,{title:'給与を削除',message:`${deleteTarget.salary.month}の給与を削除しますか？残高予測からも取り除かれます。`,onConfirm:()=>{onDelete(deleteTarget.id);addToast('給与を削除しました');setDeleteTarget(null);},onCancel:()=>setDeleteTarget(null)})
   );
@@ -2989,17 +3083,18 @@ function AppNavigation({active,onChange}){
   const icons={
     home:[h('path',{key:'p1',d:'M3 10.5 12 3l9 7.5'}),h('path',{key:'p2',d:'M5 9.5V21h14V9.5'}),h('path',{key:'p3',d:'M9 21v-7h6v7'})],
     transactions:[h('path',{key:'p1',d:'M7 3v15'}),h('path',{key:'p2',d:'m3 14 4 4 4-4'}),h('path',{key:'p3',d:'M17 21V6'}),h('path',{key:'p4',d:'m13 10 4-4 4 4'})],
+    salary:[h('rect',{key:'p1',x:'3',y:'4',width:'18',height:'17',rx:'2'}),h('path',{key:'p2',d:'M7 2v4M17 2v4M3 9h18'}),h('path',{key:'p3',d:'M8 14h8M8 17h5'})],
     accounts:[h('rect',{key:'p1',x:'3',y:'5',width:'18',height:'14',rx:'2'}),h('path',{key:'p2',d:'M3 10h18'}),h('path',{key:'p3',d:'M7 15h3'})],
     analysis:[h('path',{key:'p1',d:'M4 20V10'}),h('path',{key:'p2',d:'M10 20V4'}),h('path',{key:'p3',d:'M16 20v-7'}),h('path',{key:'p4',d:'M22 20H2'})],
     loans:[h('rect',{key:'p1',x:'3',y:'5',width:'18',height:'14',rx:'2'}),h('path',{key:'p2',d:'M7 10h10M7 14h6'})],
     investments:[h('path',{key:'p1',d:'M3 19 9 13l4 4 8-9'}),h('path',{key:'p2',d:'M15 8h6v6'})]
   };
   const icon=id=>h('svg',{className:'w-[18px] h-[18px]',viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:'2',strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':'true'},icons[id]);
-  const items=[['home','ホーム'],['transactions','取引'],['accounts','口座'],['investments','投資'],['loans','借入'],['analysis','分析']];
+  const items=[['home','ホーム'],['transactions','取引'],['salary','給与'],['accounts','口座'],['investments','投資'],['loans','借入'],['analysis','分析']];
   const buttons=items.map(([id,label])=>h('button',{key:id,onClick:()=>onChange(id),'aria-current':active===id?'page':undefined,className:`flex items-center justify-center gap-1.5 rounded-lg transition-colors ${active===id?'text-white bg-slate-900 dark:bg-slate-100 dark:text-slate-950':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800'}`},icon(id),h('span',{className:'text-[10px] sm:text-sm font-semibold'},label)));
   return h(React.Fragment,null,
-    h('nav',{className:'hidden md:grid grid-cols-6 gap-1 w-[34rem]','aria-label':'メインナビゲーション'},buttons),
-    h('nav',{className:'md:hidden fixed bottom-0 inset-x-0 z-50 grid grid-cols-6 gap-1 bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-t border-gray-200 dark:border-gray-800 px-1.5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]','aria-label':'メインナビゲーション'},buttons.map(b=>React.cloneElement(b,{className:b.props.className+' flex-col py-1.5'})))
+    h('nav',{className:'hidden lg:grid grid-cols-7 gap-1 w-[34rem]','aria-label':'メインナビゲーション'},buttons),
+    h('nav',{className:'lg:hidden fixed bottom-0 inset-x-0 z-50 grid grid-cols-7 gap-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-t border-gray-200 dark:border-gray-800 px-0.5 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]','aria-label':'メインナビゲーション'},buttons.map(b=>React.cloneElement(b,{className:b.props.className+' flex-col py-1.5'})))
   );
 }
 
@@ -3274,7 +3369,7 @@ function App(){
           ),
           h('h1',{className:'hidden sm:block text-base font-bold text-gray-900 dark:text-gray-100 tracking-tight'},'Cashflow')
         ),
-        h(AppNavigation,{active:activeView==='salary'?'home':activeView,onChange:setActiveView}),
+        h(AppNavigation,{active:activeView,onChange:setActiveView}),
         h('div',{className:'flex items-center gap-1.5'},
           h(SyncStatus,{status:syncStatus,onRetry:()=>retryRef.current?retryRef.current():syncAll()}),
           h('button',{
@@ -3325,11 +3420,7 @@ function App(){
         h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),
         h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
       ),
-      activeView==='salary'&&h('div',{className:'space-y-4'},
-        h('button',{type:'button',onClick:()=>setActiveView('home'),className:'inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'},'← ホームに戻る'),
-        h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'給与モード'),h('p',{className:'text-sm text-gray-500 dark:text-gray-400 mt-1'},'月ごとの給与を確認・登録')),
-        h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast})
-      ),
+      activeView==='salary'&&h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast}),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,onChange:updLoans,addToast})),

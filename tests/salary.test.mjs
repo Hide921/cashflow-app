@@ -17,6 +17,22 @@ const context = {
 runInNewContext(source, context);
 const evaluate = code => runInNewContext(code, context);
 
+test('月給は月末、賞与は15日を基準に土日を直前の金曜日へ繰り上げる', () => {
+  const cases = [
+    ['2026-01', 'monthly', '2026-01-30'],
+    ['2026-02', 'monthly', '2026-02-27'],
+    ['2026-05', 'monthly', '2026-05-29'],
+    ['2024-02', 'monthly', '2024-02-29'],
+    ['2026-06', 'summerBonus', '2026-06-15'],
+    ['2026-08', 'summerBonus', '2026-08-14'],
+    ['2026-11', 'winterBonus', '2026-11-13'],
+  ];
+  for (const [month, kind, expected] of cases) {
+    assert.equal(evaluate(`salaryDefaultPayDate('${month}','${kind}')`), expected);
+  }
+  assert.equal(evaluate("salaryDefaultPayDate('2026-13','monthly')"), '');
+});
+
 test('給与の手取りだけが支給日の入金として扱われる', () => {
   const payDate = evaluate('fmt(addDays(todayD(), 2))');
   context.draft = { month: payDate.slice(0, 7), payDate, employer: '勤務先', gross: '30万', deductions: '50000', accountId: 'bank' };
@@ -81,7 +97,7 @@ test('前月の月給を翌月の入力欄へコピーし、元データは変�
     salary: { month: '2026-12', kind: 'monthly', employer: '勤務先', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 5000, otherDeductions: 0, deductions: 45000 } };
   const draft = evaluate('salaryDraftFromPrevious(previous,"2027-01")');
   assert.equal(draft.month, '2027-01');
-  assert.equal(draft.payDate, '2027-02-25');
+  assert.equal(draft.payDate, '2027-01-29');
   assert.equal(draft.gross, '300000');
   assert.equal(draft.socialInsurance, '30000');
   assert.equal(draft.accountId, 'bank');
@@ -95,4 +111,28 @@ test('前月の月給を翌月の入力欄へコピーし、元データは変�
 test('賞与は前月の月給としてコピーしない', () => {
   context.bonusPrevious = { startDate: '2026-06-25',salary: {month:'2026-06',kind:'summerBonus',gross:500000,deductions:50000} };
   assert.equal(evaluate('salaryDraftFromPrevious(bonusPrevious,"2026-07")'), null);
+});
+
+test('9月の月給から5〜8月を一括コピーするとき、登録済みの同じ勤務先だけ除外する', () => {
+  context.source = { id: 'sep', type: 'income', accountId: 'bank', startDate: '2026-09-30', amount: 450000,
+    salary: { month: '2026-09', kind: 'monthly', employer: '勤務先A', gross: 500000, deductions: 50000 } };
+  context.existing = { id: 'july', type: 'income', salary: { month: '2026-07', kind: 'monthly', employer: '勤務先A' } };
+  context.otherEmployer = { id: 'may-other', type: 'income', salary: { month: '2026-05', kind: 'monthly', employer: '勤務先B' } };
+  const plan = evaluate('salaryBulkCopyPlan([source,existing,otherEmployer],source,"2026-05","2026-08")');
+  assert.equal(plan.error, '');
+  assert.deepEqual(Array.from(plan.rows, row => [row.month, row.payDate, row.status]), [
+    ['2026-05', '2026-05-29', '作成'],
+    ['2026-06', '2026-06-30', '作成'],
+    ['2026-07', '2026-07-31', '登録済み'],
+    ['2026-08', '2026-08-31', '作成'],
+  ]);
+  context.draft = evaluate('salaryDraftFromSource(source,"2026-05")');
+  const copied = evaluate('salaryTransactionFromDraft(draft).transaction');
+  assert.equal(copied.startDate, '2026-05-29');
+  assert.equal(copied.amount, 450000);
+  assert.notEqual(copied.id, context.source.id);
+  assert.equal(context.source.startDate, '2026-09-30');
+  assert.equal(evaluate('salaryBulkCopyPlan([source],source,"2026-09","2026-09").rows[0].status'), 'コピー元');
+  assert.match(evaluate('salaryBulkCopyPlan([source],source,"2026-08","2026-05").error'), /終了月/);
+  assert.match(evaluate('salaryBulkCopyPlan([source],source,"2025-01","2027-01").error'), /24か月/);
 });

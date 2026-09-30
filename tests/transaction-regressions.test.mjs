@@ -30,6 +30,7 @@ function appContext(cloud = {}, storage = new Map(), options = {}) {
       return refs[index] ??= { current: initial };
     },
     createElement: h,
+    cloneElement(node, props) { return { ...node, props: { ...node.props, ...props } }; },
   };
   const localStorage = {
     getItem: key => storage.has(key) ? storage.get(key) : null,
@@ -365,22 +366,24 @@ test('同じ描画中の取引と借入の連続更新を両方残す', async ()
   assert.deepEqual(Array.from(app.state[2], loan => loan.id), ['loan-one', 'loan-two']);
 });
 
-test('ホームから給与モードを開き、専用画面から戻れる', async () => {
+test('給与モードは専用ナビから直接開け、選択状態になる', async () => {
   const app = appContext({ accounts: [], transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} });
   app.evaluate('App()');
   app.effects[0]();
   await new Promise(resolve => setTimeout(resolve, 20));
   app.resetHooks();
-  const dashboard = findNode(app.evaluate('App()'), 'Dashboard');
-  assert.ok(dashboard);
-  dashboard.props.onNavigate('salary');
+  const navigation = findNode(app.evaluate('App()'), 'AppNavigation');
+  navigation.props.onChange('salary');
   app.resetHooks();
   const salaryPage = app.evaluate('App()');
   assert.ok(findNode(salaryPage, 'SalaryManager'));
   assert.ok(!findNode(salaryPage, 'TxManager'));
-  const back = findElement(salaryPage, node => node.type === 'button' && node.props?.children?.includes('← ホームに戻る'));
-  assert.ok(back);
-  back.props.onClick();
+  const activeNavigation = findNode(salaryPage, 'AppNavigation');
+  assert.equal(activeNavigation.props.active, 'salary');
+  const navTree = app.evaluate('AppNavigation')(activeNavigation.props);
+  const activeButton = findElement(navTree, node => node.type === 'button' && node.props?.['aria-current'] === 'page');
+  assert.ok(activeButton.props.children.some(child => child.type === 'span' && child.props.children.includes('給与')));
+  activeNavigation.props.onChange('home');
   app.resetHooks();
   assert.ok(findNode(app.evaluate('App()'), 'Dashboard'));
 });
