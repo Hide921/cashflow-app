@@ -112,12 +112,18 @@ test('残高表の予定を同じ口座の別日へドロップし、別口座�
   const calls = [];
   const props = { accounts: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], fData: [{ date: from, a: 400, b: 0 }, { date: to, a: 400, b: 0 }], txEventMap: { [from]: { a: [{ txId: 'rent', label: '家賃', amt: -100 }] } }, onMoveTx: (...args) => { calls.push(args); return {}; } };
   let tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.props?.draggable).length, 0);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '予定を移動')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('BalanceTable')(props);
   const item = nodes(tree, node => node.props?.draggable)[0];
   item.props.onDragStart({ dataTransfer: { setData() {} } });
   nodes(tree, node => node.props?.['data-drop-date'] === to && node.props?.['data-drop-account'] === 'b')[0].props.onDrop({ preventDefault() {} });
   assert.equal(calls.length, 0);
   nodes(tree, node => node.props?.['data-drop-date'] === to && node.props?.['data-drop-account'] === 'a')[0].props.onDrop({ preventDefault() {} });
   assert.deepEqual(calls, [['rent',from,to]]);
+  nodes(tree, node => node.type === 'button' && textOf(node) === '✓ 移動を終了')[0].props.onClick();
+  app.resetHooks(); tree = app.evaluate('BalanceTable')(props);
+  assert.equal(nodes(tree, node => node.props?.draggable).length, 0);
   app.resetHooks(); tree = app.evaluate('BalanceTable')({ ...props, isPast: true });
   assert.equal(nodes(tree, node => node.props?.draggable).length, 0);
 });
