@@ -49,6 +49,8 @@ def rsi(closes, length):
 def load_bars(path):
     with open(path, encoding="utf-8") as source:
         result = json.load(source)["chart"]["result"][0]
+    if result["meta"].get("dataGranularity") != "1d":
+        raise ValueError("日足データが必要です。Yahoo API の期間指定と interval=1d を確認してください。")
     quote = result["indicators"]["quote"][0]
     bars = []
     for i, stamp in enumerate(result["timestamp"]):
@@ -59,7 +61,12 @@ def load_bars(path):
     return bars
 
 
-def simulate(bars, min_price=10.0, min_average_volume=1000000.0):
+def simulate(
+    bars,
+    min_price=10.0,
+    min_average_volume=1000000.0,
+    entry_rsi=10,
+):
     closes = [bar[4] for bar in bars]
     fast, medium, trend = ema(closes, 20), ema(closes, 50), ema(closes, 200)
     relative_strength = rsi(closes, 2)
@@ -106,7 +113,7 @@ def simulate(bars, min_price=10.0, min_average_volume=1000000.0):
         if position is None:
             uptrend = close > trend[i] and trend[i] > trend[i - 20] and fast[i] > medium[i]
             liquid = close >= min_price and volumes[i] is not None and volumes[i] >= min_average_volume
-            pullback = close < fast[i] and relative_strength[i] <= 10 and relative_strength[i - 1] > 10
+            pullback = close < fast[i] and relative_strength[i] <= entry_rsi and relative_strength[i - 1] > entry_rsi
             if uptrend and liquid and pullback:
                 pending = {"side": "buy", "stop": close - 2 * atr[i]}
         else:
@@ -132,9 +139,10 @@ if __name__ == "__main__":
     parser.add_argument("data", help="Yahoo Finance chart API のJSONファイル")
     parser.add_argument("--min-price", type=float, default=10.0)
     parser.add_argument("--min-volume", type=float, default=1000000.0)
+    parser.add_argument("--entry-rsi", type=int, default=10)
     args = parser.parse_args()
     bars = load_bars(args.data)
-    trades = simulate(bars, args.min_price, args.min_volume)
+    trades = simulate(bars, args.min_price, args.min_volume, args.entry_rsi)
     print(f"data={bars[0][0]}..{bars[-1][0]} bars={len(bars)}")
     print(f"filters: min_price=${args.min_price:g}, min_20d_average_volume={args.min_volume:g}")
     report(trades, "all")

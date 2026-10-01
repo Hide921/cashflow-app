@@ -2,7 +2,7 @@
 
 `us-stocks-daily-pullback.pine` は、上昇トレンド中の短期的な押し目で買い、反発・トレンド崩れ・保有日数・ATRストップで売る、買いポジション専用の Pine Script v6 ストラテジーです。銘柄を指定せず使えますが、勝率や利益を保証するものではありません。
 
-ティッカー **USD**（ProShares Ultra Semiconductors）には `usd-daily-pullback.pine` を使ってください。USD向けの価格・出来高条件を初期設定し、USDの日足以外では買いシグナルを出しません。概算検証結果は `USD_BACKTEST.md` にあります。
+ティッカー **USD**（ProShares Ultra Semiconductors）には `usd-daily-pullback.pine` を使ってください。USD向けの価格・出来高条件と、勝ち取引を優先する RSI(2) 閾値5を初期設定し、USDの日足以外では買いシグナルを出しません。取引回数と利益が減る場合もあるため、比較結果は `USD_BACKTEST.md` で確認してください。
 
 ## TradingView で使う
 
