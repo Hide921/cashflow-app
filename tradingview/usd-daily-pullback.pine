@@ -1,0 +1,63 @@
+//@version=6
+//@strategy_alert_message {{strategy.order.alert_message}} | fill={{strategy.order.price}}
+strategy("USD semiconductor ETF daily pullback | long only", overlay = true, pyramiding = 0, initial_capital = 100000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 1, process_orders_on_close = false)
+
+// TradingView の AMEX:USD、通常取引時間・日足チャートで使用する。
+int trendLength = input.int(200, "Trend EMA", minval = 50)
+int fastLength = input.int(20, "Fast EMA", minval = 2)
+int mediumLength = input.int(50, "Medium EMA", minval = 5)
+int trendSlopeBars = input.int(20, "Trend slope lookback", minval = 1)
+int rsiLength = input.int(2, "Pullback RSI length", minval = 2)
+int entryRsi = input.int(10, "Entry RSI at or below", minval = 1, maxval = 40)
+int exitRsi = input.int(70, "Exit RSI at or above", minval = 50, maxval = 99)
+int maxHoldBars = input.int(10, "Maximum holding days", minval = 1)
+float stopAtr = input.float(2.0, "Stop distance (ATR)", minval = 0.5, step = 0.25)
+float minPrice = input.float(1.0, "Minimum share price", minval = 0)
+float minAverageVolume = input.float(250000, "Minimum 20-day average volume", minval = 0)
+
+bool usdDailyChart = syminfo.tickerid == "AMEX:USD" and timeframe.isdaily and timeframe.multiplier == 1
+float trendEma = ta.ema(close, trendLength)
+float fastEma = ta.ema(close, fastLength)
+float mediumEma = ta.ema(close, mediumLength)
+float pullbackRsi = ta.rsi(close, rsiLength)
+float currentAtr = ta.atr(14)
+float averageVolume = ta.sma(volume, 20)
+
+bool uptrend = close > trendEma and trendEma > trendEma[trendSlopeBars] and fastEma > mediumEma
+bool liquid = close >= minPrice and averageVolume >= minAverageVolume
+bool pullback = close < fastEma and pullbackRsi <= entryRsi and pullbackRsi[1] > entryRsi
+bool ready = not na(trendEma[trendSlopeBars]) and not na(averageVolume) and not na(currentAtr)
+bool buySignal = usdDailyChart and barstate.isconfirmed and ready and uptrend and liquid and pullback and strategy.position_size == 0
+
+var float stopPrice = na
+var int entryBar = na
+
+if buySignal
+    stopPrice := close - stopAtr * currentAtr
+    strategy.entry("Long", strategy.long, alert_message = "BUY " + syminfo.tickerid + " | daily pullback")
+    strategy.exit("Stop", from_entry = "Long", stop = stopPrice, alert_message = "SELL " + syminfo.tickerid + " | ATR stop")
+
+if strategy.position_size > 0
+    if na(entryBar)
+        entryBar := bar_index
+    strategy.exit("Stop", from_entry = "Long", stop = stopPrice, alert_message = "SELL " + syminfo.tickerid + " | ATR stop")
+
+bool recoveryExit = pullbackRsi >= exitRsi or close >= fastEma
+bool timeExit = strategy.position_size > 0 and not na(entryBar) and bar_index - entryBar >= maxHoldBars
+bool trendExit = close < trendEma
+bool sellSignal = usdDailyChart and barstate.isconfirmed and strategy.position_size > 0 and (recoveryExit or timeExit or trendExit)
+
+if sellSignal
+    string reason = trendExit ? "trend break" : timeExit ? "time exit" : "recovery"
+    strategy.close("Long", comment = reason, alert_message = "SELL " + syminfo.tickerid + " | " + reason)
+
+if strategy.position_size == 0 and not buySignal
+    entryBar := na
+    stopPrice := na
+
+plot(trendEma, "Trend EMA", color = color.orange)
+plot(fastEma, "Fast EMA", color = color.aqua)
+plot(mediumEma, "Medium EMA", color = color.blue)
+plot(strategy.position_size > 0 ? stopPrice : na, "ATR stop", color = color.red, style = plot.style_linebr)
+plotshape(buySignal, title = "Buy setup at close", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(sellSignal, title = "Sell setup at close", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.tiny)

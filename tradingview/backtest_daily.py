@@ -2,7 +2,7 @@
 
 import json
 import math
-import sys
+import argparse
 from datetime import datetime, timezone
 
 
@@ -59,7 +59,7 @@ def load_bars(path):
     return bars
 
 
-def simulate(bars):
+def simulate(bars, min_price=10.0, min_average_volume=1000000.0):
     closes = [bar[4] for bar in bars]
     fast, medium, trend = ema(closes, 20), ema(closes, 50), ema(closes, 200)
     relative_strength = rsi(closes, 2)
@@ -105,7 +105,7 @@ def simulate(bars):
             continue
         if position is None:
             uptrend = close > trend[i] and trend[i] > trend[i - 20] and fast[i] > medium[i]
-            liquid = close >= 10 and volumes[i] is not None and volumes[i] >= 1000000
+            liquid = close >= min_price and volumes[i] is not None and volumes[i] >= min_average_volume
             pullback = close < fast[i] and relative_strength[i] <= 10 and relative_strength[i - 1] > 10
             if uptrend and liquid and pullback:
                 pending = {"side": "buy", "stop": close - 2 * atr[i]}
@@ -128,9 +128,15 @@ def report(trades, label):
 
 
 if __name__ == "__main__":
-    bars = load_bars(sys.argv[1])
-    trades = simulate(bars)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("data", help="Yahoo Finance chart API のJSONファイル")
+    parser.add_argument("--min-price", type=float, default=10.0)
+    parser.add_argument("--min-volume", type=float, default=1000000.0)
+    args = parser.parse_args()
+    bars = load_bars(args.data)
+    trades = simulate(bars, args.min_price, args.min_volume)
     print(f"data={bars[0][0]}..{bars[-1][0]} bars={len(bars)}")
+    print(f"filters: min_price=${args.min_price:g}, min_20d_average_volume={args.min_volume:g}")
     report(trades, "all")
     report([trade for trade in trades if trade[0] < "2024-01-01"], "entry before 2024")
     report([trade for trade in trades if trade[0] >= "2024-01-01"], "entry from 2024")
