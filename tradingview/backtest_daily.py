@@ -66,6 +66,8 @@ def simulate(
     min_price=10.0,
     min_average_volume=1000000.0,
     entry_rsi=10,
+    min_pullback_atr=0.0,
+    slippage=0.01,
 ):
     closes = [bar[4] for bar in bars]
     fast, medium, trend = ema(closes, 20), ema(closes, 50), ema(closes, 200)
@@ -86,13 +88,13 @@ def simulate(
         date, open_price, high, low, close, _ = bar
         if pending is not None:
             if pending["side"] == "buy":
-                fill = open_price + 0.01
+                fill = open_price + slippage
                 shares = math.floor(equity * 0.1 / bars[i - 1][4])
                 if shares:
                     position = {"date": date, "bar": i, "entry": fill, "shares": shares, "stop": pending["stop"]}
                     equity -= shares * fill * 0.0005
             elif position is not None:
-                fill = open_price - 0.01
+                fill = open_price - slippage
                 pnl = position["shares"] * (fill - position["entry"])
                 fee = position["shares"] * fill * 0.0005
                 equity += pnl - fee
@@ -101,7 +103,7 @@ def simulate(
             pending = None
 
         if position is not None and low <= position["stop"]:
-            fill = max(0.01, min(open_price, position["stop"]) - 0.01)
+            fill = max(0.01, min(open_price, position["stop"]) - slippage)
             pnl = position["shares"] * (fill - position["entry"])
             fee = position["shares"] * fill * 0.0005
             equity += pnl - fee
@@ -113,7 +115,7 @@ def simulate(
         if position is None:
             uptrend = close > trend[i] and trend[i] > trend[i - 20] and fast[i] > medium[i]
             liquid = close >= min_price and volumes[i] is not None and volumes[i] >= min_average_volume
-            pullback = close < fast[i] and relative_strength[i] <= entry_rsi and relative_strength[i - 1] > entry_rsi
+            pullback = fast[i] - close >= min_pullback_atr * atr[i] and close < fast[i] and relative_strength[i] <= entry_rsi and relative_strength[i - 1] > entry_rsi
             if uptrend and liquid and pullback:
                 pending = {"side": "buy", "stop": close - 2 * atr[i]}
         else:
@@ -140,9 +142,11 @@ if __name__ == "__main__":
     parser.add_argument("--min-price", type=float, default=10.0)
     parser.add_argument("--min-volume", type=float, default=1000000.0)
     parser.add_argument("--entry-rsi", type=int, default=10)
+    parser.add_argument("--min-pullback-atr", type=float, default=0.0)
+    parser.add_argument("--slippage", type=float, default=0.01)
     args = parser.parse_args()
     bars = load_bars(args.data)
-    trades = simulate(bars, args.min_price, args.min_volume, args.entry_rsi)
+    trades = simulate(bars, args.min_price, args.min_volume, args.entry_rsi, args.min_pullback_atr, args.slippage)
     print(f"data={bars[0][0]}..{bars[-1][0]} bars={len(bars)}")
     print(f"filters: min_price=${args.min_price:g}, min_20d_average_volume={args.min_volume:g}")
     report(trades, "all")

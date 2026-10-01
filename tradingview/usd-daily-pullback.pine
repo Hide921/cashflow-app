@@ -8,14 +8,15 @@ int fastLength = input.int(20, "Fast EMA", minval = 2)
 int mediumLength = input.int(50, "Medium EMA", minval = 5)
 int trendSlopeBars = input.int(20, "Trend slope lookback", minval = 1)
 int rsiLength = input.int(2, "Pullback RSI length", minval = 2)
-int entryRsi = input.int(5, "Entry RSI at or below", minval = 1, maxval = 40)
+int entryRsi = input.int(6, "Entry RSI at or below", minval = 1, maxval = 40)
 int exitRsi = input.int(70, "Exit RSI at or above", minval = 50, maxval = 99)
 int maxHoldBars = input.int(10, "Maximum holding days", minval = 1)
 float stopAtr = input.float(2.0, "Stop distance (ATR)", minval = 0.5, step = 0.25)
+float minPullbackAtr = input.float(1.0, "Minimum pullback below fast EMA (ATR)", minval = 0.0, step = 0.25)
 float minPrice = input.float(1.0, "Minimum share price", minval = 0)
 float minAverageVolume = input.float(250000, "Minimum 20-day average volume", minval = 0)
 
-bool usdDailyChart = syminfo.tickerid == "AMEX:USD" and timeframe.isdaily and timeframe.multiplier == 1
+bool usdDailyChart = syminfo.ticker == "USD" and syminfo.type == "fund" and timeframe.isdaily and timeframe.multiplier == 1
 float trendEma = ta.ema(close, trendLength)
 float fastEma = ta.ema(close, fastLength)
 float mediumEma = ta.ema(close, mediumLength)
@@ -25,7 +26,7 @@ float averageVolume = ta.sma(volume, 20)
 
 bool uptrend = close > trendEma and trendEma > trendEma[trendSlopeBars] and fastEma > mediumEma
 bool liquid = close >= minPrice and averageVolume >= minAverageVolume
-bool pullback = close < fastEma and pullbackRsi <= entryRsi and pullbackRsi[1] > entryRsi
+bool pullback = close < fastEma and fastEma - close >= minPullbackAtr * currentAtr and pullbackRsi <= entryRsi and pullbackRsi[1] > entryRsi
 bool ready = not na(trendEma[trendSlopeBars]) and not na(averageVolume) and not na(currentAtr)
 bool buySignal = usdDailyChart and barstate.isconfirmed and ready and uptrend and liquid and pullback and strategy.position_size == 0
 
