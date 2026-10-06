@@ -44,7 +44,7 @@ function loadContext(stockUpdatedAt) {
     migrateStock: stock => stock, migrateWatchlistItem: item => item,
     recordDailyLog: () => false, render() {}, renderWatchlist() {}, renderPieChart() {}, renderLineChart() {},
     updateSyncIcon() {}, toast() {}, localizeJapaneseNames() {}, requestPortfolioPrices() {},
-    _canonicalWatchlist: () => '[]', _hasUnsyncedChanges: () => true,
+    _canonicalWatchlist: () => '[]', _canonicalStocks: () => '[]', _hasUnsyncedChanges: () => true,
     scheduleSyncSave: () => { saveCount++; }, _doSave: async () => { saveCount++; },
     notifyCashflow() {}, sbSave() { saveCount++; }, setTimeout: () => 0, clearTimeout() {},
     console,
@@ -92,4 +92,40 @@ test('競合でこの端末を選ぶと保有銘柄の保存を再開する', as
   assert.equal(app.storage.get('sp_stocks_synced_at_v1'), '2026-09-28T11:00:00.000Z');
   assert.equal(app.banner.hidden, true);
   assert.equal(app.saveCount(), 1);
+});
+
+test('他端末の時計が遅れていても、前回同期から変わったクラウドの変更を取り込む', async () => {
+  // 他端末が「この端末のローカル更新時刻より前」の日時で保存したケース
+  const app = loadContext('2026-09-28T09:00:00.000Z');
+  app.storage.delete('sp_stocks_pending_v1');
+  app.storage.set('sp_cloud_seen_v1', JSON.stringify({ sp_watchlist: '2026-09-28T08:00:00.000Z' }));
+  app.context.watchlist = [{ id: 'old' }];
+  app.context._sbGetAll = async () => [
+    { value: [app.cloudStock], updated_at: '2026-09-28T09:00:00+00:00' },
+    null, null, null,
+    { value: [{ id: 'from-slow-clock' }], updated_at: '2026-09-28T08:30:00.000Z' },
+    null, null,
+  ];
+  await app.context.sbLoad(true);
+  assert.equal(app.context.watchlist[0].id, 'from-slow-clock');
+  assert.equal(JSON.parse(app.storage.get('sp_cloud_seen_v1')).sp_watchlist, '2026-09-28T08:30:00.000Z');
+  // 同じ時刻の表記ゆれ（Z と +00:00）は変更とみなさない
+  assert.equal(app.context.stocks[0].id, 'local');
+});
+
+test('同期記録と同じなら、端末の時計が進んでいても変更なしと判定する', () => {
+  const app = loadContext('2026-09-28T09:00:00.000Z');
+  app.storage.set('sp_cloud_seen_v1', JSON.stringify({ sp_collateral: '2026-09-28T07:00:00.000Z' }));
+  assert.equal(app.context.cloudKeyChanged('sp_collateral', { updated_at: '2026-09-28T07:00:00+00:00' }), false);
+  assert.equal(app.context.cloudKeyChanged('sp_collateral', { updated_at: '2026-09-28T06:59:00+00:00' }), true);
+  assert.equal(app.context.cloudKeyChanged('sp_stocks', { updated_at: '2026-09-28T09:00:00+00:00' }), false);
+});
+
+test('グラフ期間の起点は日本時間の日付で計算する', () => {
+  const start = html.indexOf('function periodCutoffDate(');
+  const source = html.slice(start, html.indexOf('\n}\n', start) + 2);
+  const context = { todayJST: () => '2026-10-07', Date };
+  runInNewContext(source, context);
+  assert.equal(context.periodCutoffDate('5d'), '2026-10-02');
+  assert.equal(context.periodCutoffDate('1mo'), '2026-09-06');
 });

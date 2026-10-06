@@ -1775,9 +1775,9 @@ function mergePortfolioLogs(localLog, cloudLog) {
 
 function periodCutoffDate(period) {
   const days = { '5d': 5, '1mo': 31, '3mo': 92, '6mo': 183, '1y': 366, '2y': 732, '5y': 1827 };
-  const d = new Date();
-  d.setDate(d.getDate() - (days[period] || 31));
-  return d.toISOString().slice(0, 10);
+  // ログの日付は日本時間なので、日本時間の今日から日数を引く。
+  const [y, m, d] = todayJST().split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - (days[period] || 31))).toISOString().slice(0, 10);
 }
 
 function normalizePortfolioLog(log) {
@@ -1933,9 +1933,35 @@ let stockSyncConflict = null;
 function canonicalStocks(items) {
   return JSON.stringify(items.map(({ currentPrice, prevClose, dayChange, lastFetched, lastAttempted, fetchError, navDate, ...rest }) => rest));
 }
+// クラウドの更新日時は保存した端末の時計で付くため、大小ではなく「前回見た値から変わったか」で判定する。
+// こうすると端末間で時計がずれていても他端末の変更を取りこぼさない。
+const CLOUD_SEEN_KEY = 'sp_cloud_seen_v1';
+function sameStamp(a, b) {
+  if (!a || !b) return (a || null) === (b || null);
+  return a === b || Date.parse(a) === Date.parse(b);
+}
+function readCloudSeen() {
+  try { return JSON.parse(localStorage.getItem(CLOUD_SEEN_KEY) || '{}') || {}; } catch(e) { return {}; }
+}
+function getCloudSeen(key) {
+  if (key === 'sp_stocks') return localStorage.getItem(STOCKS_SYNCED_AT_KEY) ?? undefined;
+  return readCloudSeen()[key];
+}
+function setCloudSeen(key, updatedAt) {
+  if (key === 'sp_stocks') { localStorage.setItem(STOCKS_SYNCED_AT_KEY, updatedAt); return; }
+  localStorage.setItem(CLOUD_SEEN_KEY, JSON.stringify({ ...readCloudSeen(), [key]: updatedAt || null }));
+}
+// 前回の同期以降にクラウド側で変わったか。記録がない古い端末だけ従来の日時比較を使う。
+function cloudKeyChanged(key, row) {
+  const seen = getCloudSeen(key);
+  if (seen !== undefined && seen !== null) return !sameStamp(row?.updated_at, seen);
+  if (seen === null) return !!row?.updated_at;
+  const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_AT_KEY);
+  return row?.updated_at && localUpdatedAt ? row.updated_at > localUpdatedAt : !!row?.value;
+}
 function stockCloudChangedSinceSync(row) {
   const syncedAt = localStorage.getItem(STOCKS_SYNCED_AT_KEY);
-  return !!(row?.updated_at && syncedAt && row.updated_at > syncedAt);
+  return !!(row?.updated_at && syncedAt && !sameStamp(row.updated_at, syncedAt));
 }
 function setStockSyncConflict(row) {
   stockSyncConflict = row;
@@ -1975,10 +2001,12 @@ function _canonicalStocks() {
   return canonicalStocks(stocks);
 }
 
-async function _sbGetLatestUpdatedAt() {
-  const { data, error } = await _sb.from('user_data').select('updated_at').in('key', SYNC_KEYS);
+// 他端末の変更があるか: 各キーの更新日時を前回見た値と比べる。
+async function _cloudChangedSinceSeen() {
+  const { data, error } = await _sb.from('user_data').select('key,updated_at').in('key', SYNC_KEYS);
   if (error) throw error;
-  return (data || []).map(row => row.updated_at).filter(Boolean).sort().at(-1) || null;
+  const rows = new Map((data || []).map(row => [row.key, row]));
+  return SYNC_KEYS.some(key => cloudKeyChanged(key, rows.get(key) || null));
 }
 
 function _canonicalWatchlist() {
@@ -2041,11 +2069,12 @@ async function _doSave(force = false) {
   // 関連行を1リクエストで保存し、売却と保有数量などの部分保存を防ぐ。
   const updatedAt = new Date().toISOString();
   const rows = JSON.parse(JSON.stringify(dirty.map(key => ({ key, value: values[key], updated_at: updatedAt }))));
-  const { error } = await _sb.from('user_data').upsert(rows, { onConflict: 'key' });
+  const { data: savedRows, error } = await _sb.from('user_data').upsert(rows, { onConflict: 'key' }).select('key,updated_at');
   if (error) throw error;
   dirty.forEach(k => { _lastSynced[k] = payloads[k]; });
+  const savedStamps = new Map((savedRows || []).map(row => [row.key, row.updated_at]));
+  dirty.forEach(k => setCloudSeen(k, savedStamps.get(k) || updatedAt));
   if (dirty.includes('sp_stocks')) {
-    localStorage.setItem(STOCKS_SYNCED_AT_KEY, updatedAt);
     if (_canonicalStocks() === payloads.sp_stocks) localStorage.removeItem(STOCKS_PENDING_KEY);
   }
   // 通信中に編集された場合は、その編集日時を保存完了時に巻き戻さない。
@@ -2080,19 +2109,6 @@ async function sbSave(silent = false) {
   }
 }
 
-async function _fetchFromGist(pat, gistId) {
-  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-    headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/vnd.github+json' }
-  });
-  if (!res.ok) return null;
-  const gist = await res.json();
-  const content = gist.files['portfolio.json']?.content;
-  if (!content) return null;
-  const parsed = JSON.parse(content);
-  if (Array.isArray(parsed)) return { stocks: parsed, log: [] };
-  return { stocks: parsed.stocks || [], log: parsed.log || [] };
-}
-
 async function sbLoad(silent = false) {
   if (isSyncing) return;
   let loaded = false;
@@ -2111,7 +2127,10 @@ async function sbLoad(silent = false) {
     const cloudTransactions = txRow?.value         ?? null;
     const cloudWatchlist    = watchRow?.value       ?? null;
     const cloudWatchlistBudget = Number(watchBudgetRow?.value);
-    const cloudUpdatedAt  = [stocksRow, logRow, collateralRow, txRow, watchRow, watchBudgetRow, deletionsRow]
+    const syncRows = { sp_stocks: stocksRow, sp_portfolio_log: logRow, sp_collateral: collateralRow,
+      sp_transactions: txRow, sp_watchlist: watchRow, sp_watchlist_budget: watchBudgetRow,
+      sp_transaction_deletions: deletionsRow };
+    const cloudUpdatedAt  = Object.values(syncRows)
       .map(row => row?.updated_at).filter(Boolean).sort().at(-1) || null;
     const localStocks     = JSON.parse(localStorage.getItem('stocks') || '[]');
     const localLog        = normalizePortfolioLog(JSON.parse(localStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
@@ -2137,48 +2156,20 @@ async function sbLoad(silent = false) {
       _lastSynced.sp_watchlist_budget = JSON.stringify(cloudWatchlistBudget);
     }
 
-    // 旧Gist設定が残っていればGistからデータを取得してSupabaseへ移行
-    let gistData = null;
-    try {
-      const oldCfg = JSON.parse(localStorage.getItem('syncCfg') || '{}');
-      if (oldCfg.pat && oldCfg.gistId) {
-        gistData = await _fetchFromGist(oldCfg.pat, oldCfg.gistId);
-        if (gistData) localStorage.removeItem('syncCfg'); // 移行完了後に削除
-      }
-    } catch(e) {}
-
-    // クラウドが最新かどうか: タイムスタンプで判断（件数は使わない）
-    const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_AT_KEY);
-    const cloudIsNewer = cloudUpdatedAt && localUpdatedAt
-      ? cloudUpdatedAt > localUpdatedAt
-      : !!cloudStocks; // タイムスタンプがない場合のみクラウド優先
+    // クラウドが最新かどうか: 前回同期した時点から各キーが変わったかで判断（端末の時計に依存しない）
+    const cloudIsNewer = Object.entries(syncRows).some(([key, row]) => cloudKeyChanged(key, row));
     if (localStorage.getItem(STOCKS_PENDING_KEY) === '1' && Array.isArray(cloudStocks) &&
         canonicalStocks(localStocks) === canonicalStocks(cloudStocks)) {
       localStorage.removeItem(STOCKS_PENDING_KEY);
       localStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
     }
     const stockPending = localStorage.getItem(STOCKS_PENDING_KEY) === '1';
-    const cloudStockIsNewer = stocksRow?.updated_at && localUpdatedAt
-      ? stocksRow.updated_at > localUpdatedAt
-      : !!cloudStocks;
+    const cloudStockIsNewer = cloudKeyChanged('sp_stocks', stocksRow);
     if (stockPending && stockCloudChangedSinceSync(stocksRow)) setStockSyncConflict(stocksRow);
     else setStockSyncConflict(null);
 
-    // データの優先順: Gist移行データ > クラウド(新しい) > ローカル
-    if (gistData && gistData.stocks.length > (cloudStocks?.length || 0)) {
-      stocks       = gistData.stocks.map(migrateStock);
-      portfolioLog = mergePortfolioLogs(localLog, normalizePortfolioLog(gistData.log));
-      recordDailyLog();
-      localStorage.setItem('stocks', JSON.stringify(stocks));
-      localStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
-      document.getElementById('lastUpdated').textContent = '最終更新: ' + new Date().toLocaleTimeString('ja-JP');
-      render();
-      renderPieChart();
-      renderLineChart();
-      await _doSave();
-      localStorage.setItem(LOCAL_UPDATED_AT_KEY, lastCloudUpdatedAt || new Date().toISOString());
-      if (!silent) toast(`GitHubから${stocks.length}件をSupabaseへ移行しました ☁️`, 'success');
-    } else if (cloudStocks && cloudIsNewer) {
+    // データの優先順: クラウド(前回同期から変更あり) > ローカル
+    if (cloudStocks && cloudIsNewer) {
       if (!stockPending && cloudStockIsNewer) {
         stocks = cloudStocks.map(migrateStock);
         localStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
@@ -2219,6 +2210,11 @@ async function sbLoad(silent = false) {
         if (!silent) toast('ローカルデータをクラウドに移行しました', 'success');
       }
     }
+    Object.entries(syncRows).forEach(([key, row]) => {
+      if (key !== 'sp_stocks') setCloudSeen(key, row?.updated_at || null);
+    });
+    if (!stockSyncConflict && !localStorage.getItem(STOCKS_SYNCED_AT_KEY) && stocksRow?.updated_at &&
+        localStorage.getItem(STOCKS_PENDING_KEY) !== '1') setCloudSeen('sp_stocks', stocksRow.updated_at);
     loaded = true;
     updateSyncIcon(stockSyncConflict ? 'error' : 'ok');
   } catch(e) {
@@ -2242,9 +2238,9 @@ async function smartSync() {
   if (stockSyncConflict) { document.getElementById('stockConflictBanner').scrollIntoView({behavior:'smooth'}); return; }
   isSyncing = true;
   updateSyncIcon('syncing');
-  let cloudUpdatedAt = null;
+  let isCloudNewer = false;
   try {
-    cloudUpdatedAt = await _sbGetLatestUpdatedAt();
+    isCloudNewer = await _cloudChangedSinceSeen();
   } catch(e) {
     isSyncing = false;
     updateSyncIcon('error');
@@ -2252,10 +2248,6 @@ async function smartSync() {
     return;
   }
   isSyncing = false; // sbLoad/sbSave が自前でisSyncingを管理するため解放
-  const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_AT_KEY);
-  const isCloudNewer = cloudUpdatedAt && localUpdatedAt
-    ? cloudUpdatedAt > localUpdatedAt
-    : !!cloudUpdatedAt;
   if (isCloudNewer) {
     await sbLoad(false); // クラウドが新しい → ダウンロード
   } else {
@@ -2267,12 +2259,7 @@ async function smartSync() {
 async function pollCloudChanges() {
   if (isSyncing || document.hidden) return;  // 非表示中はスキップ（Realtime 購読が復帰時に拾う）
   try {
-    const cloudTs = await _sbGetLatestUpdatedAt();
-    const localTs = localStorage.getItem(LOCAL_UPDATED_AT_KEY);
-    // ローカルタイムスタンプと比較（サーバー時刻ベースで判断）
-    if (cloudTs && (!localTs || cloudTs > localTs)) {
-      await sbLoad(true);
-    }
+    if (await _cloudChangedSinceSeen()) await sbLoad(true);
   } catch(e) {
     // ポーリング失敗は無視
   }
@@ -2294,6 +2281,7 @@ function updateSyncIcon(state) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
+try { localStorage.removeItem('syncCfg'); } catch(e) {} // 旧Gist同期のトークンを残さない
 const raw = JSON.parse(localStorage.getItem('stocks') || '[]');
 stocks = localStorage.getItem('stocks') !== null ? raw.map(migrateStock) : (LOCAL_ONLY_MODE ? defaultStocks() : []);
 portfolioLog = normalizePortfolioLog(JSON.parse(localStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
