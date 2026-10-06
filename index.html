@@ -89,6 +89,20 @@ const _sb = supabase.createClient(
 const DATA_KEYS=['accounts','transactions','budgets','skipped','preferences','loans'];
 const INVESTMENT_KEYS=['sp_stocks','sp_portfolio_log','sp_collateral'];
 const INVESTMENT_API='https://stock-portfolio-1-2rnh.onrender.com';
+// 価格サーバー（Render無料プラン）は放置するとスリープし、起動に最大1分ほどかかる。
+// アプリを開いた時点で起こし始め、投資タブを開くまでに起動を進めておく。
+let investmentApiWake=null,investmentApiAwake=false;
+function wakeInvestmentApi(){
+  if(investmentApiAwake)return Promise.resolve(true);
+  if(!investmentApiWake){
+    investmentApiWake=fetch(`${INVESTMENT_API}/api/health`,{cache:'no-store',signal:typeof AbortSignal!=='undefined'&&AbortSignal.timeout?AbortSignal.timeout(75000):undefined})
+      .then(res=>{investmentApiAwake=res.ok;return res.ok;})
+      .catch(()=>false)
+      .finally(()=>{if(!investmentApiAwake)investmentApiWake=null;});
+  }
+  return investmentApiWake;
+}
+if(typeof window!=='undefined'&&window.location&&window.location.protocol!=='file:'&&typeof fetch==='function')wakeInvestmentApi();
 const INVESTMENT_FULL_URL=window.location.hostname.endsWith('github.io')?'./public/investment-full.html':'./investment-full.html';
 const INVESTMENT_LOCAL_ONLY=new URLSearchParams(window.location.search).get('local-only')==='1';
 const INVESTMENT_FULL_SRC=`${INVESTMENT_FULL_URL}?api=${encodeURIComponent(INVESTMENT_API)}${INVESTMENT_LOCAL_ONLY?'&local-only=1':''}`;
@@ -3113,13 +3127,14 @@ function canonicalInvestmentStocks(items){
 }
 // 価格APIは初回に pending を返すことがあるため、価格がそろうまで数回取り直す。
 async function fetchInvestmentQuotes(tickers){
+  await wakeInvestmentApi();
   const merged={};
   let pending=[...new Set(tickers.filter(Boolean))];
   for(let attempt=0;attempt<4&&pending.length;attempt++){
     if(attempt>0)await new Promise(resolve=>setTimeout(resolve,1600));
     for(let i=0;i<pending.length;i+=48){
       const batch=pending.slice(i,i+48);
-      const res=await fetch(`${INVESTMENT_API}/api/prices?mode=cached&tickers=${encodeURIComponent(batch.join(','))}`,{cache:'no-store'});
+      const res=await fetch(`${INVESTMENT_API}/api/prices?mode=cached&tickers=${encodeURIComponent(batch.join(','))}`,{cache:'no-store',signal:AbortSignal.timeout?AbortSignal.timeout(75000):undefined});
       if(!res.ok) throw new Error(`価格API HTTP ${res.status}`);
       Object.assign(merged,await res.json());
     }
@@ -3147,15 +3162,18 @@ function BuyCalculator({fxRate}){
   const [quote,setQuote]=useState(null);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
+  const [waking,setWaking]=useState(false);
   const sf=(key,value)=>setForm(current=>({...current,[key]:value}));
   async function lookup(e){
     e.preventDefault();
     const ticker=form.ticker.trim().toUpperCase();
     if(!ticker){setError('銘柄コードを入力してください');return;}
     const yahoo=investmentTicker({market:form.market,ticker});
-    setLoading(true);setError('');setQuote(null);
+    setLoading(true);setError('');setQuote(null);setWaking(!investmentApiAwake);
     localSet(LS_BUY_CALC,JSON.stringify({market:form.market,budget:form.budget}));
     try{
+      await wakeInvestmentApi();
+      setWaking(false);
       const [quotes,name]=await Promise.all([
         fetchInvestmentQuotes([yahoo,'USDJPY=X']),
         fetch(`${INVESTMENT_API}/api/name?ticker=${encodeURIComponent(yahoo)}`).then(res=>res.ok?res.json():{}).then(data=>data?.name||'').catch(()=>'')
@@ -3165,7 +3183,7 @@ function BuyCalculator({fxRate}){
       const rate=Number(quotes['USDJPY=X']?.price);
       setQuote({ticker,yahoo,name,market:form.market,price:Number(q.price),prevClose:Number(q.prev_close)||null,currency:q.currency||(form.market==='JP'?'JPY':'USD'),fxRate:rate>0?rate:fxRate,stale:!!q.stale,checkedAt:new Date()});
     }catch(err){setError('時価を取得できませんでした。時間をおいて再試行してください');}
-    finally{setLoading(false);}
+    finally{setLoading(false);setWaking(false);}
   }
   const budget=Number(form.budget);
   const result=quote?buyableQuantity({market:quote.market,price:quote.price,currency:quote.currency,fxRate:quote.fxRate,budget}):null;
@@ -3182,6 +3200,7 @@ function BuyCalculator({fxRate}){
       h('div',{className:'col-span-2 sm:col-span-1'},h('label',{htmlFor:'buy-budget',className:labelCls},'予算（円）'),h('input',{id:'buy-budget',type:'number',min:'0',inputMode:'numeric',className:inputCls,placeholder:'例: 500000',value:form.budget,onChange:e=>sf('budget',e.target.value)})),
       h('button',{type:'submit',disabled:loading,className:'col-span-2 sm:col-span-1 rounded-xl bg-slate-900 dark:bg-white px-5 py-2.5 text-sm font-semibold text-white dark:text-slate-900 disabled:opacity-50'},loading?'取得中…':'時価を取得')
     ),
+    waking&&h('p',{className:'mt-3 text-sm text-gray-500 dark:text-gray-400'},'価格サーバーを起動しています（最大1分ほどかかります）…'),
     error&&h('p',{className:'mt-3 text-sm text-rose-600'},error),
     quote&&h('div',{className:'mt-4 rounded-xl bg-gray-50 dark:bg-gray-900/40 p-4 space-y-3'},
       h('div',{className:'flex flex-wrap items-baseline justify-between gap-2'},
