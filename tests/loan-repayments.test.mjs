@@ -98,7 +98,8 @@ test('登録済み返済取引を選ぶと同じ支出予定を二重に追加�
   const linked={...loan,repaymentTransactionId:'existing'};
   const txs=fn('withLoanRepaymentPlans')([existing],[linked],accounts);
   assert.equal(txs.length,1);
-  assert.equal(txs[0],existing);
+  assert.equal(txs[0].id,'existing');
+  assert.equal(txs[0].untilDate,'2029-04-01');
   assert.equal(fn('loanRepaymentStatus')(linked,[existing],accounts).ready,true);
   assert.equal(fn('loanRepaymentStatus')(linked,[],accounts).ready,false);
 });
@@ -112,4 +113,31 @@ test('借入予定の確定額と日付移動を適用し、支払済みはそ�
   const skipped=fn('expandRec')(tx,start,end,new Set([`${tx.id}_2026-10-05`]));
   assert.equal(skipped.length,1);
   assert.equal(fn('fmt')(skipped[0].date),'2026-11-01');
+});
+
+test('期日前の返済は対象の定期返済を消し込み、二重に引かない',()=>{
+  const today=fn('todayD')(),due=fn('fmt')(fn('addDays')(today,3)),paidAt=fn('todayStr')();
+  const configured={...loan,nextPaymentDate:due};
+  const candidate=fn('nextLoanOccurrence')(configured,[configured],[],accounts,paidAt);
+  assert.equal(candidate,due);
+  const payment={id:'early',amount:10000,paidAt,coversDate:candidate};
+  const paidLoan={...configured,balance:290000,payments:[payment]};
+  const reflected=fn('reflectLoanPayment')(accounts,paidLoan,payment,'bank');
+  const txs=fn('withLoanRepaymentPlans')([],[paidLoan],reflected);
+  const rows=fn('buildForecast')(reflected,txs,fn('addDays')(today,10),new Set());
+  assert.equal(rows.at(-1).bank,490000);
+  const extra={...payment,id:'extra',coversDate:''};
+  const extraTxs=fn('withLoanRepaymentPlans')([],[{...paidLoan,payments:[extra]}],accounts);
+  assert.equal(fn('expandRec')(extraTxs[0],today,fn('addDays')(today,10),new Set()).length,1);
+});
+
+test('返済予定は借入残高で終わり、最終回は残額になる',()=>{
+  const start=fn('fmt')(fn('addDays')(fn('todayD')(),1));
+  const small={...loan,balance:25000,nextPaymentDate:start};
+  const tx=fn('withLoanRepaymentPlans')([],[small],accounts)[0];
+  const events=fn('expandRec')(tx,fn('todayD')(),fn('addMonths')(fn('todayD')(),12),new Set());
+  assert.deepEqual(Array.from(events,event=>-event.amt),[10000,10000,5000]);
+  const cleaned=fn('stripLoanScheduleFields')(tx);
+  assert.equal(cleaned.untilDate,undefined);
+  assert.deepEqual(Object.keys(cleaned.overrides),[]);
 });

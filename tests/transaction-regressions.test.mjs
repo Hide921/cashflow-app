@@ -37,11 +37,39 @@ function appContext(cloud = {}, storage = new Map(), options = {}) {
     setItem: (key, value) => { if (options.failLocalSet || (options.failCacheSet && key === 'cf_cache_v2:legacy')) throw new Error('保存領域が利用できません'); storage.set(key, String(value)); },
   };
   const listeners = new Map();
+  const stamps = options.stamps || {};
+  let tick = 0;
+  const nextStamp = () => `2026-01-01T00:00:00.${String(++tick).padStart(3, '0')}+00:00`;
+  const rowOf = key => ({ key, value: cloud[key], updated_at: stamps[key] ??= nextStamp() });
+  const query = (op, row) => {
+    const filters = [];
+    const run = async () => {
+      const keys = Object.keys(cloud).filter(key => filters.every(f => f(key)));
+      if (op === 'select') return { data: keys.map(rowOf), error: null };
+      if (op === 'insert') {
+        if (row.key in cloud) return { data: null, error: { code: '23505', message: 'duplicate' } };
+        cloud[row.key] = row.value; stamps[row.key] = nextStamp(); return { data: [rowOf(row.key)], error: null };
+      }
+      if (op === 'upsert') { cloud[row.key] = row.value; stamps[row.key] = nextStamp(); return { data: [rowOf(row.key)], error: null }; }
+      keys.forEach(key => { cloud[key] = row.value; stamps[key] = nextStamp(); });
+      return { data: keys.map(rowOf), error: null };
+    };
+    const builder = {
+      select: () => builder,
+      eq: (field, value) => { filters.push(key => (field === 'key' ? key : rowOf(key).updated_at) === value); return builder; },
+      in: (_field, values) => { filters.push(key => values.includes(key)); return builder; },
+      maybeSingle: async () => { const { data, error } = await run(); return { data: data[0] || null, error }; },
+      then: (resolve, reject) => run().then(resolve, reject),
+    };
+    return builder;
+  };
   const supabase = {
     createClient: () => ({
       from: () => ({
-        select: () => ({ eq: (_field, key) => ({ maybeSingle: async () => ({ data: key in cloud ? { value: cloud[key] } : null, error: null }) }) }),
-        upsert: async row => { cloud[row.key] = row.value; return { error: null }; },
+        select: () => query('select'),
+        insert: row => query('insert', row),
+        update: row => query('update', row),
+        upsert: row => query('upsert', row),
       }),
     }),
   };
@@ -50,7 +78,8 @@ function appContext(cloud = {}, storage = new Map(), options = {}) {
     addEventListener: (name, listener) => listeners.set(name, listener),
     removeEventListener: name => listeners.delete(name),
   };
-  const context = { React, supabase, localStorage, window, navigator: { onLine: true }, setTimeout, URLSearchParams, console };
+  const document = { visibilityState: 'visible', addEventListener: (name, listener) => listeners.set(name, listener), removeEventListener: name => listeners.delete(name) };
+  const context = { React, supabase, localStorage, window, document, navigator: { onLine: true }, setTimeout, URLSearchParams, console };
   runInNewContext(source, context);
   return {
     cloud, storage, state, effects, context, listeners,
@@ -473,4 +502,64 @@ test('概要は為替未取得時に仮の150円で米国株を評価しない',
   const view = app.evaluate('InvestmentView({data:{stocks:[testStock],log:[],collateral:[]}})');
   assert.ok(findElement(view, node => node.type === 'p' && node.props.children.some(child => typeof child === 'string' && child.includes('USD/JPY: 未取得'))));
   assert.ok(findElement(view, node => node.type === 'p' && node.props.children.includes('価格または為替がない銘柄は合計を表示していません。')));
+});
+
+test('残高基準日の扱い: 反映済みフラグ・古い基準日・過去表示が一貫する', () => {
+  const app = appContext();
+  const today = app.evaluate('todayStr()');
+  const yesterday = app.evaluate('fmt(addDays(todayD(),-1))');
+  const twoDaysAgo = app.evaluate('fmt(addDays(todayD(),-2))');
+  app.context.salary = { id: 'salary', label: '給与', type: 'income', amount: 300, recurring: false, accountId: 'a', startDate: today };
+  app.context.incl = { id: 'a', name: '銀行A', balance: 1300, balanceAsOf: today, balanceIncludesAsOfDay: true };
+  const included = app.evaluate('buildForecast([incl],[salary],todayD(),new Set())');
+  assert.equal(included[0].a, 1300);
+  const pastIncluded = app.evaluate('buildHistoricalForecast([incl],[salary],addDays(todayD(),-1),new Set())');
+  assert.deepEqual(Array.from(pastIncluded, row => row.a), [1000, 1300]);
+  app.context.yExpense = { id: 'card', label: 'カード', type: 'expense', amount: 200, recurring: false, accountId: 'a', startDate: yesterday };
+  app.context.stale = { id: 'a', name: '銀行A', balance: 1000, balanceAsOf: twoDaysAgo };
+  const stale = app.evaluate('buildForecast([stale],[yExpense],todayD(),new Set())');
+  assert.equal(stale[0].a, 800);
+  const pastStale = app.evaluate('buildHistoricalForecast([stale],[yExpense],addDays(todayD(),-2),new Set())');
+  assert.deepEqual(Array.from(pastStale, row => row.a), [1000, 800, 800]);
+});
+
+test('他の端末の更新を上書きせず、選んだときだけ端末の内容で上書きする', async () => {
+  const stamps = {};
+  const accounts = [{ id: 'a', name: '銀行A', balance: 100, balanceAsOf: '2026-01-01' }];
+  const app = appContext({ accounts, transactions: [], loans: [], budgets: {}, skipped: [], preferences: {} }, new Map(), { stamps });
+  app.evaluate('App()');
+  app.effects[0]();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  app.cloud.accounts = [{ id: 'a', name: '銀行A', balance: 999 }];
+  stamps.accounts = '2026-02-01T00:00:00+00:00';
+  app.resetHooks();
+  findNode(app.evaluate('App()'), 'Dashboard').props.onUpdAcc({ ...accounts[0], balance: 110 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(app.cloud.accounts[0].balance, 999);
+  assert.ok(JSON.parse(app.storage.get('cf_pending_v1')).accounts);
+  app.resetHooks();
+  const banner = findElement(app.evaluate('App()'), node => node.type === 'button' && node.props.children.includes('この端末の内容で上書き'));
+  assert.ok(banner);
+  app.context.window.confirm = () => true;
+  app.evaluate('confirm = window.confirm');
+  banner.props.onClick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(app.cloud.accounts[0].balance, 110);
+});
+
+test('CSV は全項目を引用し、取り込み時に日付・頻度を検証する', () => {
+  const app = appContext();
+  app.context.accounts = [{ id: 'a', name: '銀行,A' }];
+  const csv = [
+    '名前,種別,カテゴリ,口座,振替先口座,金額,頻度,開始日,終了日,営業日調整',
+    '"家賃",支出,家賃,"銀行,A",,-80000,毎月,2026/10/27,,前営業日',
+    '"壊れた日付",支出,その他,"銀行,A",,-1,毎月,2026/02/30,,',
+    '"不明な頻度",支出,その他,"銀行,A",,-1,隔週,2026-10-01,,',
+  ].join('\n');
+  const result = app.evaluate('transactionsFromCsv')(csv, app.context.accounts);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.skipped, 2);
+  assert.equal(result.items[0].startDate, '2026-10-27');
+  assert.equal(result.items[0].adjustBizDay, 'prev');
+  assert.equal(app.evaluate('csvCell')('a"b,c'), '"a""b,c"');
 });
