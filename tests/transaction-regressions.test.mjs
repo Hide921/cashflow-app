@@ -563,3 +563,18 @@ test('CSV は全項目を引用し、取り込み時に日付・頻度を検証�
   assert.equal(result.items[0].adjustBizDay, 'prev');
   assert.equal(app.evaluate('csvCell')('a"b,c'), '"a""b,c"');
 });
+
+test('予算から買える数量を単元・1株単位・米国株・暗号資産で計算する', () => {
+  const calc = appContext().evaluate('buyableQuantity');
+  const jp = calc({ market: 'JP', price: 2930.5, currency: 'JPY', budget: 1000000 });
+  assert.equal(jp.quantity, 300);
+  assert.equal(jp.oddQuantity, 341);
+  assert.equal(Math.round(jp.rest), 120850);
+  const us = calc({ market: 'US', price: 100, currency: 'USD', fxRate: 150, budget: 100000 });
+  assert.equal(us.quantity, 6);
+  assert.equal(us.oddQuantity, null);
+  assert.equal(calc({ market: 'US', price: 100, currency: 'USD', fxRate: null, budget: 100000 }), null);
+  const btc = calc({ market: 'CRYPTO', price: 80000, currency: 'USD', fxRate: 150, budget: 100000 });
+  assert.equal(btc.quantity, 0.008333);
+  assert.equal(calc({ market: 'JP', price: 5000, currency: 'JPY', budget: 400000 }).quantity, 0);
+});

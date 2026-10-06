@@ -3111,6 +3111,103 @@ function investmentTicker(stock){
 function canonicalInvestmentStocks(items){
   return items.map(stock=>({...stock}));
 }
+// 価格APIは初回に pending を返すことがあるため、価格がそろうまで数回取り直す。
+async function fetchInvestmentQuotes(tickers){
+  const merged={};
+  let pending=[...new Set(tickers.filter(Boolean))];
+  for(let attempt=0;attempt<4&&pending.length;attempt++){
+    if(attempt>0)await new Promise(resolve=>setTimeout(resolve,1600));
+    for(let i=0;i<pending.length;i+=48){
+      const batch=pending.slice(i,i+48);
+      const res=await fetch(`${INVESTMENT_API}/api/prices?mode=cached&tickers=${encodeURIComponent(batch.join(','))}`,{cache:'no-store'});
+      if(!res.ok) throw new Error(`価格API HTTP ${res.status}`);
+      Object.assign(merged,await res.json());
+    }
+    pending=pending.filter(ticker=>!(Number(merged[ticker]?.price)>0));
+  }
+  return merged;
+}
+const BUY_LOT_SIZE={JP:100,US:1,CRYPTO:0};
+// 予算（円）で買える数量。手数料・税は含めない。暗号資産は小数6桁まで。
+function buyableQuantity({market,price,currency,fxRate,budget}){
+  const priceYen=currency==='USD'?(fxRate>0?price*fxRate:null):price;
+  if(!(price>0)||priceYen===null)return null;
+  const lot=BUY_LOT_SIZE[market]??1;
+  const unitCost=priceYen*(lot||1);
+  if(!(budget>0))return {priceYen,lot,unitCost,quantity:0,oddQuantity:0,cost:0,rest:0};
+  const quantity=lot?Math.floor(budget/unitCost)*lot:Math.floor(budget/priceYen*1e6)/1e6;
+  const oddQuantity=market==='JP'?Math.floor(budget/priceYen):null;
+  const cost=quantity*priceYen;
+  return {priceYen,lot,unitCost,quantity,oddQuantity,oddCost:oddQuantity===null?null:oddQuantity*priceYen,cost,rest:budget-cost};
+}
+const LS_BUY_CALC='cf_buy_calc_v1';
+function BuyCalculator({fxRate}){
+  const saved=(()=>{try{return JSON.parse(localGet(LS_BUY_CALC)||'{}')||{};}catch{return {};}})();
+  const [form,setForm]=useState({market:saved.market||'JP',ticker:'',budget:saved.budget||''});
+  const [quote,setQuote]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState('');
+  const sf=(key,value)=>setForm(current=>({...current,[key]:value}));
+  async function lookup(e){
+    e.preventDefault();
+    const ticker=form.ticker.trim().toUpperCase();
+    if(!ticker){setError('銘柄コードを入力してください');return;}
+    const yahoo=investmentTicker({market:form.market,ticker});
+    setLoading(true);setError('');setQuote(null);
+    localSet(LS_BUY_CALC,JSON.stringify({market:form.market,budget:form.budget}));
+    try{
+      const [quotes,name]=await Promise.all([
+        fetchInvestmentQuotes([yahoo,'USDJPY=X']),
+        fetch(`${INVESTMENT_API}/api/name?ticker=${encodeURIComponent(yahoo)}`).then(res=>res.ok?res.json():{}).then(data=>data?.name||'').catch(()=>'')
+      ]);
+      const q=quotes[yahoo];
+      if(!(Number(q?.price)>0)){setError(`${ticker} の時価を取得できませんでした。銘柄コードと市場を確認してください`);return;}
+      const rate=Number(quotes['USDJPY=X']?.price);
+      setQuote({ticker,yahoo,name,market:form.market,price:Number(q.price),prevClose:Number(q.prev_close)||null,currency:q.currency||(form.market==='JP'?'JPY':'USD'),fxRate:rate>0?rate:fxRate,stale:!!q.stale,checkedAt:new Date()});
+    }catch(err){setError('時価を取得できませんでした。時間をおいて再試行してください');}
+    finally{setLoading(false);}
+  }
+  const budget=Number(form.budget);
+  const result=quote?buyableQuantity({market:quote.market,price:quote.price,currency:quote.currency,fxRate:quote.fxRate,budget}):null;
+  const yen=n=>`¥${Math.round(n).toLocaleString()}`;
+  const native=n=>quote.currency==='USD'?`$${n.toLocaleString('en-US',{maximumFractionDigits:4})}`:`¥${n.toLocaleString('ja-JP',{maximumFractionDigits:2})}`;
+  const unit=quote?.market==='CRYPTO'?'':'株';
+  const change=quote?.prevClose?(quote.price-quote.prevClose)/quote.prevClose*100:null;
+  return h('section',{className:cardCls+' p-5'},
+    h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'何株買える？'),
+    h('p',{className:'text-xs text-gray-400 mt-1 mb-4'},'銘柄コードと予算から、時価で買える数量を計算します（手数料・税は含みません）'),
+    h('form',{onSubmit:lookup,className:'grid grid-cols-2 sm:grid-cols-[8rem_1fr_1fr_auto] gap-3 items-end'},
+      h('div',null,h('label',{htmlFor:'buy-market',className:labelCls},'市場'),h('select',{id:'buy-market',className:selectCls,value:form.market,onChange:e=>sf('market',e.target.value)},h('option',{value:'JP'},'日本株'),h('option',{value:'US'},'米国株'),h('option',{value:'CRYPTO'},'暗号資産'))),
+      h('div',null,h('label',{htmlFor:'buy-ticker',className:labelCls},'銘柄コード'),h('input',{id:'buy-ticker',className:inputCls,placeholder:form.market==='JP'?'例: 7203':form.market==='US'?'例: AAPL':'例: BTC',value:form.ticker,onChange:e=>sf('ticker',e.target.value),autoCapitalize:'characters'})),
+      h('div',{className:'col-span-2 sm:col-span-1'},h('label',{htmlFor:'buy-budget',className:labelCls},'予算（円）'),h('input',{id:'buy-budget',type:'number',min:'0',inputMode:'numeric',className:inputCls,placeholder:'例: 500000',value:form.budget,onChange:e=>sf('budget',e.target.value)})),
+      h('button',{type:'submit',disabled:loading,className:'col-span-2 sm:col-span-1 rounded-xl bg-slate-900 dark:bg-white px-5 py-2.5 text-sm font-semibold text-white dark:text-slate-900 disabled:opacity-50'},loading?'取得中…':'時価を取得')
+    ),
+    error&&h('p',{className:'mt-3 text-sm text-rose-600'},error),
+    quote&&h('div',{className:'mt-4 rounded-xl bg-gray-50 dark:bg-gray-900/40 p-4 space-y-3'},
+      h('div',{className:'flex flex-wrap items-baseline justify-between gap-2'},
+        h('div',null,h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},`${quote.name||quote.ticker}`),h('p',{className:'text-xs text-gray-400'},`${quote.yahoo}・${quote.checkedAt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} 取得${quote.stale?'（キャッシュ）':''}`)),
+        h('div',{className:'text-right'},h('p',{className:'text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100'},native(quote.price)),
+          change!==null&&h('p',{className:`text-xs tabular-nums ${change>=0?'text-emerald-600':'text-rose-500'}`},`前日比 ${change>=0?'+':''}${change.toFixed(2)}%`),
+          quote.currency==='USD'&&result&&h('p',{className:'text-xs text-gray-400 tabular-nums'},`≒ ${yen(result.priceYen)}（1ドル ${quote.fxRate.toFixed(2)}円）`))
+      ),
+      !result&&h('p',{className:'text-sm text-amber-700'},'為替レートを取得できないため円換算できません'),
+      result&&result.lot>1&&h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},`1単元（${result.lot}株）の必要額: ${yen(result.unitCost)}`),
+      result&&budget>0&&h('div',{className:'grid grid-cols-1 sm:grid-cols-2 gap-3'},
+        h('div',{className:'rounded-lg bg-white dark:bg-gray-800 p-3'},
+          h('p',{className:'text-xs text-gray-400'},result.lot>1?'単元株で買える数':'買える数量'),
+          h('p',{className:'text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100'},`${result.quantity.toLocaleString('ja-JP',{maximumFractionDigits:6})}${unit}`),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 tabular-nums'},`約 ${yen(result.cost)}・残り ${yen(result.rest)}`),
+          result.quantity===0&&h('p',{className:'text-xs text-amber-700 mt-1'},`あと ${yen((result.lot?result.unitCost:result.priceYen)-budget)} で${result.lot>1?'1単元':'1株'}買えます`)
+        ),
+        result.oddQuantity!==null&&h('div',{className:'rounded-lg bg-white dark:bg-gray-800 p-3'},
+          h('p',{className:'text-xs text-gray-400'},'1株単位（単元未満株）なら'),
+          h('p',{className:'text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100'},`${result.oddQuantity.toLocaleString()}株`),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 tabular-nums'},`約 ${yen(result.oddCost)}・残り ${yen(budget-result.oddCost)}`)
+        )
+      )
+    )
+  );
+}
 const EMPTY_INVESTMENT_FORM={market:'JP',tradeType:'spot',accountType:'specific',ticker:'',name:'',sector:'',quantity:'',avgPrice:'',note:''};
 function InvestmentView({data,onReload,onStocksChange}){
   const stocks=data?.stocks||[];
@@ -3135,19 +3232,7 @@ function InvestmentView({data,onReload,onStocksChange}){
     if(!stocks.length){setQuotes({});setPriceCheckedAt(null);return;}
     setPriceLoading(true);setPriceError('');
     try{
-      const tickers=[...new Set([...stocks.map(investmentTicker).filter(Boolean),'USDJPY=X'])];
-      const merged={};
-      let pending=tickers;
-      for(let attempt=0;attempt<4&&pending.length;attempt++){
-        if(attempt>0)await new Promise(resolve=>setTimeout(resolve,1600));
-        for(let i=0;i<pending.length;i+=48){
-          const batch=pending.slice(i,i+48);
-          const res=await fetch(`${INVESTMENT_API}/api/prices?mode=cached&tickers=${encodeURIComponent(batch.join(','))}`,{cache:'no-store'});
-          if(!res.ok) throw new Error(`価格API HTTP ${res.status}`);
-          Object.assign(merged,await res.json());
-        }
-        pending=tickers.filter(ticker=>!Number.isFinite(Number(merged[ticker]?.price))||Number(merged[ticker]?.price)<=0);
-      }
+      const merged=await fetchInvestmentQuotes([...stocks.map(investmentTicker),'USDJPY=X']);
       setQuotes(merged);
       setPriceCheckedAt(new Date().toISOString());
       const rate=Number(merged['USDJPY=X']?.price);
@@ -3328,17 +3413,20 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
   },[onEmbeddedChange]);
   return h('div',{className:mode==='full'?'space-y-2':'space-y-4'},
     h('div',{className:'flex flex-wrap items-center justify-between gap-2 px-1'},
-      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資管理'),h('p',{className:'text-sm text-gray-400 mt-1'},mode==='full'?'株式管理アプリの全機能をこの画面で利用できます':'資産全体をシンプルに確認できます')),
+      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資管理'),h('p',{className:'text-sm text-gray-400 mt-1'},mode==='full'?'株式管理アプリの全機能をこの画面で利用できます':mode==='buy'?'銘柄コードと予算から、時価で買える株数を計算します':'資産全体をシンプルに確認できます')),
       h('div',{className:'flex items-center gap-2'},
         h('div',{className:'inline-flex rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1'},
           h('button',{onClick:()=>changeMode('summary'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='summary'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'概要'),
-          h('button',{onClick:()=>changeMode('full'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='full'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'完全管理')
+          h('button',{onClick:()=>changeMode('full'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='full'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'完全管理'),
+          h('button',{onClick:()=>changeMode('buy'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='buy'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'買える株数')
         ),
         mode==='full'&&h('a',{href:INVESTMENT_FULL_SRC,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white'},'別画面 ↗')
       )
     ),
     mode==='summary'
       ?h(InvestmentView,{data,onReload,onStocksChange})
+      :mode==='buy'
+      ?h('div',{className:'max-w-3xl'},h(BuyCalculator,{fxRate:null}))
       :h('section',{className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden shadow-sm'},
         h('iframe',{title:'株式ポートフォリオ完全管理',src:INVESTMENT_FULL_SRC,className:'block w-full h-[calc(100dvh-9rem)] min-h-[680px] border-0 bg-[#f5f5f3]',loading:'eager'})
       )
