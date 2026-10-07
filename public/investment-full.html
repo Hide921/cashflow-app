@@ -2577,30 +2577,7 @@ function bootLibsReady() {
   // クラウド同期はグラフライブラリを待たず開始する。
   if (window.supabase && !LOCAL_ONLY_MODE) {
     _sb = supabase.createClient(_SB_URL, _SB_KEY);
-
-    // 起動時にSupabaseからデータを読み込む（ローカルデータがあれば移行も行う）
-    updateSyncIcon('syncing');
-    sbLoad(true);
-
-    // Supabase Realtimeで他デバイスの変更を即時検知
-    _sb.channel('portfolio_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_data' }, payload => {
-        if (!SYNC_KEYS.includes(payload?.new?.key || payload?.old?.key)) return;
-        sbLoad(true);
-      })
-      .subscribe();
-
-    // Realtime未対応環境のフォールバック: 30秒ごとにポーリング
-    setInterval(pollCloudChanges, 30 * 1000);
-
-    // ?upload=1 パラメータで強制アップロード（データ復元用）
-    if (new URLSearchParams(location.search).get('upload') === '1') {
-      setTimeout(async () => {
-        localStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
-        await sbSave(false);
-        history.replaceState({}, '', location.pathname);
-      }, 1200);
-    }
+    startCloudSync();
   } else if (LOCAL_ONLY_MODE) {
     initialLoadDone = true;
     updateSyncIcon('local');
@@ -2610,6 +2587,45 @@ function bootLibsReady() {
     console.warn('supabase 未ロード: クラウド同期は無効（ローカルのみで動作）');
     updateSyncIcon('error');
     setTimeout(localizeJapaneseNames, 0);
+  }
+}
+
+// クラウドのデータはログインしたユーザーだけが読み書きできる。ログインは家計アプリ側で行い、
+// 同じオリジンなのでセッションを共有する。未ログインなら同期せず端末内のデータだけで動かす。
+async function startCloudSync() {
+  const { data } = await _sb.auth.getSession();
+  if (!data?.session) {
+    updateSyncIcon('error');
+    document.getElementById('syncStatusText').textContent = '未ログイン';
+    toast('クラウド同期にはログインが必要です。家計アプリ（Cashflow）でログインしてから開き直してください', 'error');
+    setTimeout(localizeJapaneseNames, 0);
+    _sb.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_IN' && session) location.reload(); });
+    return;
+  }
+  _sb.auth.onAuthStateChange(event => { if (event === 'SIGNED_OUT') location.reload(); });
+
+  // 起動時にSupabaseからデータを読み込む（ローカルデータがあれば移行も行う）
+  updateSyncIcon('syncing');
+  sbLoad(true);
+
+  // Supabase Realtimeで他デバイスの変更を即時検知
+  _sb.channel('portfolio_sync')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'user_data' }, payload => {
+      if (!SYNC_KEYS.includes(payload?.new?.key || payload?.old?.key)) return;
+      sbLoad(true);
+    })
+    .subscribe();
+
+  // Realtime未対応環境のフォールバック: 30秒ごとにポーリング
+  setInterval(pollCloudChanges, 30 * 1000);
+
+  // ?upload=1 パラメータで強制アップロード（データ復元用）
+  if (new URLSearchParams(location.search).get('upload') === '1') {
+    setTimeout(async () => {
+      localStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
+      await sbSave(false);
+      history.replaceState({}, '', location.pathname);
+    }, 1200);
   }
 }
 document.getElementById('chartLibrary').addEventListener('load', bootChartsReady, { once: true });

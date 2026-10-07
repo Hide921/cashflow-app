@@ -2954,7 +2954,7 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
   );
 }
 
-function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,loans,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport}){
+function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,loans,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport,userEmail}){
   const [message,setMessage]=useState('');
   useEffect(()=>{const fn=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onClose]);
   function readFile(file,handler){
@@ -2986,6 +2986,10 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
             h('div',{className:'col-span-2'},h('label',{htmlFor:'low-balance',className:'text-xs text-gray-500'},'残高注意ライン（円）'),h('input',{id:'low-balance',type:'number',min:'0',value:prefs.lowBalance,onChange:e=>onPrefs({...prefs,lowBalance:Number(e.target.value)||0}),className:inputCls}))
           ),
           h('button',{onClick:enableNotifications,className:`mt-3 w-full rounded-xl py-2.5 text-sm font-semibold ${prefs.notifications?'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300':'bg-indigo-600 text-white'}`},prefs.notifications?'通知は有効です':'通知を有効にする')
+        ),
+        h('section',{className:cardCls+' p-4 flex items-center justify-between gap-3'},
+          h('div',{className:'min-w-0'},h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},'アカウント'),h('p',{className:'text-xs text-gray-400 mt-0.5 truncate'},userEmail?`${userEmail} でログイン中`:'ログイン中')),
+          h('button',{onClick:signOut,className:'shrink-0 text-xs font-semibold text-rose-600 border border-rose-200 dark:border-rose-800 rounded-lg px-3 py-2'},'ログアウト')
         ),
         h('section',{className:cardCls+' p-4'},
           h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'バックアップ・取り込み'),
@@ -3397,7 +3401,7 @@ function InvestmentView({data,onReload,onStocksChange}){
       h('div',{className:'flex flex-wrap items-center gap-2'},
         h('button',{onClick:startAdd,className:'rounded-xl bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900'},'＋ 銘柄を追加'),
         h('button',{onClick:()=>{onReload&&onReload();refreshPrices();},disabled:priceLoading,className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 disabled:opacity-50'},priceLoading?'更新中…':'価格を更新'),
-        h('a',{href:INVESTMENT_API,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300'},'詳細管理 ↗')
+        h('a',{href:INVESTMENT_FULL_SRC,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300'},'詳細管理 ↗')
       )
     ),
     data?.error&&h('div',{className:'rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700'},data.error),
@@ -3537,7 +3541,78 @@ function AppNavigation({active,onChange}){
 // ─── App ─────────────────────────────────────────────
 const LS_DARK='cf_dark';
 const LS_SKIPPED='cf_skipped';
-function App(){
+// ─── ログイン ─────────────────────────────────────────
+// データはログインしたユーザーだけが読み書きできる（Supabase の RLS）。
+// セッションは同じオリジンの完全管理（投資）とも共有される。
+function AuthScreen({mode,onDone}){
+  const [email,setEmail]=useState('');
+  const [password,setPassword]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  const [info,setInfo]=useState('');
+  const recovery=mode==='recovery';
+  async function submit(e){
+    e.preventDefault();setError('');setInfo('');
+    if(recovery){
+      if(password.length<8){setError('パスワードは8文字以上にしてください');return;}
+      setBusy(true);
+      const {error:err}=await _sb.auth.updateUser({password});
+      setBusy(false);
+      if(err){setError('パスワードを変更できませんでした: '+err.message);return;}
+      onDone&&onDone();return;
+    }
+    if(!email.trim()||!password){setError('メールアドレスとパスワードを入力してください');return;}
+    setBusy(true);
+    const {error:err}=await _sb.auth.signInWithPassword({email:email.trim(),password});
+    setBusy(false);
+    if(err)setError(/invalid/i.test(err.message)?'メールアドレスまたはパスワードが違います':'ログインできませんでした: '+err.message);
+  }
+  async function forgot(){
+    setError('');setInfo('');
+    if(!email.trim()){setError('先にメールアドレスを入力してください');return;}
+    const {error:err}=await _sb.auth.resetPasswordForEmail(email.trim(),{redirectTo:window.location.origin+window.location.pathname});
+    if(err)setError('送信できませんでした: '+err.message);
+    else setInfo('パスワード再設定のメールを送りました。メール内のリンクから開いてください。');
+  }
+  return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center px-4'},
+    h('form',{onSubmit:submit,className:cardCls+' w-full max-w-sm p-6 space-y-4'},
+      h('div',{className:'flex items-center gap-2.5'},
+        h('div',{className:'w-9 h-9 bg-slate-900 dark:bg-slate-100 rounded-xl flex items-center justify-center'},h('span',{className:'text-base font-bold text-white dark:text-slate-950'},'¥')),
+        h('h1',{className:'text-lg font-bold text-gray-900 dark:text-gray-100'},recovery?'新しいパスワード':'Cashflow にログイン')
+      ),
+      !recovery&&h('div',null,h('label',{htmlFor:'login-email',className:labelCls},'メールアドレス'),h('input',{id:'login-email',type:'email',autoComplete:'username',className:inputCls,value:email,onChange:e=>setEmail(e.target.value)})),
+      h('div',null,h('label',{htmlFor:'login-password',className:labelCls},recovery?'新しいパスワード（8文字以上）':'パスワード'),h('input',{id:'login-password',type:'password',autoComplete:recovery?'new-password':'current-password',className:inputCls,value:password,onChange:e=>setPassword(e.target.value)})),
+      error&&h('p',{role:'alert',className:'text-sm text-rose-600'},error),
+      info&&h('p',{className:'text-sm text-emerald-700 dark:text-emerald-400'},info),
+      h('button',{type:'submit',disabled:busy,className:'w-full rounded-xl bg-slate-900 dark:bg-white py-2.5 text-sm font-semibold text-white dark:text-slate-900 disabled:opacity-50'},busy?'処理中…':recovery?'パスワードを変更':'ログイン'),
+      !recovery&&h('button',{type:'button',onClick:forgot,className:'w-full text-xs text-gray-500 dark:text-gray-400 hover:underline'},'パスワードを忘れた場合')
+    )
+  );
+}
+function AuthGate(){
+  const [state,setState]=useState({checking:true,session:null,recovery:false});
+  useEffect(()=>{
+    let alive=true;
+    _sb.auth.getSession().then(({data})=>{if(alive)setState(current=>({...current,checking:false,session:data?.session||null}));});
+    const {data:listener}=_sb.auth.onAuthStateChange((event,session)=>{
+      if(!alive)return;
+      setState(current=>({checking:false,session:session||null,recovery:event==='PASSWORD_RECOVERY'?true:current.recovery&&event!=='SIGNED_OUT'}));
+    });
+    return()=>{alive=false;listener?.subscription?.unsubscribe();};
+  },[]);
+  if(state.checking)return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950'});
+  if(state.recovery)return h(AuthScreen,{mode:'recovery',onDone:()=>setState(current=>({...current,recovery:false}))});
+  if(!state.session)return h(AuthScreen,{mode:'login'});
+  return h(App,{userEmail:state.session.user?.email||''});
+}
+async function signOut(){
+  const pending=Object.keys(readPending()).length;
+  if(pending&&!window.confirm('クラウドに未同期の変更があります。ログアウトすると、次にログインするまで同期されません。ログアウトしますか？'))return;
+  await _sb.auth.signOut();
+  window.location.reload();
+}
+
+function App({userEmail}={}){
   const [accounts,setAccounts]=useState([]);
   const accountsRef=useRef([]);
   const [txs,setTxs]=useState([]);
@@ -3941,12 +4016,12 @@ function App(){
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,accounts,txs,onChange:updLoans,onReflectPayment:applyPayment,onUndoPayment:undoPayment,addToast})),
       activeView==='analysis'&&h(AnalysisView,{txs:cashflowTxs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
     ),
-    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,loans,budgets,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv}),
+    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,loans,budgets,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv,userEmail}),
     h(Toast,{toasts})
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(h(React.StrictMode,null,h(App)));
+ReactDOM.createRoot(document.getElementById('root')).render(h(React.StrictMode,null,h(AuthGate)));
 </script>
 </body>
 </html>
