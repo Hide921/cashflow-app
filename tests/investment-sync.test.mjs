@@ -46,7 +46,7 @@ function loadContext(stockUpdatedAt) {
     updateSyncIcon() {}, toast() {}, localizeJapaneseNames() {}, requestPortfolioPrices() {},
     _canonicalWatchlist: () => '[]', _canonicalStocks: () => '[]', _hasUnsyncedChanges: () => true,
     scheduleSyncSave: () => { saveCount++; }, _doSave: async () => { saveCount++; },
-    notifyCashflow() {}, sbSave() { saveCount++; }, setTimeout: () => 0, clearTimeout() {},
+    notifyCashflow() {}, sbSave() { saveCount++; }, setTimeout: () => 0, clearTimeout() {}, openWatchlistFromParams() {},
     console,
   };
   runInNewContext(`${conflictSource}\n${loadSource}`, context);
@@ -128,4 +128,20 @@ test('グラフ期間の起点は日本時間の日付で計算する', () => {
   runInNewContext(source, context);
   assert.equal(context.periodCutoffDate('5d'), '2026-10-02');
   assert.equal(context.periodCutoffDate('1mo'), '2026-09-06');
+});
+
+test('担保金の未同期編集は、他端末の変更があっても消さずに統合する', () => {
+  const app = loadContext('2026-09-28T09:00:00.000Z');
+  const { resolveListSync } = app.context;
+  const local = [{ id: 'a', amount: 200 }, { id: 'new', amount: 50 }];
+  const cloud = [{ id: 'a', amount: 100 }, { id: 'other', amount: 30 }];
+  app.storage.set('sp_cloud_seen_v1', JSON.stringify({ sp_collateral: '2026-09-28T07:00:00.000Z' }));
+  // 未同期の編集なし → クラウドを採用
+  assert.deepEqual(resolveListSync('sp_collateral', local, cloud, { updated_at: '2026-09-28T08:00:00.000Z' }), cloud);
+  app.storage.set('sp_list_pending_v1', JSON.stringify({ sp_collateral: true }));
+  // クラウドが変わっていない → 端末の内容
+  assert.equal(resolveListSync('sp_collateral', local, cloud, { updated_at: '2026-09-28T07:00:00+00:00' }), local);
+  // 両方変わった → 統合（端末の変更が優先、クラウドだけの項目も残る）
+  const merged = resolveListSync('sp_collateral', local, cloud, { updated_at: '2026-09-28T08:00:00.000Z' });
+  assert.deepEqual(Array.from(merged, item => [item.id, item.amount]), [['a', 200], ['other', 30], ['new', 50]]);
 });

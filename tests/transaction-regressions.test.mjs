@@ -579,3 +579,27 @@ test('予算から買える米国株の株数を計算する', () => {
   assert.equal(dollars.priceYen, null);
   assert.equal(calc({ price: 100, fxRate: 150, budget: 650, currency: 'USD' }).priceYen, 15000);
 });
+
+test('概要の銘柄編集は差分だけを最新のクラウド一覧へ当てる', () => {
+  const merge = appContext().evaluate('mergeStockEdits');
+  const base = [{ id: 'a', ticker: 'A', quantity: 1, currentPrice: 10 }, { id: 'b', ticker: 'B', quantity: 2 }];
+  const local = [{ id: 'a', ticker: 'A', quantity: 5, currentPrice: 10 }, { id: 'n', ticker: 'N', quantity: 1 }];
+  const remote = [{ id: 'a', ticker: 'A', quantity: 1, currentPrice: 12 }, { id: 'b', ticker: 'B', quantity: 2 }, { id: 'c', ticker: 'C', quantity: 3 }];
+  const result = merge(base, local, remote);
+  assert.deepEqual(Array.from(result, s => s.id), ['a', 'c', 'n']);
+  assert.equal(result[0].quantity, 5);
+  assert.equal(result[0].currentPrice, 12);
+});
+
+test('評価と合計は概要とホームで同じ計算を使う', () => {
+  const app = appContext();
+  const value = app.evaluate('valueInvestmentStock');
+  const totals = app.evaluate('investmentTotals');
+  const rows = [
+    value({ id: 'us', market: 'US', currency: 'USD', quantity: 2, avgPrice: 100 }, { price: 110, currency: 'USD' }, 150),
+    value({ id: 'm', market: 'JP', tradeType: 'margin', currency: 'JPY', quantity: 100, avgPrice: 1000 }, { price: 1100, currency: 'JPY' }, 150),
+  ];
+  const result = totals(rows, [{ amount: 50000, currency: 'JPY' }], 150);
+  assert.equal(result.total, 33000 + 50000 + 10000);
+  assert.equal(totals([value({ id: 'u', market: 'US', currency: 'USD', quantity: 1, avgPrice: 1 }, { price: 2, currency: 'USD' }, null)], [], null).total, null);
+});
