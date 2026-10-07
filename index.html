@@ -3142,19 +3142,22 @@ async function fetchInvestmentQuotes(tickers){
   }
   return merged;
 }
-// 予算（円）で買える米国株の株数（1株単位）。手数料・税は含めない。
-function buyableQuantity({price,fxRate,budget}){
-  if(!(price>0)||!(fxRate>0))return null;
-  const priceYen=price*fxRate;
-  if(!(budget>0))return {priceYen,quantity:0,cost:0,rest:0};
-  const quantity=Math.floor(budget/priceYen);
-  const cost=quantity*priceYen;
-  return {priceYen,quantity,cost,rest:budget-cost};
+// 予算（円またはドル）で買える米国株の株数（1株単位）。手数料・税は含めない。
+// cost・rest・unitCost は予算と同じ通貨。円予算のときは為替レートが必要。
+function buyableQuantity({price,fxRate,budget,currency='JPY'}){
+  const rate=fxRate>0?fxRate:null;
+  if(!(price>0)||(currency==='JPY'&&!rate))return null;
+  const priceYen=rate?price*rate:null;
+  const unitCost=currency==='USD'?price:priceYen;
+  if(!(budget>0))return {currency,priceYen,unitCost,quantity:0,cost:0,rest:0};
+  const quantity=Math.floor(budget/unitCost);
+  const cost=quantity*unitCost;
+  return {currency,priceYen,unitCost,quantity,cost,rest:budget-cost};
 }
 const LS_BUY_CALC='cf_buy_calc_v1';
 function BuyCalculator({fxRate}){
   const saved=(()=>{try{return JSON.parse(localGet(LS_BUY_CALC)||'{}')||{};}catch{return {};}})();
-  const [form,setForm]=useState({ticker:'',budget:saved.budget||''});
+  const [form,setForm]=useState({ticker:'',budget:saved.budget||'',currency:saved.currency==='USD'?'USD':'JPY'});
   const [quote,setQuote]=useState(null);
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState('');
@@ -3166,7 +3169,7 @@ function BuyCalculator({fxRate}){
     if(!ticker){setError('ティッカーを入力してください');return;}
     const yahoo=investmentTicker({market:'US',ticker});
     setLoading(true);setError('');setQuote(null);setWaking(!investmentApiAwake);
-    localSet(LS_BUY_CALC,JSON.stringify({budget:form.budget}));
+    localSet(LS_BUY_CALC,JSON.stringify({budget:form.budget,currency:form.currency}));
     try{
       await wakeInvestmentApi();
       setWaking(false);
@@ -3182,16 +3185,23 @@ function BuyCalculator({fxRate}){
     finally{setLoading(false);setWaking(false);}
   }
   const budget=Number(form.budget);
-  const result=quote?buyableQuantity({price:quote.price,fxRate:quote.fxRate,budget}):null;
+  const result=quote?buyableQuantity({price:quote.price,fxRate:quote.fxRate,budget,currency:form.currency}):null;
   const yen=n=>`¥${Math.round(n).toLocaleString()}`;
-  const usd=n=>`$${n.toLocaleString('en-US',{maximumFractionDigits:4})}`;
+  const usd=n=>`$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  // 予算の通貨で表示し、為替レートがあればもう一方の通貨も添える。
+  const money=n=>{
+    if(form.currency==='USD')return quote?.fxRate>0?`${usd(n)}（${yen(n*quote.fxRate)}）`:usd(n);
+    return `${yen(n)}（${usd(n/quote.fxRate)}）`;
+  };
   const change=quote?.prevClose?(quote.price-quote.prevClose)/quote.prevClose*100:null;
   return h('section',{className:cardCls+' p-5'},
     h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},'米国株は何株買える？'),
-    h('p',{className:'text-xs text-gray-400 mt-1 mb-4'},'ティッカーと予算（円）から、時価で買える株数を計算します（手数料・税は含みません）'),
+    h('p',{className:'text-xs text-gray-400 mt-1 mb-4'},'ティッカーと予算（円またはドル）から、時価で買える株数を計算します（手数料・税は含みません）'),
     h('form',{onSubmit:lookup,className:'grid grid-cols-2 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end'},
       h('div',null,h('label',{htmlFor:'buy-ticker',className:labelCls},'ティッカー'),h('input',{id:'buy-ticker',className:inputCls,placeholder:'例: AAPL',value:form.ticker,onChange:e=>sf('ticker',e.target.value),autoCapitalize:'characters'})),
-      h('div',null,h('label',{htmlFor:'buy-budget',className:labelCls},'予算（円）'),h('input',{id:'buy-budget',type:'number',min:'0',inputMode:'numeric',className:inputCls,placeholder:'例: 500000',value:form.budget,onChange:e=>sf('budget',e.target.value)})),
+      h('div',null,h('label',{htmlFor:'buy-budget',className:labelCls},'予算'),h('div',{className:'flex gap-2'},
+        h('input',{id:'buy-budget',type:'number',min:'0',step:'any',inputMode:'decimal',className:inputCls+' min-w-0',placeholder:form.currency==='USD'?'例: 3000':'例: 500000',value:form.budget,onChange:e=>sf('budget',e.target.value)}),
+        h('select',{'aria-label':'予算の通貨',className:selectCls+' !w-auto shrink-0',value:form.currency,onChange:e=>sf('currency',e.target.value)},h('option',{value:'JPY'},'円'),h('option',{value:'USD'},'ドル')))),
       h('button',{type:'submit',disabled:loading,className:'col-span-2 sm:col-span-1 rounded-xl bg-slate-900 dark:bg-white px-5 py-2.5 text-sm font-semibold text-white dark:text-slate-900 disabled:opacity-50'},loading?'取得中…':'時価を取得')
     ),
     waking&&h('p',{className:'mt-3 text-sm text-gray-500 dark:text-gray-400'},'価格サーバーを起動しています（最大1分ほどかかります）…'),
@@ -3201,14 +3211,14 @@ function BuyCalculator({fxRate}){
         h('div',null,h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},`${quote.name||quote.ticker}`),h('p',{className:'text-xs text-gray-400'},`${quote.yahoo}・${quote.checkedAt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} 取得${quote.stale?'（キャッシュ）':''}`)),
         h('div',{className:'text-right'},h('p',{className:'text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100'},usd(quote.price)),
           change!==null&&h('p',{className:`text-xs tabular-nums ${change>=0?'text-emerald-600':'text-rose-500'}`},`前日比 ${change>=0?'+':''}${change.toFixed(2)}%`),
-          result&&h('p',{className:'text-xs text-gray-400 tabular-nums'},`≒ ${yen(result.priceYen)}（1ドル ${quote.fxRate.toFixed(2)}円）`))
+          result?.priceYen&&h('p',{className:'text-xs text-gray-400 tabular-nums'},`≒ ${yen(result.priceYen)}（1ドル ${quote.fxRate.toFixed(2)}円）`))
       ),
-      !result&&h('p',{className:'text-sm text-amber-700'},'為替レートを取得できないため円換算できません'),
+      !result&&h('p',{className:'text-sm text-amber-700'},'為替レートを取得できないため円の予算では計算できません。予算をドルに切り替えてください'),
       result&&budget>0&&h('div',{className:'rounded-lg bg-white dark:bg-gray-800 p-3'},
         h('p',{className:'text-xs text-gray-400'},'買える株数'),
         h('p',{className:'text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100'},`${result.quantity.toLocaleString()}株`),
-        h('p',{className:'text-xs text-gray-500 dark:text-gray-400 tabular-nums'},`約 ${yen(result.cost)}・残り ${yen(result.rest)}`),
-        result.quantity===0&&h('p',{className:'text-xs text-amber-700 mt-1'},`あと ${yen(result.priceYen-budget)} で1株買えます`)
+        h('p',{className:'text-xs text-gray-500 dark:text-gray-400 tabular-nums'},`約 ${money(result.cost)}・残り ${money(result.rest)}`),
+        result.quantity===0&&h('p',{className:'text-xs text-amber-700 mt-1'},`あと ${money(result.unitCost-budget)} で1株買えます`)
       )
     )
   );

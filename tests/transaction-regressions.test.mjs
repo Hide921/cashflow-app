@@ -572,4 +572,10 @@ test('予算から買える米国株の株数を計算する', () => {
   assert.equal(us.rest, 10000);
   assert.equal(calc({ price: 100, fxRate: null, budget: 100000 }), null);
   assert.equal(calc({ price: 1000, fxRate: 150, budget: 100000 }).quantity, 0);
+  const dollars = calc({ price: 100, fxRate: null, budget: 650, currency: 'USD' });
+  assert.equal(dollars.quantity, 6);
+  assert.equal(dollars.cost, 600);
+  assert.equal(dollars.rest, 50);
+  assert.equal(dollars.priceYen, null);
+  assert.equal(calc({ price: 100, fxRate: 150, budget: 650, currency: 'USD' }).priceYen, 15000);
 });
