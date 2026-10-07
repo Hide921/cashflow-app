@@ -155,3 +155,22 @@ test('9月の月給から5〜8月を一括コピーするとき、登録済み�
   assert.match(evaluate('salaryBulkCopyPlan([source],source,"2026-08","2026-05").error'), /終了月/);
   assert.match(evaluate('salaryBulkCopyPlan([source],source,"2025-01","2027-01").error'), /24か月/);
 });
+
+test('年間合計は月給・賞与と支給済み・予定に分けて集計する', () => {
+  const tx = (id, month, kind, gross, deductions, amount, startDate) => ({ id, type: 'income', amount, startDate, salary: { month, kind, gross, deductions, socialInsurance: deductions } });
+  const records = [
+    tx('a', '2026-01', 'monthly', 300000, 60000, 240000, '2026-01-30'),
+    tx('b', '2026-06', 'summerBonus', 500000, 100000, 400000, '2026-06-30'),
+    tx('c', '2026-12', 'monthly', 300000, 60000, 240000, '2026-12-30'),
+    tx('x', '2025-12', 'monthly', 1, 0, 1, '2025-12-30'),
+  ];
+  const summary = evaluate('salaryYearSummary')(records, 2026, '2026-10-07');
+  assert.equal(summary.count, 3);
+  assert.equal(summary.gross, 1100000);
+  assert.equal(summary.deductions, 220000);
+  assert.equal(summary.net, 880000);
+  assert.equal(summary.monthly.net, 480000);
+  assert.equal(summary.bonus.net, 400000);
+  assert.equal(summary.paid.net, 640000);
+  assert.equal(summary.scheduled.net, 240000);
+});

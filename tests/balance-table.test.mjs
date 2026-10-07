@@ -459,3 +459,21 @@ test('タッチ端末では予定件数とセルの操作を常時表示する',
   assert.match(textOf(cell), /タップして内訳/);
   assert.match(nodes(cell, node => node.type === 'span' && textOf(node) === 'タップして内訳')[0].props.className, /opacity-100/);
 });
+
+test('給与モードの上部に年間合計（額面・控除・手取りと内訳）を表示する', () => {
+  const app = appContext(true);
+  const year = app.evaluate('todayD().getFullYear()');
+  const salary = (id, month, kind, gross, deductions, amount) => ({ id, type: 'income', amount, startDate: `${month}-25`, accountId: 'bank', salary: { month, kind, gross, socialInsurance: deductions, incomeTax: 0, residentTax: 0, deductions } });
+  const tree = app.evaluate('SalaryManager')({
+    accounts: [{ id: 'bank', name: '千葉銀' }],
+    txs: [salary('m1', `${year}-01`, 'monthly', 300000, 60000, 240000), salary('b1', `${year}-06`, 'summerBonus', 500000, 100000, 400000)],
+    onChange: () => {}, onDelete: () => {}, addToast: () => {},
+  });
+  const summary = nodes(tree, node => node.type === 'section' && node.props?.['aria-label'] === `${year}年の年間合計`)[0];
+  assert.ok(summary);
+  const text = textOf(summary);
+  assert.match(text, /¥800,000/);
+  assert.match(text, /¥160,000/);
+  assert.match(text, /¥640,000/);
+  assert.match(text, /¥240,000 \/ ¥400,000/);
+});
