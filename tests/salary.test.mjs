@@ -174,3 +174,61 @@ test('年間合計は月給・賞与と支給済み・予定に分けて集計�
   assert.equal(summary.paid.net, 640000);
   assert.equal(summary.scheduled.net, 240000);
 });
+
+test('簡易年末調整: 令和7年分と令和8年分の税制で年調年税額と還付額を計算する', () => {
+  const estimate = evaluate('estimateYearEndAdjustment');
+  // 給与500万円・社保75万円・源泉15万円
+  // 令和7年分: 給与所得356万円、基礎控除68万円 → 課税所得213万円 → 115,500円 ×102.1% → 117,900円
+  const r7 = estimate({ year: 2025, gross: 5000000, socialInsurance: 750000, withheld: 150000 });
+  assert.equal(r7.salaryIncome, 3560000);
+  assert.equal(r7.deductions.basic, 680000);
+  assert.equal(r7.taxable, 2130000);
+  assert.equal(r7.annualTax, 117900);
+  assert.equal(r7.refund, 32100);
+  // 令和8年分: 基礎控除104万円 → 課税所得177万円 → 88,500円 ×102.1% → 90,300円
+  const r8 = estimate({ year: 2026, gross: 5000000, socialInsurance: 750000, withheld: 150000 });
+  assert.equal(r8.deductions.basic, 1040000);
+  assert.equal(r8.taxable, 1770000);
+  assert.equal(r8.annualTax, 90300);
+  assert.equal(r8.refund, 59700);
+  assert.equal(r8.rulesLabel, '令和8年分');
+  assert.equal(r8.fallback, false);
+});
+
+test('簡易年末調整: 給与所得の特例・4,000円単位・基礎控除の段階を国税庁の表どおりに求める', () => {
+  const income = (gross, year) => evaluate('(g,y)=>nenchoSalaryIncome(g,nenchoRulesFor(y).rules)')(gross, year);
+  assert.equal(income(700000, 2026), 0);
+  assert.equal(income(2000000, 2026), 1260000);
+  assert.equal(income(2192000, 2026), 1451000);
+  assert.equal(income(2199999, 2026), 1456000);
+  assert.equal(income(2203999, 2026), 1460000);
+  assert.equal(income(1800000, 2025), 1150000);
+  assert.equal(income(4001999, 2025), 2760000);
+  assert.equal(income(7000000, 2026), 5200000);
+  assert.equal(income(9000000, 2026), 7050000);
+  const basic = (total, year) => evaluate('(t,y)=>nenchoBasicDeduction(t,nenchoRulesFor(y).rules)')(total, year);
+  assert.equal(basic(4890000, 2026), 1040000);
+  assert.equal(basic(4890001, 2026), 670000);
+  assert.equal(basic(6550001, 2026), 620000);
+  assert.equal(basic(3360001, 2025), 680000);
+  assert.equal(basic(25000001, 2026), 0);
+});
+
+test('簡易年末調整: 保険料控除の上限・住宅ローン控除・未登録年の扱い', () => {
+  const estimate = evaluate('estimateYearEndAdjustment');
+  const r = estimate({ year: 2026, gross: 8000000, socialInsurance: 1200000, withheld: 500000, inputs: { lifeGeneral: 100000, lifeMedical: 100000, lifePension: 100000, earthquake: 60000, housingCredit: 100000, spouse: 'spouse', dependentsSpecific: 1 } });
+  assert.equal(r.deductions.life, 120000);
+  assert.equal(r.deductions.earthquake, 50000);
+  assert.equal(r.deductions.spouse, 380000);
+  assert.equal(r.deductions.dependents, 630000);
+  // 給与所得 610万円（合計所得489万円超655万円以下 → 基礎控除67万円）
+  // 所得控除 1,200,000+120,000+50,000+380,000+630,000+670,000 = 3,050,000 → 課税所得 305万円
+  assert.equal(r.deductions.basic, 670000);
+  assert.equal(r.taxable, 3050000);
+  assert.equal(r.computedTax, 207500);
+  // (207,500 − 住宅ローン控除100,000) × 102.1% = 109,757.5 → 100円未満切捨て 109,700円
+  assert.equal(r.annualTax, 109700);
+  const future = estimate({ year: 2030, gross: 5000000, socialInsurance: 750000, withheld: 0 });
+  assert.equal(future.fallback, true);
+  assert.equal(future.rulesLabel, '令和9年分');
+});

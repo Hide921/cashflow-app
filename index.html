@@ -1070,6 +1070,93 @@ function salaryYearSummary(records,year,today=todayStr()){
   };
 }
 
+// ─── 簡易年末調整 ─────────────────────────────────────
+// 年分ごとの税制。毎年の税制改正で、新しい年分をここに追加する（国税庁の公表値）。
+// 出典: 国税庁タックスアンサー No.1199 基礎控除・No.1410 給与所得控除、
+//       令和8年度税制改正（所得税の基礎控除の引上げ等関係）Q&A（令和8年5月）
+const NENCHO_BASIC_TAIL=[[24000000,480000],[24500000,320000],[25000000,160000],[Infinity,0]];
+const NENCHO_RULES={
+  2025:{label:'令和7年分',
+    salaryMin:{limit:1900000,deduction:650000},
+    basic:[[1320000,950000],[3360000,880000],[4890000,680000],[6550000,630000],[23500000,580000],...NENCHO_BASIC_TAIL]},
+  2026:{label:'令和8年分',note:'令和8年12月の年末調整から改正後の基礎控除・給与所得控除を適用',
+    salaryMin:{limit:2200000,deduction:740000},
+    // 令和8・9年分の給与収入69万1千円以上220万円未満の特例（給与所得の金額）
+    salarySpecial:[[691000,741000,()=>0],[741000,2191000,g=>g-740000],[2191000,2193000,()=>1451000],[2193000,2196000,()=>1453000],[2196000,2200000,()=>1456000]],
+    basic:[[4890000,1040000],[6550000,670000],[23500000,620000],...NENCHO_BASIC_TAIL]}
+};
+NENCHO_RULES[2027]={...NENCHO_RULES[2026],label:'令和9年分',note:'令和8年分と同じ（基礎控除・給与所得控除の特例は令和8・9年分）'};
+const NENCHO_SOURCES=[
+  ['国税庁 No.1199 基礎控除','https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1199.htm'],
+  ['国税庁 No.1410 給与所得控除','https://www.nta.go.jp/taxes/shiraberu/taxanswer/shotoku/1410.htm']
+];
+// 対象年の税制。未登録の年は登録済みの最新年分で概算し、その旨を返す。
+function nenchoRulesFor(year){
+  if(NENCHO_RULES[year])return {rules:NENCHO_RULES[year],year,fallback:false};
+  const known=Object.keys(NENCHO_RULES).map(Number).sort((a,b)=>a-b);
+  const use=known.filter(y=>y<=year).at(-1)??known[0];
+  return {rules:NENCHO_RULES[use],year:use,fallback:true};
+}
+// 給与所得の金額（年末調整等のための給与所得控除後の給与等の金額の表に相当）
+function nenchoSalaryIncome(gross,rules){
+  const g=Math.max(0,Math.floor(Number(gross)||0));
+  const special=(rules.salarySpecial||[]).find(([from,to])=>g>=from&&g<to);
+  if(special)return special[2](g);
+  if(g<rules.salaryMin.limit)return Math.max(0,g-rules.salaryMin.deduction);
+  if(g<6600000){const a=Math.floor(g/4000)*4000;return a<3600000?a*0.7-80000:a*0.8-440000;}
+  if(g<8500000)return Math.floor(g*0.9-1100000);
+  return g-1950000;
+}
+function nenchoBasicDeduction(totalIncome,rules){
+  return rules.basic.find(([limit])=>totalIncome<=limit)[1];
+}
+// 所得税の速算表（課税所得は1,000円未満切捨て済み）
+function nenchoIncomeTax(taxable){
+  const t=[[1950000,0.05,0],[3300000,0.10,97500],[6950000,0.20,427500],[9000000,0.23,636000],[18000000,0.33,1536000],[40000000,0.40,2796000],[Infinity,0.45,4796000]];
+  const [,rate,minus]=t.find(([limit])=>taxable<=limit);
+  return Math.max(0,Math.floor(taxable*rate-minus));
+}
+// 生命保険料控除（新契約）: 区分ごとに最高4万円、合計最高12万円
+function nenchoLifeInsurance(premium){
+  const p=Math.max(0,Number(premium)||0);
+  if(p<=20000)return p;
+  if(p<=40000)return Math.floor(p/2+10000);
+  if(p<=80000)return Math.floor(p/4+20000);
+  return 40000;
+}
+function nenchoSpouseDeduction(kind,totalIncome,specialAmount){
+  if(kind==='special')return Math.max(0,Math.min(380000,Math.floor(Number(specialAmount)||0)));
+  if(kind!=='spouse'&&kind!=='spouseElderly')return 0;
+  const elderly=kind==='spouseElderly';
+  if(totalIncome<=9000000)return elderly?480000:380000;
+  if(totalIncome<=9500000)return elderly?320000:260000;
+  if(totalIncome<=10000000)return elderly?160000:130000;
+  return 0;
+}
+// 簡易年末調整。給与以外の所得がなく、年末調整で通常申告する控除だけを対象にした概算。
+function estimateYearEndAdjustment({year,gross,socialInsurance,withheld,inputs={}}){
+  const {rules,year:rulesYear,fallback}=nenchoRulesFor(year);
+  const num=key=>Math.max(0,Math.floor(Number(inputs[key])||0));
+  const salaryGross=Math.max(0,Math.floor(Number(gross)||0)-num('nonTaxable'));
+  const salaryIncome=nenchoSalaryIncome(salaryGross,rules);
+  const deductions={
+    social:Math.max(0,Math.floor(Number(socialInsurance)||0))+num('extraSocial'),
+    ideco:num('ideco'),
+    life:Math.min(120000,nenchoLifeInsurance(inputs.lifeGeneral)+nenchoLifeInsurance(inputs.lifeMedical)+nenchoLifeInsurance(inputs.lifePension)),
+    earthquake:Math.min(50000,num('earthquake')),
+    spouse:nenchoSpouseDeduction(inputs.spouse,salaryIncome,inputs.spouseSpecial),
+    dependents:num('dependentsGeneral')*380000+num('dependentsSpecific')*630000+num('dependentsElderly')*480000+num('dependentsElderlyLiving')*580000,
+    basic:nenchoBasicDeduction(salaryIncome,rules)
+  };
+  const totalDeductions=Object.values(deductions).reduce((sum,v)=>sum+v,0);
+  const taxable=Math.max(0,Math.floor((salaryIncome-totalDeductions)/1000)*1000);
+  const computedTax=nenchoIncomeTax(taxable);
+  const afterCredit=Math.max(0,computedTax-num('housingCredit'));
+  const annualTax=Math.floor(afterCredit*1.021/100)*100; // 復興特別所得税込み、100円未満切捨て
+  const paid=Math.max(0,Math.floor(Number(withheld)||0));
+  return {year,rulesYear,rulesLabel:rules.label,rulesNote:rules.note||'',fallback,salaryGross,salaryIncome,deductions,totalDeductions,taxable,computedTax,annualTax,withheld:paid,refund:paid-annualTax};
+}
+
 function salaryAnnualRows(records,year){
   const rows=[...Array.from({length:12},(_,i)=>({key:`monthly-${String(i+1).padStart(2,'0')}`,label:`${i+1}月`,items:[]})),
     {key:'summerBonus',label:'夏季賞与',items:[]},{key:'winterBonus',label:'冬季賞与',items:[]}];
@@ -1131,7 +1218,7 @@ function ConfirmAmountDialog({tx,date,onSave,onClose}){
 }
 
 // ─── Salary Manager ───────────────────────────────────
-function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
+function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   const [year,setYear]=useState(todayD().getFullYear());
   const [form,setForm]=useState(null);
   const [editId,setEditId]=useState(null);
@@ -1149,6 +1236,18 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
   const totals=salaryYearTotals(records,year);
   const annualRows=salaryAnnualRows(records,year);
   const yearSummary=salaryYearSummary(records,year);
+  const [nenchoOpen,setNenchoOpen]=useState(false);
+  const savedNencho=prefs?.yearEndAdjustment?.[year]||{};
+  const [nenchoDraft,setNenchoDraft]=useState({});
+  const nenchoInputs={...savedNencho,...(nenchoDraft[year]||{})};
+  const setNencho=(key,value)=>setNenchoDraft(current=>({...current,[year]:{...(current[year]||{}),[key]:value}}));
+  const nencho=estimateYearEndAdjustment({year,gross:yearSummary.gross,socialInsurance:yearSummary.socialInsurance,withheld:yearSummary.incomeTax,inputs:nenchoInputs});
+  function saveNencho(){
+    if(!onPrefs)return;
+    onPrefs({...prefs,yearEndAdjustment:{...(prefs?.yearEndAdjustment||{}),[year]:nenchoInputs}});
+    setNenchoDraft(current=>{const next={...current};delete next[year];return next;});
+    addToast&&addToast('年末調整の入力を保存しました');
+  }
   const showOther=totals.otherDeductions>0;
   const money=n=>`¥${Number(n||0).toLocaleString()}`;
   const change=(key,value)=>setForm(current=>({...current,[key]:value,...(key==='kind'?{payDate:salaryDefaultPayDate(current.month,value)}:{})}));
@@ -1364,6 +1463,41 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast}){
             columns.map(([key])=>h('td',{key,className:'px-3 py-2 text-right whitespace-nowrap text-gray-900 dark:text-gray-100'},amountText(totals[key])))
           ))
         )
+        )
+      ),
+      yearSummary.count>0&&h('section',{className:'mt-5 border-t border-gray-100 dark:border-gray-700 pt-4','aria-labelledby':'salary-nencho'},
+        h('div',{className:'flex flex-wrap items-center justify-between gap-2'},
+          h('div',null,h('h4',{id:'salary-nencho',className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},'簡易年末調整（還付見込み）'),h('p',{className:'mt-0.5 text-xs text-gray-500 dark:text-gray-400'},`${nencho.rulesLabel}の税制で計算・登録済みの給与（予定を含む）を使用`)),
+          h('button',{type:'button',onClick:()=>setNenchoOpen(v=>!v),'aria-expanded':nenchoOpen,className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300'},nenchoOpen?'閉じる':'計算する')
+        ),
+        nenchoOpen&&h('div',{className:'mt-3 space-y-4'},
+          nencho.fallback&&h('p',{role:'alert',className:'rounded-lg bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-300'},`${year}年分の税制はまだ登録されていないため、${nencho.rulesLabel}の税制で概算しています。税制改正の内容を確認して更新が必要です。`),
+          h('div',{className:`rounded-xl p-4 ${nencho.refund>=0?'bg-emerald-50 dark:bg-emerald-950/30':'bg-rose-50 dark:bg-rose-950/30'}`},
+            h('p',{className:'text-xs text-gray-600 dark:text-gray-300'},nencho.refund>=0?'還付見込み額':'追加徴収の見込み額'),
+            h('p',{className:`text-3xl font-bold tabular-nums ${nencho.refund>=0?'text-emerald-700 dark:text-emerald-300':'text-rose-600 dark:text-rose-400'}`},money(Math.abs(nencho.refund))),
+            h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300 tabular-nums'},`源泉徴収済み ${money(nencho.withheld)} − 年調年税額 ${money(nencho.annualTax)}`)
+          ),
+          h('div',{className:'grid grid-cols-1 sm:grid-cols-2 gap-4'},
+            h('div',{className:'space-y-2'},
+              h('p',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},'控除の入力（年間）'),
+              [['nonTaxable','非課税の通勤手当など（額面に含まれる場合）'],['extraSocial','自分で払った社会保険料（国民年金など）'],['ideco','iDeCo・小規模企業共済の掛金'],['lifeGeneral','生命保険料（一般・新契約）'],['lifeMedical','介護医療保険料（新契約）'],['lifePension','個人年金保険料（新契約）'],['earthquake','地震保険料'],['housingCredit','住宅ローン控除（税額控除の額）']].map(([key,label])=>
+                h('label',{key,className:'flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300'},h('span',null,label),h('input',{type:'number',min:'0',inputMode:'numeric',className:inputCls+' !w-36 text-right',value:nenchoInputs[key]??'',placeholder:'0',onChange:e=>setNencho(key,e.target.value)}))),
+              h('label',{className:'flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300'},h('span',null,'配偶者'),h('select',{className:selectCls+' !w-36',value:nenchoInputs.spouse||'',onChange:e=>setNencho('spouse',e.target.value)},h('option',{value:''},'なし'),h('option',{value:'spouse'},'配偶者控除'),h('option',{value:'spouseElderly'},'配偶者控除（70歳以上）'),h('option',{value:'special'},'配偶者特別控除'))),
+              nenchoInputs.spouse==='special'&&h('label',{className:'flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300'},h('span',null,'配偶者特別控除の額（申告書の額）'),h('input',{type:'number',min:'0',inputMode:'numeric',className:inputCls+' !w-36 text-right',value:nenchoInputs.spouseSpecial??'',onChange:e=>setNencho('spouseSpecial',e.target.value)})),
+              [['dependentsGeneral','扶養親族（一般・16〜18歳/23〜69歳）'],['dependentsSpecific','特定扶養親族（19〜22歳）'],['dependentsElderly','老人扶養親族'],['dependentsElderlyLiving','同居老親等']].map(([key,label])=>
+                h('label',{key,className:'flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300'},h('span',null,label),h('input',{type:'number',min:'0',step:'1',inputMode:'numeric',className:inputCls+' !w-20 text-right',value:nenchoInputs[key]??'',placeholder:'0',onChange:e=>setNencho(key,e.target.value)}))),
+              onPrefs&&h('button',{type:'button',onClick:saveNencho,className:'mt-1 rounded-lg bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900'},'入力を保存')
+            ),
+            h('dl',{className:'text-xs tabular-nums space-y-1 text-gray-600 dark:text-gray-300'},
+              h('p',{className:'font-semibold text-gray-700 dark:text-gray-200 mb-1'},'計算の内訳'),
+              [['給与の収入金額',nencho.salaryGross],['給与所得',nencho.salaryIncome],['社会保険料控除',nencho.deductions.social],['小規模企業共済等掛金控除',nencho.deductions.ideco],['生命保険料控除',nencho.deductions.life],['地震保険料控除',nencho.deductions.earthquake],['配偶者（特別）控除',nencho.deductions.spouse],['扶養控除',nencho.deductions.dependents],['基礎控除',nencho.deductions.basic],['所得控除の合計',nencho.totalDeductions],['課税所得（千円未満切捨て）',nencho.taxable],['算出所得税額',nencho.computedTax],['年調年税額（復興特別所得税込み）',nencho.annualTax]].map(([label,value])=>
+                h('div',{key:label,className:'flex justify-between gap-3'},h('dt',null,label),h('dd',{className:'font-medium text-gray-800 dark:text-gray-100'},money(value))))
+            )
+          ),
+          h('p',{className:'text-[11px] leading-relaxed text-gray-500 dark:text-gray-400'},
+            `概算です。給与以外の所得がない前提で、障害者・ひとり親・勤労学生控除、所得金額調整控除、旧契約の生命保険料控除などは含みません。実際の還付額は勤務先の年末調整で確定します。${nencho.rulesNote?nencho.rulesNote+'。':''}税制の出典: `,
+            NENCHO_SOURCES.map(([label,url],i)=>h(React.Fragment,{key:url},i>0&&'、',h('a',{href:url,target:'_blank',rel:'noopener noreferrer',className:'underline'},label)))
+          )
         )
       )
     ),
@@ -4038,7 +4172,7 @@ function App({userEmail}={}){
         h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),
         h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
       ),
-      activeView==='salary'&&h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast}),
+      activeView==='salary'&&h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast,prefs:preferences,onPrefs:updPreferences}),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,accounts,txs,onChange:updLoans,onReflectPayment:applyPayment,onUndoPayment:undoPayment,addToast})),

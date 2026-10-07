@@ -477,3 +477,23 @@ test('給与モードの上部に年間合計（額面・控除・手取りと�
   assert.match(text, /¥640,000/);
   assert.match(text, /¥240,000 \/ ¥400,000/);
 });
+
+test('給与モードに簡易年末調整の欄を表示し、開くと還付見込みを出す', () => {
+  const app = appContext(true);
+  const year = app.evaluate('todayD().getFullYear()');
+  const props = {
+    accounts: [{ id: 'bank', name: '千葉銀' }],
+    txs: [{ id: 'm', type: 'income', amount: 300000, startDate: `${year}-01-25`, accountId: 'bank', salary: { month: `${year}-01`, kind: 'monthly', gross: 400000, socialInsurance: 60000, incomeTax: 40000, residentTax: 0, deductions: 100000 } }],
+    onChange: () => {}, onDelete: () => {}, addToast: () => {}, prefs: {}, onPrefs: () => {},
+  };
+  let tree = app.evaluate('SalaryManager')(props);
+  const section = nodes(tree, node => node.type === 'section' && node.props?.['aria-labelledby'] === 'salary-nencho')[0];
+  assert.ok(section);
+  nodes(section, node => node.type === 'button' && textOf(node).includes('計算する'))[0].props.onClick();
+  app.resetHooks();
+  tree = app.evaluate('SalaryManager')(props);
+  const opened = textOf(nodes(tree, node => node.type === 'section' && node.props?.['aria-labelledby'] === 'salary-nencho')[0]);
+  assert.match(opened, /還付見込み額/);
+  assert.match(opened, /源泉徴収済み ¥40,000/);
+  assert.match(opened, /国税庁/);
+});
