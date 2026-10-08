@@ -3464,6 +3464,8 @@ function investmentTotals(rows,collateral,fxRate){
   const complete=!rows.some(row=>row.value===null||row.pl===null)&&!(collateral||[]).some(item=>item.currency==='USD'&&!fxRate);
   return {spotValue,spotCost,marginPL,collateralValue,total:complete?spotValue+collateralValue+marginPL:null};
 }
+// 投信の平均取得価格は基準価額と同じ円/1万口で入力し、保存は完全管理と同じ円/口。
+const FUND_PRICE_UNIT=10000;
 const EMPTY_INVESTMENT_FORM={market:'JP',tradeType:'spot',accountType:'specific',ticker:'',name:'',sector:'',quantity:'',avgPrice:'',avgCurrency:'',note:''};
 function InvestmentView({data,onReload,onStocksChange}){
   const stocks=data?.stocks||[];
@@ -3501,14 +3503,14 @@ function InvestmentView({data,onReload,onStocksChange}){
   function startAdd(){setEditId(null);setForm(EMPTY_INVESTMENT_FORM);setFormError('');setShowEditor(true);}
   function startEdit(stock){
     setEditId(stock.id);
-    setForm({market:stock.market||'JP',tradeType:stock.tradeType||'spot',accountType:stock.accountType||'specific',ticker:stock.ticker||'',name:stock.name||'',sector:stock.sector||'',quantity:String(stock.quantity??''),avgPrice:String(stock.avgPrice??''),avgCurrency:stock.avgCurrency||stock.currency||'',note:stock.note||''});
+    setForm({market:stock.market||'JP',tradeType:stock.tradeType||'spot',accountType:stock.accountType||'specific',ticker:stock.ticker||'',name:stock.name||'',sector:stock.sector||'',quantity:String(stock.quantity??''),avgPrice:String(stock.market==='FUND'&&stock.avgPrice!=null?Math.round(stock.avgPrice*FUND_PRICE_UNIT*1e6)/1e6:(stock.avgPrice??'')),avgCurrency:stock.avgCurrency||stock.currency||'',note:stock.note||''});
     setFormError('');setShowEditor(true);window.scrollTo({top:0,behavior:'smooth'});
   }
   function closeEditor(){setShowEditor(false);setEditId(null);setForm(EMPTY_INVESTMENT_FORM);setFormError('');}
   function saveHolding(e){
     e.preventDefault();
     const ticker=form.ticker.trim().toUpperCase(),name=form.name.trim();
-    const quantity=Number(form.quantity),avgPrice=Number(form.avgPrice);
+    const quantity=Number(form.quantity),avgPrice=Number(form.avgPrice)/(form.market==='FUND'?FUND_PRICE_UNIT:1);
     if(!ticker||!name||!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(avgPrice)||avgPrice<=0){setFormError('銘柄コード・名称・数量・平均取得価格を正しく入力してください');return;}
     const duplicate=stocks.some(stock=>stock.id!==editId&&String(stock.ticker).toUpperCase()===ticker&&stock.market===form.market&&stock.tradeType===form.tradeType&&stock.accountType===form.accountType);
     if(duplicate){setFormError(`${ticker} は同じ区分ですでに登録されています`);return;}
@@ -3580,11 +3582,11 @@ function InvestmentView({data,onReload,onStocksChange}){
         h('div',null,h('label',{className:labelCls},'銘柄コード *'),h('input',{className:inputCls,placeholder:form.market==='JP'?'例: 7203':form.market==='US'?'例: AAPL':'銘柄コード',value:form.ticker,onChange:e=>setForm(current=>({...current,ticker:e.target.value}))})),
         h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'銘柄名 *'),h('input',{className:inputCls,placeholder:'例: トヨタ自動車',value:form.name,onChange:e=>setForm(current=>({...current,name:e.target.value}))})),
         h('div',null,h('label',{className:labelCls},form.market==='FUND'?'数量（口） *':'数量 *'),h('input',{type:'number',min:'0',step:'any',className:inputCls,placeholder:'0',value:form.quantity,onChange:e=>setForm(current=>({...current,quantity:e.target.value}))})),
-        h('div',null,h('label',{className:labelCls},form.market==='FUND'?'平均取得価格（1口） *':'平均取得価格 *'),h('input',{type:'number',min:'0',step:'any',className:inputCls,placeholder:'0',value:form.avgPrice,onChange:e=>setForm(current=>({...current,avgPrice:e.target.value}))})),
+        h('div',null,h('label',{className:labelCls},form.market==='FUND'?'平均取得価格（1万口あたり） *':'平均取得価格 *'),h('input',{type:'number',min:'0',step:'any',className:inputCls,placeholder:'0',value:form.avgPrice,onChange:e=>setForm(current=>({...current,avgPrice:e.target.value}))})),
         form.market==='CRYPTO'&&h('div',null,h('label',{className:labelCls},'取得単価の通貨'),h('select',{className:inputCls,value:form.avgCurrency==='JPY'?'JPY':'USD',onChange:e=>setForm(current=>({...current,avgCurrency:e.target.value}))},h('option',{value:'USD'},'米ドル'),h('option',{value:'JPY'},'円'))),
         h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'セクター'),h('input',{className:inputCls,placeholder:'例: 自動車・輸送機',value:form.sector,onChange:e=>setForm(current=>({...current,sector:e.target.value}))})),
         h('div',{className:'sm:col-span-2'},h('label',{className:labelCls},'メモ'),h('input',{className:inputCls,placeholder:'任意',value:form.note,onChange:e=>setForm(current=>({...current,note:e.target.value}))})),
-        form.market==='FUND'&&h('p',{className:'sm:col-span-2 lg:col-span-4 text-xs text-gray-400'},'投資信託は保有口数と1口あたりの平均取得価格を入力してください。'),
+        form.market==='FUND'&&h('p',{className:'sm:col-span-2 lg:col-span-4 text-xs text-gray-400'},'投資信託は保有口数と、基準価額と同じ1万口あたりの平均取得価格（例: 25432）を入力してください。'),
         formError&&h('p',{className:'sm:col-span-2 lg:col-span-4 text-sm text-rose-500'},formError),
         h('div',{className:'sm:col-span-2 lg:col-span-4 flex justify-end gap-2 pt-1'},
           h('button',{type:'button',onClick:closeEditor,className:'rounded-xl border border-gray-200 dark:border-gray-700 px-4 py-2.5 text-sm font-semibold text-gray-600 dark:text-gray-300'},'キャンセル'),
@@ -3639,11 +3641,11 @@ function InvestmentView({data,onReload,onStocksChange}){
   );
 }
 
-const LS_INVESTMENT_MODE='cf_investment_mode';
 function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
-  const [mode,setMode]=useState(()=>new URLSearchParams(window.location.search).get('investment')==='summary'?'summary':localGet(LS_INVESTMENT_MODE)||'full');
+  // 投資画面を開いたときは常に完全管理から始める。
+  const [mode,setMode]=useState(()=>new URLSearchParams(window.location.search).get('investment')==='summary'?'summary':'full');
   const [watchRequest,setWatchRequest]=useState(null);
-  function changeMode(next){setMode(next);localSet(LS_INVESTMENT_MODE,next);if(next==='summary')onReload&&onReload();}
+  function changeMode(next){setMode(next);if(next==='summary')onReload&&onReload();}
   // 「買える株数」の結果を、完全管理のウォッチリスト追加画面へ引き継ぐ。
   function addToWatchlist({ticker,amountJPY}){
     setWatchRequest(`&watch=${encodeURIComponent(ticker)}&watchMarket=US${amountJPY>0?`&amount=${Math.round(amountJPY)}`:''}&req=${Date.now()}`);

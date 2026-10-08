@@ -145,3 +145,15 @@ test('担保金の未同期編集は、他端末の変更があっても消さ�
   const merged = resolveListSync('sp_collateral', local, cloud, { updated_at: '2026-09-28T08:00:00.000Z' });
   assert.deepEqual(Array.from(merged, item => [item.id, item.amount]), [['a', 200], ['other', 30], ['new', 50]]);
 });
+
+test('投信の平均取得価格は1万口あたりで入力し、円/口で保存する', () => {
+  const source = html.slice(html.indexOf('const FUND_PRICE_UNIT'), html.indexOf('function getMarketLabel('));
+  const context = {};
+  runInNewContext(`${source};this.toInput=avgPriceForInput;this.fromInput=avgPriceFromInput;`, context);
+  assert.equal(context.fromInput('FUND', 25432), 2.5432);
+  assert.equal(context.toInput('FUND', 2.5432), 25432);
+  assert.equal(context.toInput('FUND', 1.8), 18000);
+  assert.equal(context.fromInput('JP', 2500), 2500);
+  assert.equal(context.toInput('JP', 2500), 2500);
+  assert.equal(context.toInput('FUND', ''), '');
+});
