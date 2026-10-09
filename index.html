@@ -3674,6 +3674,30 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
     changeMode('full');
   }
   const fullSrc=INVESTMENT_FULL_SRC+(watchRequest||'');
+  // 完全管理は画面の残りの高さにぴったり合わせ、ページ側はスクロールさせない（スクロールは完全管理の中だけ）。
+  const frameRef=useRef(null);
+  const [frameHeight,setFrameHeight]=useState(null);
+  useEffect(()=>{
+    if(mode!=='full')return;
+    let raf=0;
+    const fit=()=>{
+      const frame=frameRef.current;
+      if(!frame)return;
+      const nav=[...document.querySelectorAll('nav[aria-label="メインナビゲーション"]')].find(el=>el.className.includes('fixed')&&getComputedStyle(el).display!=='none');
+      const navHeight=nav?nav.getBoundingClientRect().height:0;
+      const top=frame.getBoundingClientRect().top+window.scrollY;
+      let height=Math.max(320,Math.floor(window.innerHeight-top-navHeight-8));
+      frame.style.height=height+'px';
+      const overflow=document.documentElement.scrollHeight-window.innerHeight;
+      if(overflow>0&&height-overflow>=320)height-=overflow;
+      setFrameHeight(height);
+    };
+    const schedule=()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(fit);};
+    window.scrollTo(0,0);
+    schedule();
+    window.addEventListener('resize',schedule);
+    return()=>{cancelAnimationFrame(raf);window.removeEventListener('resize',schedule);};
+  },[mode]);
   useEffect(()=>{
     const receive=e=>{
       if(e.origin!==window.location.origin||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
@@ -3684,7 +3708,7 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
   },[onEmbeddedChange]);
   return h('div',{className:mode==='full'?'space-y-2':'space-y-4'},
     h('div',{className:'flex flex-wrap items-center justify-between gap-2 px-1'},
-      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資管理'),h('p',{className:'text-sm text-gray-400 mt-1'},mode==='full'?'株式管理アプリの全機能をこの画面で利用できます':mode==='buy'?'ティッカーと予算から、時価で買える米国株の株数を計算します':'資産全体をシンプルに確認できます')),
+      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'投資管理'),h('p',{className:`text-sm text-gray-400 mt-1 ${mode==='full'?'hidden sm:block':''}`},mode==='full'?'株式管理アプリの全機能をこの画面で利用できます':mode==='buy'?'ティッカーと予算から、時価で買える米国株の株数を計算します':'資産全体をシンプルに確認できます')),
       h('div',{className:'flex items-center gap-2'},
         h('div',{className:'inline-flex rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-1'},
           h('button',{onClick:()=>changeMode('summary'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='summary'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'概要'),
@@ -3699,7 +3723,7 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
       :mode==='buy'
       ?h('div',{className:'max-w-3xl'},h(BuyCalculator,{fxRate:null,onAddToWatchlist:addToWatchlist}))
       :h('section',{className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden shadow-sm'},
-        h('iframe',{title:'株式ポートフォリオ完全管理',src:fullSrc,className:'block w-full h-[calc(100dvh-9rem)] min-h-[680px] border-0 bg-[#f5f5f3]',loading:'eager'})
+        h('iframe',{ref:frameRef,title:'株式ポートフォリオ完全管理',src:fullSrc,style:frameHeight?{height:frameHeight+'px'}:undefined,className:`block w-full border-0 bg-[#f5f5f3] dark:bg-[#0f1117] ${frameHeight?'':'h-[calc(100dvh-11rem)]'}`,loading:'eager'})
       )
   );
 }
@@ -3827,7 +3851,11 @@ function App({userEmail}={}){
   const [loading,setLoading]=useState(true);
   const [dark,setDark]=useState(()=>localGet(LS_DARK)==='1');
   const [showSettings,setShowSettings]=useState(false);
-  const [activeView,setActiveView]=useState('home');
+  // ?view=investments などで開く画面を指定できる（旧来の投資画面からの転送用）。
+  const [activeView,setActiveView]=useState(()=>{
+    const view=new URLSearchParams(window.location.search).get('view');
+    return ['home','transactions','salary','accounts','investments','loans','analysis'].includes(view)?view:'home';
+  });
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [localSaveFailed,setLocalSaveFailed]=useState(false);
   const [toasts,setToasts]=useState([]);
