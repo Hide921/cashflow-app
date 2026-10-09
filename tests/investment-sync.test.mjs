@@ -123,7 +123,8 @@ test('同期記録と同じなら、端末の時計が進んでいても変更�
 
 test('グラフ期間の起点は日本時間の日付で計算する', () => {
   const start = html.indexOf('function periodCutoffDate(');
-  const source = html.slice(start, html.indexOf('\n}\n', start) + 2);
+  const end = html.slice(start).search(/\r?\n}\r?\n/);
+  const source = html.slice(start, start + end) + '\n}';
   const context = { todayJST: () => '2026-10-07', Date };
   runInNewContext(source, context);
   assert.equal(context.periodCutoffDate('5d'), '2026-10-02');

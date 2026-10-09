@@ -446,7 +446,7 @@ test('残高表で口座の表示を切り替え、すべて非表示から復�
   assert.match(textOf(tree), /¥100/);
 });
 
-test('タッチ端末では予定件数とセルの操作を常時表示する', () => {
+test('タッチ端末では予定件数と内訳の操作を1行で表示する', () => {
   const app = appContext(true);
   const tree = app.evaluate('BalanceTable')({
     accounts: [{ id: 'a', name: '銀行A', color: '#000' }],
@@ -455,9 +455,8 @@ test('タッチ端末では予定件数とセルの操作を常時表示する',
     onCellClick: () => {},
   });
   const cell = nodes(tree, node => node.type === 'button' && node.props?.['aria-label']?.includes('銀行Aの残高'))[0];
-  assert.match(textOf(cell), /1件の予定/);
-  assert.match(textOf(cell), /タップして内訳/);
-  assert.match(nodes(cell, node => node.type === 'span' && textOf(node) === 'タップして内訳')[0].props.className, /opacity-100/);
+  assert.match(textOf(cell), /1件の予定・タップして内訳/);
+  assert.doesNotMatch(textOf(cell), /\+取引/);
 });
 
 test('給与モードの上部に年間合計（額面・控除・手取りと内訳）を表示する', () => {
