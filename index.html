@@ -559,7 +559,7 @@ const PERIODS=[
 ];
 const EXPENSE_CATS=CATS.filter(c=>c!=='給与');
 const STALE_BALANCE_DAYS=3;
-const DEFAULT_PREFS={notifications:false,notifyDays:7,largePayment:100000,lowBalance:0};
+const DEFAULT_PREFS={notifications:false,notifyDays:7,largePayment:100000,lowBalance:0,autoLoanPayments:true,autoSalary:true,salaryAutoDismissed:[]};
 
 function monthBounds(base){
   const d=sod(base);
@@ -1049,6 +1049,72 @@ function salaryBulkCopyPlan(records,source,startMonth,endMonth){
   return {error:'',rows};
 }
 
+// ─── 自動処理（アプリを開いたときに実行） ───────────────
+const AUTO_LOAN_LOOKBACK_DAYS=31;
+// 返済日を過ぎた定期返済を返済履歴に記録し、借入残高を減らす。
+// 口座残高は、入力した残高にまだ含まれていない回（残高の入力日以降）だけ差し引く。
+// 近い日付に手動の返済記録がある回は二重計上を避けるため記録しない。
+function autoLoanPayments(loans,txs,accounts,today=todayStr()){
+  let nextLoans=loans,nextAccounts=accounts;
+  const records=[];
+  const todayDate=parseISO(today);
+  for(const loan of loans){
+    if(!(Number(loan.balance)>0))continue;
+    const schedule=withLoanRepaymentPlans(txs,nextLoans,nextAccounts).find(item=>item.loanPlan?item.loanId===loan.id:(!item.loanPayment&&item.recurring&&item.id===loan.repaymentTransactionId));
+    if(!schedule)continue;
+    for(const event of expandRec(schedule,addDays(todayDate,-AUTO_LOAN_LOOKBACK_DAYS),addDays(todayDate,-1),null)){
+      const date=fmt(event.date),id=`auto-${date}`;
+      const live=nextLoans.find(item=>item.id===loan.id);
+      const balance=Number(live.balance)||0;
+      if(!(balance>0))break;
+      const nearManual=(live.payments||[]).some(item=>item.id===id||item.coversDate===date||
+        (validTxDate(item.paidAt)&&Math.abs(parseISO(item.paidAt)-event.date)<=7*86400000));
+      if(nearManual)continue;
+      const amount=Math.min(Math.round(Math.abs(event.amt)),balance);
+      if(!(amount>0))continue;
+      const payment={id,amount,paidAt:date,note:'自動記録',coversDate:date,auto:true};
+      nextLoans=nextLoans.map(item=>item.id===loan.id?{...item,balance:balance-amount,payments:[...(item.payments||[]),payment]}:item);
+      const account=nextAccounts.find(item=>item.id===schedule.accountId);
+      const reflected=!!account&&!eventIncludedInBalance({date:event.date,tx:{}},balanceAnchor(account));
+      if(reflected)nextAccounts=reflectLoanPayment(nextAccounts,live,payment,account.id);
+      records.push({loanName:loan.name,date,amount,reflected});
+    }
+  }
+  return {loans:nextLoans,accounts:nextAccounts,records};
+}
+// 前回の支給日が月末基準ならその月の既定日、そうでなければ同じ日付（休日なら前営業日）。
+function salaryPayDateLike(source,month){
+  if(source.startDate===salaryDefaultPayDate(source.salary.month,'monthly'))return salaryDefaultPayDate(month,'monthly');
+  const [year,number]=month.split('-').map(Number);
+  const day=Math.min(Number(source.startDate.slice(8)),new Date(year,number,0).getDate());
+  return fmt(prevBizDay(new Date(year,number-1,day)));
+}
+// 勤務先ごとに最新の月給と同じ内容で、来月分までの月給を「仮」で用意する。
+// 3か月以上登録のない勤務先は対象外。削除した仮の月給（dismissed）は作り直さない。
+function autoSalaryEstimates(txs,today=todayStr(),dismissed=[]){
+  const shift=(month,n)=>fmt(addMonths(parseISO(`${month}-01`),n)).slice(0,7);
+  const currentMonth=today.slice(0,7),lastMonth=shift(currentMonth,1),oldest=shift(currentMonth,-2);
+  const latest=new Map();
+  txs.filter(tx=>tx.type==='income'&&tx.salary&&(!tx.salary.kind||tx.salary.kind==='monthly')&&
+    /^\d{4}-(0[1-9]|1[0-2])$/.test(tx.salary.month||'')&&validTxDate(tx.startDate))
+    .forEach(tx=>{
+      const employer=(tx.salary.employer||'').trim(),previous=latest.get(employer);
+      if(!previous||previous.salary.month<tx.salary.month)latest.set(employer,tx);
+    });
+  const skip=new Set(dismissed),ids=new Set(txs.map(tx=>tx.id)),created=[];
+  latest.forEach((source,employer)=>{
+    if(source.salary.month<oldest)return;
+    for(let month=shift(source.salary.month,1);month<=lastMonth;month=shift(month,1)){
+      const id=`salary-auto:${employer}:${month}`;
+      if(skip.has(`${employer}|${month}`)||ids.has(id))continue;
+      const result=salaryTransactionFromDraft({...salaryDraftFromSource(source,month),payDate:salaryPayDateLike(source,month),accountId:source.accountId});
+      if(result.error)continue;
+      created.push({...result.transaction,id,salary:{...result.transaction.salary,estimated:true}});
+    }
+  });
+  return created;
+}
+
 function salaryYearTotals(records,year){
   return records.filter(tx=>tx.salary?.month?.startsWith(`${year}-`)).reduce((sum,tx)=>{
     const part=salaryBreakdown(tx);
@@ -1417,7 +1483,7 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
       selected.length===0?h('p',{className:'rounded-xl bg-gray-50 dark:bg-gray-900/50 px-4 py-5 text-center text-sm text-gray-500 dark:text-gray-400'},'この年の給与・賞与はまだ登録されていません。上のボタンから登録できます。'):
       h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},selected.map(tx=>h('article',{key:tx.id,className:'py-3 first:pt-0 last:pb-0'},
         h('div',{className:'flex flex-wrap items-start justify-between gap-2'},
-          h('div',null,h('p',{className:'font-semibold text-gray-900 dark:text-gray-100'},salaryName(tx)),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},`${fmtDisp(tx.startDate)}支給 · ${accounts.find(a=>a.id===tx.accountId)?.name||'口座なし'}${tx.startDate>todayStr()?' · 予定':''}`)),
+          h('div',null,h('p',{className:'font-semibold text-gray-900 dark:text-gray-100'},salaryName(tx),tx.salary.estimated&&h('span',{className:'ml-2 align-middle rounded-full bg-amber-100 dark:bg-amber-900/40 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300',title:'前月と同じ額で自動作成しました。明細が届いたら「編集」で金額を直してください'},'仮・前月と同額')),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},`${fmtDisp(tx.startDate)}支給 · ${accounts.find(a=>a.id===tx.accountId)?.name||'口座なし'}${tx.startDate>todayStr()?' · 予定':''}`)),
           h('p',{className:'font-bold text-emerald-700 dark:text-emerald-300 tabular-nums'},money(tx.amount))
         ),
         h('div',{className:'mt-2 flex flex-wrap items-center justify-between gap-2'},
@@ -2987,6 +3053,7 @@ function SyncStatus({status,onRetry}){
 }
 
 // ─── Upcoming Payments ────────────────────────────────
+const RECENT_REFLECTED_DAYS=14;
 function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx,onUpdTx}){
   const today=todayD();
   const end30=addDays(today,30);
@@ -3011,7 +3078,19 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx,onUpdTx}){
     }
   });
   events.sort((a,b)=>a.date.localeCompare(b.date));
-  if(!events.length) return null;
+  // 残高の入力日以降に過ぎた定期の予定は、予定額のまま今日の残高見込みに反映済み。金額が違うときだけ直す。
+  const recent=[];
+  if(onUpdTx)txs.forEach(tx=>{
+    if(!tx.recurring||tx.type==='transfer'||tx.loanPayment||tx.loanPlan||!accMap[tx.accountId])return;
+    const anchor=balanceAnchor(accMap[tx.accountId]);
+    expandRec(tx,addDays(today,-RECENT_REFLECTED_DAYS),addDays(today,-1),skippedKeys).forEach(e=>{
+      if(eventIncludedInBalance({date:e.date,tx},anchor))return;
+      const date=fmt(e.date);
+      recent.push({date,label:tx.label,amount:Math.abs(e.amt),type:tx.type,daysAgo:Math.round((today-e.date)/86400000),txId:tx.id,confirmed:tx.overrides?.[date]!==undefined});
+    });
+  });
+  recent.sort((a,b)=>b.date.localeCompare(a.date));
+  if(!events.length&&!recent.length) return null;
   return h('div',{className:cardCls+' p-5'},
     amountTarget&&txs.find(tx=>tx.id===amountTarget.txId)&&h(ConfirmAmountDialog,{
       tx:txs.find(tx=>tx.id===amountTarget.txId),date:amountTarget.date,
@@ -3037,6 +3116,16 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx,onUpdTx}){
       ),
       h('h2',{className:'text-base font-semibold text-gray-700 dark:text-gray-300'},'直近30日の予定'),
       h('span',{className:'ml-auto text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded-full px-2 py-0.5 font-medium'},`${events.length}件`)
+    ),
+    recent.length>0&&h('div',{className:'mb-3 rounded-xl bg-gray-50 dark:bg-gray-900/40 px-3 py-2.5'},
+      h('p',{className:'text-xs font-semibold text-gray-600 dark:text-gray-300'},'残高に自動反映した予定'),
+      h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400 mt-0.5'},'残高の入力後に過ぎた予定です。予定額のまま今日の見込みに入っています。金額が違ったときだけ直してください。'),
+      h('ul',{className:'mt-1.5 divide-y divide-gray-200/70 dark:divide-gray-700'},recent.map(ev=>h('li',{key:`${ev.txId}_${ev.date}`,className:'flex items-center gap-2 py-1.5 text-sm'},
+        h('span',{className:'w-12 shrink-0 text-xs text-gray-500 dark:text-gray-400 tabular-nums'},ev.date.slice(5).replace('-','/')),
+        h('span',{className:'flex-1 min-w-0 truncate text-gray-700 dark:text-gray-200'},ev.label,ev.confirmed&&h('span',{className:'ml-1.5 text-xs text-amber-600 dark:text-amber-400'},'確定額')),
+        h('span',{className:`tabular-nums font-semibold whitespace-nowrap ${ev.type==='income'?'text-emerald-600 dark:text-emerald-400':'text-rose-500 dark:text-rose-400'}`},`${ev.type==='income'?'+':'-'}¥${ev.amount.toLocaleString()}`),
+        h('button',{type:'button',onClick:()=>setAmountTarget(ev),className:'shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 px-1.5 py-0.5 rounded'},'金額を修正')
+      )))
     ),
     h('div',{className:'divide-y divide-gray-100 dark:divide-gray-700'},
       events.slice(0,showAll?events.length:6).map((ev,i)=>
@@ -3160,6 +3249,17 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
           h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-3'},'表示・同期'),
           h('div',{className:'flex items-center justify-between gap-3'},h('span',{className:'text-sm text-gray-500 dark:text-gray-400'},'ダークモード'),h('button',{onClick:()=>setDark(!dark),className:'border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-600 dark:text-gray-300'},dark?'ライト表示にする':'ダーク表示にする')),
           h('div',{className:'flex items-center justify-between gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700'},h('div',null,h('p',{className:'text-sm text-gray-600 dark:text-gray-300'},`クラウド: ${syncStatus.state==='saving'?'保存中':syncStatus.state==='error'?'同期失敗':syncStatus.state==='offline'?'オフライン':'同期済'}`),syncStatus.message&&h('p',{className:'text-xs text-gray-400 mt-0.5 break-all'},syncStatus.message)),syncStatus.state==='error'&&h('button',{onClick:onRetry,className:'text-xs font-semibold text-rose-600 border border-rose-200 rounded-lg px-3 py-2'},'再試行'))
+        ),
+        h('section',{className:cardCls+' p-4'},
+          h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'自動処理'),
+          h('p',{className:'text-xs text-gray-400 mb-3'},'アプリを開いたときに実行します。過ぎた予定は、入力した残高にいつも自動で反映されます。'),
+          [
+            ['autoLoanPayments','過ぎた定期返済を自動で記録','返済日の翌日以降に、借入残高と支払口座から差し引きます（過去31日分まで）'],
+            ['autoSalary','月給の予定を前月と同額で用意','来月分まで「仮」で作成します。明細が届いたら金額を直してください']
+          ].map(([key,label,hint])=>h('label',{key,className:'flex items-start gap-3 py-2 first:pt-0 last:pb-0 cursor-pointer'},
+            h('input',{type:'checkbox',className:'mt-1 h-4 w-4 shrink-0',checked:prefs[key]!==false,onChange:e=>onPrefs({...prefs,[key]:e.target.checked})}),
+            h('span',null,h('span',{className:'block text-sm text-gray-700 dark:text-gray-200'},label),h('span',{className:'block text-xs text-gray-400 mt-0.5'},hint))
+          ))
         ),
         h('section',{className:cardCls+' p-4'},
           h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'通知'),
@@ -4092,6 +4192,29 @@ function App({userEmail}={}){
   }
   function updBudgets(next){setBudgets(next);persist('budgets',next);addToast('予算を保存しました');}
   function updPreferences(next){setPreferences(next);persist('preferences',next);}
+  // クラウドから読み込めたときだけ、過ぎた返済の記録と仮の月給の作成を1回行う。
+  const autoRanRef=useRef(false);
+  useEffect(()=>{
+    if(loading||loadFailedRef.current||autoRanRef.current)return;
+    autoRanRef.current=true;
+    const today=todayStr(),messages=[];
+    if(preferences.autoLoanPayments!==false){
+      const result=autoLoanPayments(loansRef.current,txsRef.current,accountsRef.current,today);
+      if(result.records.length){
+        updLoans(result.loans);
+        if(result.accounts!==accountsRef.current)updAcc(result.accounts);
+        messages.push(`返済を自動記録: ${result.records.map(item=>`${item.loanName} ${item.date.slice(5).replace('-','/')} ¥${item.amount.toLocaleString()}`).join('、')}`);
+      }
+    }
+    if(preferences.autoSalary!==false){
+      const created=autoSalaryEstimates(txsRef.current,today,preferences.salaryAutoDismissed||[]);
+      if(created.length){
+        updTxs(current=>[...current,...created.filter(tx=>!current.some(item=>item.id===tx.id))]);
+        messages.push(`給与の予定を作成: ${created.map(tx=>`${Number(tx.salary.month.slice(5))}月`).join('・')}（仮）`);
+      }
+    }
+    if(messages.length)addToast(messages.join(' ／ '));
+  },[loading]);
   async function reloadInvestments(){
     setInvestmentData(current=>({...current,loading:true,error:''}));
     try{
@@ -4144,6 +4267,12 @@ function App({userEmail}={}){
   function deleteTx(id){
     if(accountsRef.current.some(account=>(account.loanRepayments||[]).some(item=>item.id===id))){setActiveView('loans');addToast('返済履歴から削除してください');return;}
     const loan=loansRef.current.find(item=>loanRepaymentId(item.id)===id);
+    const estimate=txsRef.current.find(tx=>tx.id===id&&tx.salary?.estimated);
+    if(estimate){
+      const key=`${(estimate.salary.employer||'').trim()}|${estimate.salary.month}`;
+      const dismissed=preferences.salaryAutoDismissed||[];
+      if(!dismissed.includes(key))updPreferences({...preferences,salaryAutoDismissed:[...dismissed,key].slice(-60)});
+    }
     if(loan)updLoans(current=>current.map(item=>item.id===loan.id?{...item,repaymentAccountId:''}:item));
     else updTxs(current=>current.filter(t=>t.id!==id));
     const next=skippedOccurrences.filter(k=>!k.startsWith(id+'_'));
