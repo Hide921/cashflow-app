@@ -832,13 +832,14 @@ function AccountManager({ accounts, onChange, addToast }){
     if(!form.name.trim()){setErr('口座名を入力してください');return;}
     if(form.balance===''||!Number.isFinite(Number(form.balance))){setErr('有効な残高を入力してください');return;}
     setErr('');
-    const {includesToday,...fields}=form;
+    const {includesToday,balanceTouched,...fields}=form;
     const item={...fields,name:form.name.trim(),bankName:form.bankName.trim(),balance:Number(form.balance)};
     if(editId){
       onChange(accounts.map(a=>{
         if(a.id!==editId) return a;
         const merged={...a,...item};
-        if(Number(a.balance)!==Number(item.balance)||includesToday){merged.balanceAsOf=todayStr();merged.balanceIncludesAsOfDay=includesToday;}
+        // 残高欄に入力したら、同じ金額でも今日を基準日にする。
+        if(Number(a.balance)!==Number(item.balance)||balanceTouched||includesToday){merged.balanceAsOf=todayStr();merged.balanceIncludesAsOfDay=includesToday;}
         return merged;
       }));
       setEditId(null);
@@ -890,7 +891,7 @@ function AccountManager({ accounts, onChange, addToast }){
         ),
         h('div',null,
           h('label',{htmlFor:'account-balance',className:labelCls},'現在残高 (円) *'),
-          h('input',{id:'account-balance',type:'number',inputMode:'decimal',className:inputCls,placeholder:'0',value:form.balance,onChange:e=>sf('balance',e.target.value)}),
+          h('input',{id:'account-balance',type:'number',inputMode:'decimal',className:inputCls,placeholder:'0',value:form.balance,onChange:e=>setForm(f=>({...f,balance:e.target.value,balanceTouched:true}))}),
           h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mt-1'},'今日時点の残高。あとから編集できます'),
           h('label',{className:'flex items-center gap-2 mt-2 text-xs text-gray-600 dark:text-gray-300'},h('input',{type:'checkbox',checked:form.includesToday,onChange:e=>sf('includesToday',e.target.checked)}),'今日の入出金は反映済み（今日の予定を残高表で二重に数えない）')
         ),
@@ -2707,13 +2708,25 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
   const [editAccId,setEditAccId]=useState(null);
   const [editBal,setEditBal]=useState('');
   const [editIncl,setEditIncl]=useState(false);
+  const [editStartBal,setEditStartBal]=useState('');
   const [fabOpen,setFabOpen]=useState(false);
   const [hiddenAccIds,setHiddenAccIds]=useState(new Set());
   function toggleAccId(id){ setHiddenAccIds(prev=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; }); }
+  // 今日のこの口座の予定（返済記録は残高に反映済みなので除く）。
+  function todayEventsFor(account){
+    return balanceEvents(txs,todayD(),todayD(),skippedKeys).filter(ev=>ev.aid===account.id&&!ev.tx.loanPayment);
+  }
+  // 入力した残高を保存したときの今日の見込み。今日の予定が未反映なら、その分を加える。
+  function balancePreview(account,value,includesToday){
+    return value+(includesToday?0:todayEventsFor(account).reduce((sum,ev)=>sum+ev.amt,0));
+  }
+  // 入力したら、前回の入力額と同じでも保存して基準日を今日にする（前回の入力日以降の予定が二重に効かないように）。
+  // 表示中の見込みのまま何も変えずに保存したときは、表示が変わらないので更新しない。
   function saveAccountBalance(account){
     const balance=Number(editBal);
     if(editBal.trim()===''||!Number.isSafeInteger(balance))return;
-    if(balance!==Number(account.balance)||editIncl)onUpdAcc({...account,balance,balanceAsOf:todayStr(),balanceIncludesAsOfDay:editIncl});
+    if(editBal===editStartBal&&editIncl){setEditAccId(null);return;}
+    onUpdAcc({...account,balance,balanceAsOf:todayStr(),balanceIncludesAsOfDay:todayEventsFor(account).length>0&&editIncl});
     setEditAccId(null);
   }
   const isPast=PERIODS[pIdx].months<0;
@@ -2792,9 +2805,14 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
   const upcomingWeek=useMemo(()=>buildTxList(txs,addDays(todayD(),7),skippedKeys).filter(event=>event.type==='expense'&&!String(event.txId).startsWith('loan-payment:')),[txs,skippedKeys]);
   const upcomingWeekTotal=upcomingWeek.reduce((sum,event)=>sum+Number(event.amount||0),0);
   const netWorth=todayTotal+(latestInvestment||0)-totalDebt;
+  // 表示中の今日の見込みを初期値にする。そのまま保存しても表示は変わらない。
+  function openBalanceEditor(account){
+    const start=String(Math.round(todayBalance(account)));
+    setEditAccId(account.id);setEditBal(start);setEditStartBal(start);setEditIncl(true);
+  }
   function startBalanceUpdate(account){
     if(!account)return;
-    setEditAccId(account.id);setEditBal(String(account.balance));setEditIncl(false);
+    openBalanceEditor(account);
     setTimeout(()=>document.getElementById('account-balances')?.scrollIntoView({behavior:'smooth',block:'start'}),0);
   }
   const monthly=useMemo(()=>monthlyRunRate(txs,todayStr().slice(0,7)),[txs]);
@@ -2959,7 +2977,17 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
                       }
                     }),
                   ),
-                  h('label',{className:'flex items-start gap-1.5 text-[11px] text-gray-600 dark:text-gray-300'},h('input',{type:'checkbox',className:'mt-0.5',checked:editIncl,onChange:e=>setEditIncl(e.target.checked)}),'今日の入出金は反映済み'),
+                  (()=>{
+                    const todays=todayEventsFor(a),value=Number(editBal);
+                    return h(React.Fragment,null,
+                      todays.length>0&&h('div',{className:'rounded-lg bg-gray-50 dark:bg-gray-900/40 px-2 py-1.5 text-[11px] text-gray-600 dark:text-gray-300'},
+                        h('p',{className:'font-semibold'},'今日の予定'),
+                        todays.map((ev,i)=>h('p',{key:i,className:'flex justify-between gap-2 tabular-nums'},h('span',{className:'truncate'},ev.tx.label),h('span',null,`${ev.amt>=0?'+':'−'}¥${Math.abs(ev.amt).toLocaleString()}`))),
+                        h('label',{className:'mt-1 flex items-start gap-1.5'},h('input',{type:'checkbox',className:'mt-0.5',checked:editIncl,onChange:e=>setEditIncl(e.target.checked)}),'銀行の残高にもう反映されている')
+                      ),
+                      editBal.trim()!==''&&Number.isSafeInteger(value)&&h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400 tabular-nums'},`保存後の今日の見込み ¥${Math.round(balancePreview(a,value,todays.length>0&&editIncl)).toLocaleString()}`)
+                    );
+                  })(),
                   h('div',{className:'flex items-center gap-2'},
                     h('button',{onClick:()=>saveAccountBalance(a),disabled:editBal.trim()===''||!Number.isSafeInteger(Number(editBal)),className:'rounded-lg bg-indigo-600 text-white px-3 py-1.5 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed'},'保存'),
                     h('button',{onClick:()=>setEditAccId(null),className:'text-xs font-medium text-gray-600 dark:text-gray-300 px-2 py-1.5'},'キャンセル')
@@ -2970,7 +2998,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
                     h('p',{className:'text-[10px] text-gray-500 dark:text-gray-400 tabular-nums'},Math.round(todayBalance(a))!==Math.round(a.balance)?`入力 ¥${Number(a.balance).toLocaleString()}${a.balanceAsOf?`（${a.balanceAsOf.slice(5).replace('-','/')}）`:''}`:a.balanceAsOf?`入力 ${a.balanceAsOf.slice(5).replace('-','/')}`:'残高日未設定'),
                     h('div',{className:'flex items-center justify-between gap-2 mt-1'},
                       (()=>{const days=staleDays(a);return days!==null&&days>=STALE_BALANCE_DAYS?h('span',{className:'rounded-full bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300'},`${days}日前`):h('span',null);})(),
-                      onUpdAcc&&h('button',{onClick:()=>{setEditAccId(a.id);setEditBal(String(a.balance));setEditIncl(false);},className:'rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'},'残高を編集')
+                      onUpdAcc&&h('button',{onClick:()=>openBalanceEditor(a),className:'rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'},'残高を編集')
                     )
                   )
             ))

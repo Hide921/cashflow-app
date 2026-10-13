@@ -603,3 +603,25 @@ test('評価と合計は概要とホームで同じ計算を使う', () => {
   assert.equal(result.total, 33000 + 50000 + 10000);
   assert.equal(totals([value({ id: 'u', market: 'US', currency: 'USD', quantity: 1, avgPrice: 1 }, { price: 2, currency: 'USD' }, null)], [], null).total, null);
 });
+
+test('前回と同じ残高を入力し直すと、今日を基準日にして入力額どおりの見込みになる', () => {
+  const app = appContext();
+  const today = app.evaluate('todayStr')();
+  const yesterday = app.evaluate('fmt')(app.evaluate('addDays')(app.evaluate('todayD')(), -1));
+  const twoDaysAgo = app.evaluate('fmt')(app.evaluate('addDays')(app.evaluate('todayD')(), -2));
+  app.context.testAccount = { id: 'a', name: '銀行A', balance: 100000, balanceAsOf: twoDaysAgo };
+  app.context.testTxs = [{ id: 'card', type: 'expense', label: 'カード', amount: 30000, accountId: 'a', startDate: yesterday, recurring: false }];
+  let updated;
+  app.context.onUpdAcc = item => { updated = item; };
+  const render = () => {
+    app.resetHooks();
+    return app.evaluate('Dashboard({accounts:[testAccount],txs:testTxs,loans:[],dark:false,onUpdAcc,onUpdTx:null,onNavigate:null,skippedOccurrences:[],onSkip:null,onRestore:null,onDeleteTx:null,investmentData:null})');
+  };
+  findElement(render(), node => node.type === 'button' && node.props.children.includes('残高を編集')).props.onClick();
+  const input = findElement(render(), node => node.type === 'input' && node.props['aria-label'] === '銀行Aの現在残高');
+  assert.equal(input.props.value, '70000');
+  input.props.onChange({ target: { value: '100000' } });
+  findElement(render(), node => node.type === 'button' && node.props.children.includes('保存')).props.onClick();
+  assert.equal(updated.balance, 100000);
+  assert.equal(updated.balanceAsOf, today);
+});

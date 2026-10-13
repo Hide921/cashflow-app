@@ -77,3 +77,10 @@ test('明細で編集すると仮の印が外れる',()=>{
   assert.equal(transaction.id,estimate.id);
   assert.equal(transaction.salary.estimated,undefined);
 });
+
+test('今日の予定が銀行残高に反映済みなら、入力した残高がそのまま今日の見込みになる',()=>{
+  const rent={id:'rent',type:'expense',label:'家賃',amount:80000,accountId:'bank',startDate:today,recurring:false};
+  const shown=includes=>fn('buildForecast')([{id:'bank',balance:100000,balanceAsOf:today,balanceIncludesAsOfDay:includes}],[rent],fn('todayD')(),new Set())[0].bank;
+  assert.equal(shown(true),100000);
+  assert.equal(shown(false),20000);
+});
