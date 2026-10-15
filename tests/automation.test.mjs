@@ -84,3 +84,26 @@ test('今日の予定が銀行残高に反映済みなら、入力した残高�
   assert.equal(shown(true),100000);
   assert.equal(shown(false),20000);
 });
+
+test('借りたお金を口座へ入金すると今日の見込みが増え、追加借入なら借入残高も増える',()=>{
+  const accounts=[{id:'bank',name:'千葉銀',balance:100000,balanceAsOf:daysAgo(3)}];
+  const card={id:'c',name:'カードローン',balance:200000,originalAmount:200000};
+  const only=fn('loanDeposit')(card,{amount:'200000',date:today,accountId:'bank',additional:false},accounts);
+  assert.equal(only.loan.balance,200000);
+  assert.equal(only.transaction.type,'income');
+  assert.equal(only.loan.borrowings[0].id,only.transaction.id);
+  const shown=fn('buildForecast')(accounts,[only.transaction],fn('todayD')(),new Set())[0].bank;
+  assert.equal(shown,300000);
+  const more=fn('loanDeposit')(card,{amount:50000,date:today,accountId:'bank',additional:true},accounts);
+  assert.equal(more.loan.balance,250000);
+  assert.equal(more.loan.originalAmount,250000);
+  assert.match(fn('loanDeposit')(card,{amount:0,date:today,accountId:'bank'},accounts).error,/入金額/);
+  assert.match(fn('loanDeposit')(card,{amount:1,date:today,accountId:'x'},accounts).error,/口座/);
+});
+
+test('定期取引はこの回だけ金額を変えられ、ほかの月はそのまま',()=>{
+  const rent={id:'rent',type:'expense',amount:80000,accountId:'bank',startDate:'2026-01-27',recurring:true,frequency:'monthly'};
+  const changed=fn('setOccurrenceAmount')(rent,'2026-11-27',95000);
+  const events=fn('expandRec')(changed,fn('parseISO')('2026-10-01'),fn('parseISO')('2026-12-31'),new Set());
+  assert.equal(events.map(e=>e.amt).join(),'-80000,-95000,-80000');
+});
