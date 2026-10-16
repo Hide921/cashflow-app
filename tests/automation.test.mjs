@@ -107,3 +107,14 @@ test('定期取引はこの回だけ金額を変えられ、ほかの月はそ�
   const events=fn('expandRec')(changed,fn('parseISO')('2026-10-01'),fn('parseISO')('2026-12-31'),new Set());
   assert.equal(events.map(e=>e.amt).join(),'-80000,-95000,-80000');
 });
+
+test('定期取引はこの回だけ日付と金額を一緒に変えられる',()=>{
+  const base=fn('addDays')(fn('todayD')(),10),from=fn('fmt')(base),to=fn('fmt')(fn('addDays')(base,3));
+  const rent={id:'rent',type:'expense',amount:80000,accountId:'bank',startDate:from,recurring:true,frequency:'monthly'};
+  const {transaction}=fn('editOccurrence')(rent,from,{amount:95000,toDate:to});
+  const events=fn('expandRec')(transaction,base,fn('addMonths')(base,1),new Set());
+  assert.equal(events.map(e=>`${fn('fmt')(e.date)}:${e.amt}`).join(),`${to}:-95000,${fn('fmt')(fn('addMonths')(base,1))}:-80000`);
+  assert.match(fn('editOccurrence')(rent,from,{amount:0}).error,/金額/);
+  assert.match(fn('editOccurrence')(rent,from,{amount:80000,toDate:daysAgo(1)}).error,/今日以降/);
+  assert.equal(fn('editOccurrence')(rent,from,{amount:80000,toDate:from}).transaction,rent);
+});

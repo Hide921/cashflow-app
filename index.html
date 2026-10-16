@@ -1257,6 +1257,62 @@ function setOccurrenceAmount(tx,date,amount){
   return {...tx,overrides};
 }
 
+// 定期取引の1回だけ、金額（amount）と日付（toDate）を変える。ほかの回はそのまま。
+// 金額は元の日付に確定額として付けてから移動するので、移動先へ引き継がれる。
+function editOccurrence(tx,date,{amount,toDate},skippedKeys=new Set(),today=todayStr()){
+  if(!tx||!tx.recurring)return {error:'定期取引が見つかりません'};
+  let next=tx;
+  if(amount!==undefined&&amount!==null){
+    if(!Number.isSafeInteger(amount)||amount<=0)return {error:'1円以上の金額を入力してください'};
+    const current=tx.overrides?.[date]!==undefined?tx.overrides[date]:tx.amount;
+    if(amount!==Number(current))next=setOccurrenceAmount(next,date,amount===Number(tx.amount)?null:amount);
+  }
+  if(toDate&&toDate!==date){
+    const moved=moveScheduledTransaction(next,date,toDate,today,skippedKeys);
+    if(moved.error)return {error:moved.error};
+    next=moved.transaction;
+  }
+  return {transaction:next};
+}
+
+function OccurrenceDialog({tx,date,skippedKeys,onSave,onClose}){
+  const confirmed=tx.overrides?.[date]!==undefined;
+  const canMove=date>=todayStr();
+  const [amount,setAmount]=useState(String(confirmed?tx.overrides[date]:tx.amount));
+  const [toDate,setToDate]=useState(date);
+  const [error,setError]=useState('');
+  useEffect(()=>{const onKey=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);},[onClose]);
+  function save(e){
+    e.preventDefault();
+    const result=editOccurrence(tx,date,{amount:parseJpAmt(amount),toDate:canMove?toDate:date},skippedKeys);
+    if(result.error){setError(result.error);return;}
+    onSave(result.transaction);
+  }
+  return h('div',{className:'fixed inset-0 z-[310] bg-black/60 flex items-center justify-center px-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
+    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'occurrence-title',className:'w-full max-w-sm rounded-2xl bg-white dark:bg-gray-900 p-5 shadow-2xl'},
+      h('h3',{id:'occurrence-title',className:'text-lg font-semibold text-gray-900 dark:text-white'},'この回だけ変更'),
+      h('p',{className:'mt-1 text-sm text-gray-600 dark:text-gray-300'},`${tx.label} ・ ${fmtDisp(date)}`),
+      h('p',{className:'mt-3 rounded-lg bg-gray-50 dark:bg-gray-800 px-3 py-2 text-xs text-gray-600 dark:text-gray-300'},`通常は ¥${Number(tx.amount).toLocaleString()}。ここでの変更はこの回だけで、ほかの月の予定は変わりません。`),
+      h('form',{onSubmit:save,className:'mt-4 space-y-3'},
+        h('div',null,
+          h('label',{htmlFor:'occurrence-date',className:'block text-sm font-semibold text-gray-800 dark:text-gray-100'},'日付'),
+          h('input',{id:'occurrence-date',type:'date',min:todayStr(),disabled:!canMove,value:toDate,onChange:e=>{setToDate(e.target.value);setError('');},className:'mt-1 w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-gray-900 dark:text-white disabled:opacity-50'}),
+          !canMove&&h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},'過ぎた予定の日付は変えられません（金額は直せます）')
+        ),
+        h('div',null,
+          h('label',{htmlFor:'occurrence-amount',className:'block text-sm font-semibold text-gray-800 dark:text-gray-100'},'金額'),
+          h('div',{className:'mt-1 flex items-center gap-2'},h('span',{className:'text-gray-500'},'¥'),
+            h('input',{id:'occurrence-amount',type:'text',inputMode:'decimal',value:amount,onChange:e=>{setAmount(e.target.value);setError('');},className:'w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2.5 text-right text-lg font-semibold text-gray-900 dark:text-white'}))
+        ),
+        error&&h('p',{role:'alert',className:'text-sm text-rose-600'},error),
+        h('div',{className:'flex flex-wrap justify-end gap-2 pt-2'},
+          h('button',{type:'button',onClick:onClose,className:'rounded-xl border border-gray-200 dark:border-gray-600 px-3 py-2 text-sm text-gray-600 dark:text-gray-300'},'キャンセル'),
+          h('button',{type:'submit',className:'rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'},'この回を保存'))
+      )
+    )
+  );
+}
+
 function occurrencesInMonth(tx,month){
   if(!tx.startDate||!/^\d{4}-\d{2}$/.test(month)) return [];
   const start=sod(parseISO(`${month}-01`));
@@ -2308,8 +2364,8 @@ function BalanceTable({ accounts, fData, txEventMap, onCellClick, onSkip, onEdit
           it.txId&&it.recurring&&onEditOccurrence&&h('button',{
             onClick:e=>{e.stopPropagation();setTip(null);onEditOccurrence(it.txId,it.date);},
             className:'text-amber-300 hover:text-white transition-colors text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-white/10',
-            title:'この回だけ金額を変更（ほかの月はそのまま）'
-          },'この回の金額'),
+            title:'この回だけ日付・金額を変更（ほかの月はそのまま）'
+          },'この回を変更'),
           it.txId&&onEditTx&&h('button',{
             onClick:e=>{e.stopPropagation();editTxFromTip(it.txId);},
             className:'text-indigo-300 hover:text-white transition-colors text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-white/10',
@@ -2886,8 +2942,8 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onUpdAcc, onUpdTx, onN
   return h('div',{className:'space-y-5'},
     addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
     editTx&&onUpdTx&&h(AddTxModal,{date:editTx.startDate||todayStr(),accounts,dark,editTx,onClose:()=>setEditTxId(null),onSave:tx=>{onUpdTx(tx);setEditTxId(null);}}),
-    occurrenceTarget&&onUpdTx&&txs.find(tx=>tx.id===occurrenceTarget.txId)&&h(ConfirmAmountDialog,{
-      tx:txs.find(tx=>tx.id===occurrenceTarget.txId),date:occurrenceTarget.date,
+    occurrenceTarget&&onUpdTx&&txs.find(tx=>tx.id===occurrenceTarget.txId)&&h(OccurrenceDialog,{
+      tx:txs.find(tx=>tx.id===occurrenceTarget.txId),date:occurrenceTarget.date,skippedKeys,
       onSave:updated=>{onUpdTx(updated);setOccurrenceTarget(null);},
       onClose:()=>setOccurrenceTarget(null)
     }),
