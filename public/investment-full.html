@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cashflow 投資管理</title>
+  <script src="../account-storage.js"></script>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="apple-touch-icon" href="favicon.svg">
   <meta name="theme-color" content="#0f1117">
@@ -39,6 +40,13 @@
           integrity="sha384-ZstPgNL30sIz6Hlxmz87Qsg817okoeAfmzXv89YLICmfsKv3pEdQKOokOL2IpVAS"
           crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <style>
+    html{color-scheme:dark}
+    html[data-theme="light"]{color-scheme:light}
+    button,a,[role="button"]{touch-action:manipulation}
+    :focus-visible{outline:3px solid var(--accent,#818cf8);outline-offset:3px}
+    .modal{overscroll-behavior:contain;max-height:calc(100dvh - 24px)}
+    @media(pointer:coarse){button{min-height:44px}input:not([type="checkbox"]):not([type="radio"]),select,textarea{font-size:16px!important}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:0.01ms!important;transition-duration:0.01ms!important}}
     :root {
       --bg: #0f1117; --surface: #1a1d27; --surface2: #242736; --border: #2e3148;
       --text: #e8eaf0; --text-muted: #8b90a8;
@@ -1174,7 +1182,9 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
-<script>
+<script id="investment-app" type="text/plain">
+const portfolioStorage=window.CashflowStorage.current();
+
 // ── バックエンドAPI設定 ────────────────────────────────────────────
 // Render.com などにデプロイした Flask サーバーの URL を設定する
 // ローカル実行時は自動的に同一オリジン (空文字) を使用
@@ -1182,13 +1192,13 @@ const API_BASE = (() => {
   const h = window.location.hostname;
   if (h === 'localhost' || h === '127.0.0.1') return ''; // ローカル: 相対パス
 
-  // 本番では URL を上書き可能にする（query > global > localStorage > default）
+  // 本番では URL を上書き可能にする（query > global > portfolioStorage > default）
   const q = new URLSearchParams(window.location.search).get('api') || '';
   const g = typeof window.__API_BASE__ === 'string' ? window.__API_BASE__.trim() : '';
   let s = '';
-  try { s = (localStorage.getItem('api_base_url') || '').trim(); } catch(e) {}
+  try { s = (portfolioStorage.getItem('api_base_url') || '').trim(); } catch(e) {}
   if (q) {
-    try { localStorage.setItem('api_base_url', q); } catch(e) {}
+    try { portfolioStorage.setItem('api_base_url', q); } catch(e) {}
     return q;
   }
   if (g) return g;
@@ -1483,7 +1493,7 @@ const COLORS = [
 // ── State ─────────────────────────────────────────────────────────
 let stocks        = [];
 let usdJpyRate    = (() => {
-  const saved = Number(localStorage.getItem('usdjpy_rate'));
+  const saved = Number(portfolioStorage.getItem('usdjpy_rate'));
   return Number.isFinite(saved) && saved > 0 ? saved : 150;
 })();
 let apiOnline     = false;
@@ -1501,7 +1511,7 @@ let filterMarket     = '';
 let filterTradeType  = '';
 let quickFilter      = '';
 const COMPACT_VIEW_KEY = 'portfolio_compact_view_v1';
-let compactView      = localStorage.getItem(COMPACT_VIEW_KEY) === '1';
+let compactView      = portfolioStorage.getItem(COMPACT_VIEW_KEY) === '1';
 let _flashMap        = {};   // {stockId: 'up'|'down'} 価格更新フラッシュ用（render時に消費）
 
 let autoRateEnabled  = false;
@@ -1523,7 +1533,7 @@ let transactions      = [];  // 取引履歴（売買ログ）[{id,date,type,tic
 const TRANSACTIONS_KEY = 'transactions_v1';
 const TX_DELETIONS_KEY = 'transaction_deletions_v1';
 let transactionDeletions = {};
-try { transactionDeletions = JSON.parse(localStorage.getItem(TX_DELETIONS_KEY) || '{}') || {}; } catch(e) {}
+try { transactionDeletions = JSON.parse(portfolioStorage.getItem(TX_DELETIONS_KEY) || '{}') || {}; } catch(e) {}
 
 // 削除と取り消しを別端末にも伝える。削除済みIDは履歴から消しても保持する。
 function mergeTransactionDeletions(local, cloud) {
@@ -1548,7 +1558,7 @@ function recordTransactionDeletions(previous, current) {
 let watchlist          = []; // 買いたい候補 [{id,ticker,name,market,purchaseAmountJPY,note,...}]
 const WATCHLIST_KEY    = 'watchlist_v1';
 const WATCHLIST_BUDGET_KEY = 'watchlist_budget_v1';
-let watchlistBudgetJPY = Number(localStorage.getItem(WATCHLIST_BUDGET_KEY)) || 0;
+let watchlistBudgetJPY = Number(portfolioStorage.getItem(WATCHLIST_BUDGET_KEY)) || 0;
 let watchlistEditId    = null;
 const retryingPriceItems = new Set();
 
@@ -1642,18 +1652,18 @@ function stockFormHasChanges() {
 function clearStockFormDraft() {
   clearTimeout(stockFormDraftTimer);
   stockFormDraftTimer = null;
-  try { localStorage.removeItem(STOCK_FORM_DRAFT_KEY); } catch(e) {}
+  try { portfolioStorage.removeItem(STOCK_FORM_DRAFT_KEY); } catch(e) {}
 }
 
 function saveStockFormDraftNow() {
   clearTimeout(stockFormDraftTimer);
   stockFormDraftTimer = null;
   if (!document.getElementById('overlay').classList.contains('open') || !stockFormHasChanges()) {
-    try { localStorage.removeItem(STOCK_FORM_DRAFT_KEY); } catch(e) {}
+    try { portfolioStorage.removeItem(STOCK_FORM_DRAFT_KEY); } catch(e) {}
     return;
   }
   try {
-    localStorage.setItem(STOCK_FORM_DRAFT_KEY, JSON.stringify({ ...readStockFormValues(), savedAt:Date.now() }));
+    portfolioStorage.setItem(STOCK_FORM_DRAFT_KEY, JSON.stringify({ ...readStockFormValues(), savedAt:Date.now() }));
   } catch(e) {}
 }
 
@@ -1664,7 +1674,7 @@ function scheduleStockFormDraft() {
 
 function restoreStockFormDraftModal() {
   let draft = null;
-  try { draft = JSON.parse(localStorage.getItem(STOCK_FORM_DRAFT_KEY) || 'null'); } catch(e) {}
+  try { draft = JSON.parse(portfolioStorage.getItem(STOCK_FORM_DRAFT_KEY) || 'null'); } catch(e) {}
   if (!draft || !draft.savedAt || Date.now() - draft.savedAt > 24 * 60 * 60 * 1000) {
     clearStockFormDraft();
     return;
@@ -1977,33 +1987,33 @@ function sameStamp(a, b) {
   return a === b || Date.parse(a) === Date.parse(b);
 }
 function readCloudSeen() {
-  try { return JSON.parse(localStorage.getItem(CLOUD_SEEN_KEY) || '{}') || {}; } catch(e) { return {}; }
+  try { return JSON.parse(portfolioStorage.getItem(CLOUD_SEEN_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
 function getCloudSeen(key) {
-  if (key === 'sp_stocks') return localStorage.getItem(STOCKS_SYNCED_AT_KEY) ?? undefined;
+  if (key === 'sp_stocks') return portfolioStorage.getItem(STOCKS_SYNCED_AT_KEY) ?? undefined;
   return readCloudSeen()[key];
 }
 function setCloudSeen(key, updatedAt) {
-  if (key === 'sp_stocks') { localStorage.setItem(STOCKS_SYNCED_AT_KEY, updatedAt); return; }
-  localStorage.setItem(CLOUD_SEEN_KEY, JSON.stringify({ ...readCloudSeen(), [key]: updatedAt || null }));
+  if (key === 'sp_stocks') { portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, updatedAt); return; }
+  portfolioStorage.setItem(CLOUD_SEEN_KEY, JSON.stringify({ ...readCloudSeen(), [key]: updatedAt || null }));
 }
 // 前回の同期以降にクラウド側で変わったか。記録がない古い端末だけ従来の日時比較を使う。
 function cloudKeyChanged(key, row) {
   const seen = getCloudSeen(key);
   if (seen !== undefined && seen !== null) return !sameStamp(row?.updated_at, seen);
   if (seen === null) return !!row?.updated_at;
-  const localUpdatedAt = localStorage.getItem(LOCAL_UPDATED_AT_KEY);
+  const localUpdatedAt = portfolioStorage.getItem(LOCAL_UPDATED_AT_KEY);
   return row?.updated_at && localUpdatedAt ? row.updated_at > localUpdatedAt : !!row?.value;
 }
 // 担保金・ウォッチリスト・購入予算の未同期編集。クラウド側も変わっていたら、消さずに統合する。
 const LIST_PENDING_KEY = 'sp_list_pending_v1';
 function readListPending() {
-  try { return JSON.parse(localStorage.getItem(LIST_PENDING_KEY) || '{}') || {}; } catch(e) { return {}; }
+  try { return JSON.parse(portfolioStorage.getItem(LIST_PENDING_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
 function setListPending(key, pending) {
   const all = readListPending();
   if (pending) all[key] = true; else delete all[key];
-  localStorage.setItem(LIST_PENDING_KEY, JSON.stringify(all));
+  portfolioStorage.setItem(LIST_PENDING_KEY, JSON.stringify(all));
 }
 function canonicalWatchlistOf(list) {
   return JSON.stringify((list || []).map(({ currentPrice, prevClose, dayChange, lastFetched, lastAttempted, fetchError, navDate, ...rest }) => rest));
@@ -2025,7 +2035,7 @@ function resolveListSync(key, local, cloud, row) {
   return Array.isArray(cloud) ? mergeListById(local, cloud) : local;
 }
 function stockCloudChangedSinceSync(row) {
-  const syncedAt = localStorage.getItem(STOCKS_SYNCED_AT_KEY);
+  const syncedAt = portfolioStorage.getItem(STOCKS_SYNCED_AT_KEY);
   return !!(row?.updated_at && syncedAt && !sameStamp(row.updated_at, syncedAt));
 }
 function setStockSyncConflict(row) {
@@ -2038,13 +2048,13 @@ function resolveStockConflict(choice) {
   if (!row) return;
   if (choice === 'cloud') {
     stocks = row.value.map(migrateStock);
-    localStorage.setItem('stocks', JSON.stringify(stocks));
-    localStorage.removeItem(STOCKS_PENDING_KEY);
+    portfolioStorage.setItem('stocks', JSON.stringify(stocks));
+    portfolioStorage.removeItem(STOCKS_PENDING_KEY);
     _lastSynced.sp_stocks = canonicalStocks(row.value);
     render(); renderPieChart(); renderLineChart();
     notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
   } else if (choice !== 'local') return;
-  localStorage.setItem(STOCKS_SYNCED_AT_KEY, row.updated_at);
+  portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, row.updated_at);
   setStockSyncConflict(null);
   if (choice === 'local') sbSave(false);
   else { updateSyncIcon('ok'); toast('クラウドの保有銘柄を採用しました', 'success'); }
@@ -2096,6 +2106,9 @@ function _hasUnsyncedChanges() {
 }
 
 async function _doSave(force = false) {
+  if(!_sb)throw new Error('ログインを確認してください');
+  const {data:sessionData,error:sessionError}=await _sb.auth.getSession();
+  if(sessionError||sessionData?.session?.user?.id!==portfolioStorage.userId)throw new Error('ログイン状態が変わりました。ページを開き直してください');
   // ポーリング前に保存しても、別端末の削除履歴を古い状態で上書きしない。
   // 読込に失敗した場合は保存も中止し、未同期のローカル編集を残す。
   if (stockSyncConflict) throw new Error('保有銘柄の同期競合を解決してください');
@@ -2108,7 +2121,7 @@ async function _doSave(force = false) {
     collateralEntries = resolveListSync('sp_collateral', collateralEntries, collateralRow.value, collateralRow);
     _lastSynced.sp_collateral = JSON.stringify(collateralRow.value);
     setCloudSeen('sp_collateral', collateralRow.updated_at);
-    localStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
+    portfolioStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
     renderCollateral();
   }
   if (Array.isArray(watchRow?.value) && cloudKeyChanged('sp_watchlist', watchRow)) {
@@ -2116,34 +2129,34 @@ async function _doSave(force = false) {
     watchlist = resolveListSync('sp_watchlist', watchlist, cloudWatch, watchRow);
     _lastSynced.sp_watchlist = canonicalWatchlistOf(cloudWatch);
     setCloudSeen('sp_watchlist', watchRow.updated_at);
-    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+    portfolioStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
     renderWatchlist();
   }
   if (budgetRow && cloudKeyChanged('sp_watchlist_budget', budgetRow)) {
     const cloudBudget = Number(budgetRow.value);
     if (!readListPending().sp_watchlist_budget && Number.isFinite(cloudBudget) && cloudBudget >= 0) {
       watchlistBudgetJPY = cloudBudget;
-      localStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
+      portfolioStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
     }
     _lastSynced.sp_watchlist_budget = JSON.stringify(Number.isFinite(cloudBudget) ? cloudBudget : null);
     setCloudSeen('sp_watchlist_budget', budgetRow.updated_at);
   }
-  if (localStorage.getItem(STOCKS_PENDING_KEY) === '1' && stockCloudChangedSinceSync(stocksRow)) {
+  if (portfolioStorage.getItem(STOCKS_PENDING_KEY) === '1' && stockCloudChangedSinceSync(stocksRow)) {
     setStockSyncConflict(stocksRow);
     throw new Error('保有銘柄が別の端末でも更新されました');
   }
-  if (localStorage.getItem(STOCKS_PENDING_KEY) !== '1' && Array.isArray(stocksRow?.value) && stockCloudChangedSinceSync(stocksRow)) {
+  if (portfolioStorage.getItem(STOCKS_PENDING_KEY) !== '1' && Array.isArray(stocksRow?.value) && stockCloudChangedSinceSync(stocksRow)) {
     stocks = stocksRow.value.map(migrateStock);
-    localStorage.setItem('stocks', JSON.stringify(stocks));
-    localStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
+    portfolioStorage.setItem('stocks', JSON.stringify(stocks));
+    portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
     _lastSynced.sp_stocks = canonicalStocks(stocksRow.value);
     render(); renderPieChart();
     notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
   }
   transactionDeletions = mergeTransactionDeletions(transactionDeletions, deletionsRow?.value);
   transactions = mergeTransactions(transactions, txRow?.value, transactionDeletions);
-  localStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
-  localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
+  portfolioStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
+  portfolioStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
   render();
   const values = {
     sp_stocks:        stocks,
@@ -2171,13 +2184,13 @@ async function _doSave(force = false) {
     if (nowPayloads[k] === payloads[k] && (dirty.includes(k) || nowPayloads[k] === _lastSynced[k])) setListPending(k, false);
   });
   if (dirty.includes('sp_stocks')) {
-    if (_canonicalStocks() === payloads.sp_stocks) localStorage.removeItem(STOCKS_PENDING_KEY);
+    if (_canonicalStocks() === payloads.sp_stocks) portfolioStorage.removeItem(STOCKS_PENDING_KEY);
   }
   // 通信中に編集された場合は、その編集日時を保存完了時に巻き戻さない。
   if (!_hasUnsyncedChanges()) {
     const savedAt = updatedAt;
     lastCloudUpdatedAt = savedAt;
-    localStorage.setItem(LOCAL_UPDATED_AT_KEY, savedAt);
+    portfolioStorage.setItem(LOCAL_UPDATED_AT_KEY, savedAt);
   }
 }
 
@@ -2228,19 +2241,19 @@ async function sbLoad(silent = false) {
       sp_transaction_deletions: deletionsRow };
     const cloudUpdatedAt  = Object.values(syncRows)
       .map(row => row?.updated_at).filter(Boolean).sort().at(-1) || null;
-    const localStocks     = JSON.parse(localStorage.getItem('stocks') || '[]');
-    const localLog        = normalizePortfolioLog(JSON.parse(localStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
+    const localStocks     = JSON.parse(portfolioStorage.getItem('stocks') || '[]');
+    const localLog        = normalizePortfolioLog(JSON.parse(portfolioStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
 
     // 取引履歴は端末間で失わないよう常にマージ（和集合）。クラウド側の版を「同期済み」として記録し、
     // マージで増えた分は次の保存でクラウドへ反映する（ポートフォリオ推移と同じ方式）。
     let localTransactions = [];
-    try { localTransactions = JSON.parse(localStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) {}
+    try { localTransactions = JSON.parse(portfolioStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) {}
     transactionDeletions = mergeTransactionDeletions(transactionDeletions, deletionsRow?.value);
-    localStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
+    portfolioStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
     _lastSynced.sp_transaction_deletions = JSON.stringify(deletionsRow?.value || {});
     if (Array.isArray(cloudTransactions) || localTransactions.length) {
       transactions = mergeTransactions(localTransactions, cloudTransactions, transactionDeletions);
-      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
+      portfolioStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
       _lastSynced.sp_transactions = JSON.stringify(Array.isArray(cloudTransactions) ? cloudTransactions : []);
     }
     if (Array.isArray(cloudWatchlist)) {
@@ -2254,12 +2267,12 @@ async function sbLoad(silent = false) {
 
     // クラウドが最新かどうか: 前回同期した時点から各キーが変わったかで判断（端末の時計に依存しない）
     const cloudIsNewer = Object.entries(syncRows).some(([key, row]) => cloudKeyChanged(key, row));
-    if (localStorage.getItem(STOCKS_PENDING_KEY) === '1' && Array.isArray(cloudStocks) &&
+    if (portfolioStorage.getItem(STOCKS_PENDING_KEY) === '1' && Array.isArray(cloudStocks) &&
         canonicalStocks(localStocks) === canonicalStocks(cloudStocks)) {
-      localStorage.removeItem(STOCKS_PENDING_KEY);
-      localStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
+      portfolioStorage.removeItem(STOCKS_PENDING_KEY);
+      portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
     }
-    const stockPending = localStorage.getItem(STOCKS_PENDING_KEY) === '1';
+    const stockPending = portfolioStorage.getItem(STOCKS_PENDING_KEY) === '1';
     const cloudStockIsNewer = cloudKeyChanged('sp_stocks', stocksRow);
     if (stockPending && stockCloudChangedSinceSync(stocksRow)) setStockSyncConflict(stocksRow);
     else setStockSyncConflict(null);
@@ -2268,20 +2281,20 @@ async function sbLoad(silent = false) {
     if (cloudStocks && cloudIsNewer) {
       if (!stockPending && cloudStockIsNewer) {
         stocks = cloudStocks.map(migrateStock);
-        localStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
+        portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
       }
       portfolioLog      = mergePortfolioLogs(localLog, normalizePortfolioLog(cloudLog || []));
       if (Array.isArray(cloudCollateral)) {
         collateralEntries = resolveListSync('sp_collateral', collateralEntries, cloudCollateral, collateralRow);
-        localStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
+        portfolioStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
       }
       if (Array.isArray(cloudWatchlist)) {
         watchlist = resolveListSync('sp_watchlist', watchlist, cloudWatchlist.map(migrateWatchlistItem), watchRow);
-        localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+        portfolioStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
       }
       if (Number.isFinite(cloudWatchlistBudget) && cloudWatchlistBudget >= 0 && !readListPending().sp_watchlist_budget) {
         watchlistBudgetJPY = cloudWatchlistBudget;
-        localStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
+        portfolioStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
       }
       // 取引履歴(transactions)は上部で和集合マージ済み。
       // 読み込んだ内容を「同期済み」として記録（次の自動保存での無駄な書き戻しを防ぐ）。
@@ -2295,9 +2308,9 @@ async function sbLoad(silent = false) {
       if (Number.isFinite(cloudWatchlistBudget) && cloudWatchlistBudget >= 0) _lastSynced.sp_watchlist_budget = JSON.stringify(cloudWatchlistBudget);
       recordDailyLog();
       lastCloudUpdatedAt = cloudUpdatedAt;
-      localStorage.setItem('stocks', JSON.stringify(stocks));
-      localStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
-      localStorage.setItem(LOCAL_UPDATED_AT_KEY, cloudUpdatedAt); // ← ローカルタイムスタンプをクラウドに合わせる
+      portfolioStorage.setItem('stocks', JSON.stringify(stocks));
+      portfolioStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
+      portfolioStorage.setItem(LOCAL_UPDATED_AT_KEY, cloudUpdatedAt); // ← ローカルタイムスタンプをクラウドに合わせる
       document.getElementById('lastUpdated').textContent = '最終更新: ' + new Date().toLocaleTimeString('ja-JP');
       render();
       renderWatchlist();
@@ -2315,8 +2328,8 @@ async function sbLoad(silent = false) {
     Object.entries(syncRows).forEach(([key, row]) => {
       if (key !== 'sp_stocks') setCloudSeen(key, row?.updated_at || null);
     });
-    if (!stockSyncConflict && !localStorage.getItem(STOCKS_SYNCED_AT_KEY) && stocksRow?.updated_at &&
-        localStorage.getItem(STOCKS_PENDING_KEY) !== '1') setCloudSeen('sp_stocks', stocksRow.updated_at);
+    if (!stockSyncConflict && !portfolioStorage.getItem(STOCKS_SYNCED_AT_KEY) && stocksRow?.updated_at &&
+        portfolioStorage.getItem(STOCKS_PENDING_KEY) !== '1') setCloudSeen('sp_stocks', stocksRow.updated_at);
     loaded = true;
     updateSyncIcon(stockSyncConflict ? 'error' : 'ok');
   } catch(e) {
@@ -2384,14 +2397,14 @@ function updateSyncIcon(state) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
-try { localStorage.removeItem('syncCfg'); } catch(e) {} // 旧Gist同期のトークンを残さない
-const raw = JSON.parse(localStorage.getItem('stocks') || '[]');
-stocks = localStorage.getItem('stocks') !== null ? raw.map(migrateStock) : (LOCAL_ONLY_MODE ? defaultStocks() : []);
-portfolioLog = normalizePortfolioLog(JSON.parse(localStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
-try { collateralEntries = JSON.parse(localStorage.getItem(COLLATERAL_KEY) || '[]'); } catch(e) { collateralEntries = []; }
-try { transactions = JSON.parse(localStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) { transactions = []; }
-try { watchlist = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || '[]').map(migrateWatchlistItem); } catch(e) { watchlist = []; }
-if (recordDailyLog()) localStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
+try { portfolioStorage.removeItem('syncCfg'); } catch(e) {} // 旧Gist同期のトークンを残さない
+const raw = JSON.parse(portfolioStorage.getItem('stocks') || '[]');
+stocks = portfolioStorage.getItem('stocks') !== null ? raw.map(migrateStock) : (LOCAL_ONLY_MODE ? defaultStocks() : []);
+portfolioLog = normalizePortfolioLog(JSON.parse(portfolioStorage.getItem(PORTFOLIO_LOG_KEY) || '[]'));
+try { collateralEntries = JSON.parse(portfolioStorage.getItem(COLLATERAL_KEY) || '[]'); } catch(e) { collateralEntries = []; }
+try { transactions = JSON.parse(portfolioStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) { transactions = []; }
+try { watchlist = JSON.parse(portfolioStorage.getItem(WATCHLIST_KEY) || '[]').map(migrateWatchlistItem); } catch(e) { watchlist = []; }
+if (recordDailyLog()) portfolioStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
 renderCollateral();
 renderWatchlist();
 
@@ -2612,8 +2625,8 @@ function bootLibsReady() {
   syncBootStarted = true;
   // クラウド同期はグラフライブラリを待たず開始する。
   if (window.supabase && !LOCAL_ONLY_MODE) {
-    _sb = supabase.createClient(_SB_URL, _SB_KEY);
-    startCloudSync();
+    _sb = window.investmentAuthClient||supabase.createClient(_SB_URL, _SB_KEY);
+    startCloudSync().catch(()=>{updateSyncIcon('error');toast('ログイン状態を確認できませんでした。ページを再読み込みしてください。','error');});
   } else if (LOCAL_ONLY_MODE) {
     initialLoadDone = true;
     updateSyncIcon('local');
@@ -2638,7 +2651,7 @@ async function startCloudSync() {
     _sb.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_IN' && session) location.reload(); });
     return;
   }
-  _sb.auth.onAuthStateChange(event => { if (event === 'SIGNED_OUT') location.reload(); });
+  _sb.auth.onAuthStateChange((event,session) => { if (event === 'SIGNED_OUT'||session?.user?.id!==portfolioStorage.userId) {initialLoadDone=false;_sb=null;location.reload();} });
 
   // 起動時にSupabaseからデータを読み込む（ローカルデータがあれば移行も行う）
   updateSyncIcon('syncing');
@@ -2658,7 +2671,7 @@ async function startCloudSync() {
   // ?upload=1 パラメータで強制アップロード（データ復元用）
   if (new URLSearchParams(location.search).get('upload') === '1') {
     setTimeout(async () => {
-      localStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
+      portfolioStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
       await sbSave(false);
       history.replaceState({}, '', location.pathname);
     }, 1200);
@@ -2676,13 +2689,13 @@ const PRICE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 
 function savePriceCache(priceMap, rate) {
   try {
-    localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({ ts: Date.now(), prices: priceMap, rate }));
+    portfolioStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({ ts: Date.now(), prices: priceMap, rate }));
   } catch(e) {}
 }
 
 function loadPriceCache() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(PRICE_CACHE_KEY) || 'null');
+    const parsed = JSON.parse(portfolioStorage.getItem(PRICE_CACHE_KEY) || 'null');
     if (!parsed?.ts) return null;
     if (Date.now() - parsed.ts > PRICE_CACHE_MAX_AGE_MS) return null;
     return parsed;
@@ -2700,23 +2713,23 @@ function cacheAgeText(ts) {
 
 function save(skipSync = false) {
   let previousWatchlist = [];
-  try { previousWatchlist = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || '[]'); } catch(e) {}
-  if ((localStorage.getItem(COLLATERAL_KEY) || '[]') !== JSON.stringify(collateralEntries)) setListPending('sp_collateral', true);
+  try { previousWatchlist = JSON.parse(portfolioStorage.getItem(WATCHLIST_KEY) || '[]'); } catch(e) {}
+  if ((portfolioStorage.getItem(COLLATERAL_KEY) || '[]') !== JSON.stringify(collateralEntries)) setListPending('sp_collateral', true);
   if (canonicalWatchlistOf(previousWatchlist) !== _canonicalWatchlist()) setListPending('sp_watchlist', true);
-  if ((localStorage.getItem(WATCHLIST_BUDGET_KEY) || '0') !== String(watchlistBudgetJPY)) setListPending('sp_watchlist_budget', true);
+  if ((portfolioStorage.getItem(WATCHLIST_BUDGET_KEY) || '0') !== String(watchlistBudgetJPY)) setListPending('sp_watchlist_budget', true);
   let previousStocks = [];
-  try { previousStocks = JSON.parse(localStorage.getItem('stocks') || '[]'); } catch(e) {}
-  if (canonicalStocks(previousStocks) !== _canonicalStocks()) localStorage.setItem(STOCKS_PENDING_KEY, '1');
+  try { previousStocks = JSON.parse(portfolioStorage.getItem('stocks') || '[]'); } catch(e) {}
+  if (canonicalStocks(previousStocks) !== _canonicalStocks()) portfolioStorage.setItem(STOCKS_PENDING_KEY, '1');
   let previousTransactions = [];
-  try { previousTransactions = JSON.parse(localStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) {}
+  try { previousTransactions = JSON.parse(portfolioStorage.getItem(TRANSACTIONS_KEY) || '[]'); } catch(e) {}
   recordTransactionDeletions(previousTransactions, transactions);
-  localStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
-  localStorage.setItem('stocks', JSON.stringify(stocks));
-  localStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
-  localStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
-  localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
-  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
-  localStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
+  portfolioStorage.setItem(TX_DELETIONS_KEY, JSON.stringify(transactionDeletions));
+  portfolioStorage.setItem('stocks', JSON.stringify(stocks));
+  portfolioStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
+  portfolioStorage.setItem(COLLATERAL_KEY, JSON.stringify(collateralEntries));
+  portfolioStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
+  portfolioStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+  portfolioStorage.setItem(WATCHLIST_BUDGET_KEY, String(watchlistBudgetJPY));
   // 「最終更新」タイムスタンプは同期対象のユーザーデータ（銘柄・担保金・取引履歴）が
   // 変わった時だけ進める。価格更新だけで進めると localTs が常に最新になり、
   // 他端末の sp_stocks 変更（cloudTs > localTs 判定）を取り込めなくなる。
@@ -2728,7 +2741,7 @@ function save(skipSync = false) {
     _canonicalWatchlist() !== _lastSynced.sp_watchlist ||
     JSON.stringify(watchlistBudgetJPY) !== _lastSynced.sp_watchlist_budget;
   if (userDataChanged) {
-    localStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
+    portfolioStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
     notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
   }
   document.getElementById('lastUpdated').textContent =
@@ -2738,9 +2751,9 @@ function save(skipSync = false) {
 
 // 価格更新時は価格を含む配列と当日ログだけを保存し、担保金・取引履歴などを再直列化しない。
 function savePriceState() {
-  localStorage.setItem('stocks', JSON.stringify(stocks));
-  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
-  localStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
+  portfolioStorage.setItem('stocks', JSON.stringify(stocks));
+  portfolioStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+  portfolioStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
   document.getElementById('lastUpdated').textContent =
     '最終更新: ' + new Date().toLocaleTimeString('ja-JP');
   notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
@@ -2784,7 +2797,7 @@ async function fetchRate() {
   try {
     const d = await getCurrentPrice('USDJPY=X');
     usdJpyRate = d.price;
-    try { localStorage.setItem('usdjpy_rate', String(usdJpyRate)); } catch(e) {}
+    try { portfolioStorage.setItem('usdjpy_rate', String(usdJpyRate)); } catch(e) {}
     document.getElementById('rateValue').textContent = usdJpyRate.toFixed(2);
     document.getElementById('rateTime').textContent  =
       '更新: ' + new Date().toLocaleTimeString('ja-JP');
@@ -2972,7 +2985,7 @@ function portfolioTickerSignature() {
 }
 
 function startInitialPrices() {
-  if (LOCAL_ONLY_MODE || localStorage.getItem('stocks') !== null) {
+  if (LOCAL_ONLY_MODE || portfolioStorage.getItem('stocks') !== null) {
     checkAPI();
   } else {
     document.getElementById('priceProgressTitle').textContent = '保有銘柄を読み込んでいます';
@@ -3012,7 +3025,7 @@ async function fetchAllPrices(options = {}) {
     // USDJPY 更新
     if (priceMap['USDJPY=X']) {
       usdJpyRate = priceMap['USDJPY=X'].price;
-      try { localStorage.setItem('usdjpy_rate', String(usdJpyRate)); } catch(e) {}
+      try { portfolioStorage.setItem('usdjpy_rate', String(usdJpyRate)); } catch(e) {}
       document.getElementById('rateValue').textContent = usdJpyRate.toFixed(2);
       document.getElementById('rateTime').textContent  =
         '更新: ' + new Date().toLocaleTimeString('ja-JP');
@@ -3773,7 +3786,7 @@ function setQuickFilter(value) {
 }
 function toggleCompactView() {
   compactView = !compactView;
-  localStorage.setItem(COMPACT_VIEW_KEY, compactView ? '1' : '0');
+  portfolioStorage.setItem(COMPACT_VIEW_KEY, compactView ? '1' : '0');
   render();
 }
 let _searchTimer;
@@ -3800,6 +3813,7 @@ document.querySelectorAll('.card-interactive, .pie-card, .collateral-header').fo
 
 // すべてのモーダルに role、フォーカストラップ、閉じた後のフォーカス復元を付与。
 const _modalReturnFocus = new WeakMap();
+let _modalScrollBefore=null;
 document.querySelectorAll('.overlay').forEach((overlay, index) => {
   const dialog = overlay.querySelector('.modal');
   if (!dialog) return;
@@ -3813,6 +3827,9 @@ document.querySelectorAll('.overlay').forEach((overlay, index) => {
   new MutationObserver(() => {
     const open = overlay.classList.contains('open');
     overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if(document.querySelector('.overlay.open')){
+      if(_modalScrollBefore===null){_modalScrollBefore=document.body.style.overflow;document.body.style.overflow='hidden';}
+    }else if(_modalScrollBefore!==null){document.body.style.overflow=_modalScrollBefore;_modalScrollBefore=null;}
     if (open) {
       if (!overlay.contains(document.activeElement)) _modalReturnFocus.set(overlay, document.activeElement);
       if (!overlay.contains(document.activeElement)) {
@@ -4139,7 +4156,7 @@ function renderWatchlistBudget(previewBudget = watchlistBudgetJPY) {
 function previewWatchlistBudget() {
   const value = parseNumericInput(document.getElementById('watchlistBudgetInput')?.value, false) || 0;
   watchlistBudgetJPY = value;
-  localStorage.setItem(WATCHLIST_BUDGET_KEY, String(value));
+  portfolioStorage.setItem(WATCHLIST_BUDGET_KEY, String(value));
   save();
   renderWatchlistBudget(value);
 }
@@ -5276,7 +5293,7 @@ const REBALANCE_TARGETS_KEY = 'rebalance_targets_v1';
 let rebalanceTargets = {};  // { stockId: targetPct }
 
 function openRebalanceModal() {
-  try { rebalanceTargets = JSON.parse(localStorage.getItem(REBALANCE_TARGETS_KEY) || '{}'); }
+  try { rebalanceTargets = JSON.parse(portfolioStorage.getItem(REBALANCE_TARGETS_KEY) || '{}'); }
   catch(e) { rebalanceTargets = {}; }
   _renderRebalance();
   document.getElementById('rebalanceOverlay').classList.add('open');
@@ -5426,7 +5443,7 @@ function distributeEvenRebalance() {
 
 function saveRebalanceTargets() {
   try {
-    localStorage.setItem(REBALANCE_TARGETS_KEY, JSON.stringify(rebalanceTargets));
+    portfolioStorage.setItem(REBALANCE_TARGETS_KEY, JSON.stringify(rebalanceTargets));
     toast('目標配分を保存しました', 'success');
   } catch(e) {
     toast('保存に失敗しました', 'error');
@@ -5555,5 +5572,6 @@ function toast(msg, type = 'success', action = null) {
 }
 </script>
 
+<script src="../investment-boot.js"></script>
 </body>
 </html>

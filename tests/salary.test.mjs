@@ -17,7 +17,7 @@ const context = {
 runInNewContext(source, context);
 const evaluate = code => runInNewContext(code, context);
 
-test('月給は月末、賞与は15日を基準に土日を直前の金曜日へ繰り上げる', () => {
+test('月給は月末、賞与は15日を基準に土日祝を前営業日へ繰り上げる', () => {
   const cases = [
     ['2026-01', 'monthly', '2026-01-30'],
     ['2026-02', 'monthly', '2026-02-27'],
@@ -53,7 +53,7 @@ test('定期収支には勤務先ごとの直近月給を含め、賞与・未�
 });
 
 test('給与の手取りだけが支給日の入金として扱われる', () => {
-  const payDate = evaluate('fmt(addDays(todayD(), 2))');
+  const payDate = evaluate('fmt(nextBizDay(addDays(todayD(), 2)))');
   context.draft = { month: payDate.slice(0, 7), payDate, employer: '勤務先', gross: '30万', deductions: '50000', accountId: 'bank' };
   const { error, transaction: tx } = evaluate('salaryTransactionFromDraft(draft)');
   assert.equal(error, undefined);
@@ -116,7 +116,7 @@ test('前月の月給を翌月の入力欄へコピーし、元データは変�
     salary: { month: '2026-12', kind: 'monthly', employer: '勤務先', gross: 300000, socialInsurance: 30000, incomeTax: 10000, residentTax: 5000, otherDeductions: 0, deductions: 45000 } };
   const draft = evaluate('salaryDraftFromPrevious(previous,"2027-01")');
   assert.equal(draft.month, '2027-01');
-  assert.equal(draft.payDate, '2027-01-29');
+  assert.equal(draft.payDate, '2027-02-25');
   assert.equal(draft.gross, '300000');
   assert.equal(draft.socialInsurance, '30000');
   assert.equal(draft.accountId, 'bank');
@@ -231,4 +231,50 @@ test('簡易年末調整: 保険料控除の上限・住宅ローン控除・未
   const future = estimate({ year: 2030, gross: 5000000, socialInsurance: 750000, withheld: 0 });
   assert.equal(future.fallback, true);
   assert.equal(future.rulesLabel, '令和9年分');
+});
+
+
+test('指定日が土日・祝日・連休なら前営業日に入金し、指定日は保存する', () => {
+  const create=evaluate('salaryTransactionFromDraft');
+  for(const [payDate,actual] of [['2026-07-25','2026-07-24'],['2026-05-06','2026-05-01'],['2026-09-22','2026-09-18'],['2027-03-22','2027-03-19'],['2026-01-01','2025-12-31'],['2026-06-25','2026-06-25']]){
+    const result=create({month:payDate.slice(0,7),payDate,gross:'300000',deductions:'50000',accountId:'bank'});
+    assert.equal(result.transaction.startDate,actual);
+    assert.equal(result.transaction.salary.payDate,payDate);
+  }
+});
+
+test('休日で繰り上がった25日払いを翌月コピーしても24日払いに変わらない', () => {
+  const create=evaluate('salaryTransactionFromDraft'),copy=evaluate('salaryDraftFromSource');
+  const july=create({month:'2026-07',payDate:'2026-07-25',gross:'300000',deductions:'50000',accountId:'bank'}).transaction;
+  assert.equal(july.startDate,'2026-07-24');
+  const august=copy(july,'2026-08');assert.equal(august.payDate,'2026-08-25');
+  assert.equal(create(august).transaction.startDate,'2026-08-25');
+});
+
+test('30日払いを2月へコピーした後も3月は30日に戻り、翌月払いも保つ', () => {
+  const create=evaluate('salaryTransactionFromDraft'),copy=evaluate('salaryDraftFromSource');
+  const jan=create({month:'2026-01',payDate:'2026-01-30',gross:'300000',deductions:'50000',accountId:'bank'}).transaction;
+  const feb=create(copy(jan,'2026-02')).transaction;
+  assert.equal(feb.salary.payDate,'2026-02-28');
+  assert.equal(copy(feb,'2026-03').payDate,'2026-03-30');
+  const delayed=create({month:'2026-12',payDate:'2027-01-25',gross:'300000',deductions:'50000',accountId:'bank'}).transaction;
+  assert.equal(copy(delayed,'2027-01').payDate,'2027-02-25');
+});
+
+test('仮給与から予測を延ばし続けず、手動登録済みの月は重複作成しない', () => {
+  const create=evaluate('salaryTransactionFromDraft'),auto=evaluate('autoSalaryEstimates');
+  const source=create({month:'2026-07',payDate:'2026-07-25',gross:'300000',deductions:'50000',accountId:'bank'}).transaction;
+  const estimate=auto([source],'2026-08-01');
+  const list=Array.isArray(estimate)?estimate:estimate.transactions;
+  assert.ok(list);
+  const manual=create({month:'2026-08',payDate:'2026-08-25',gross:'310000',deductions:'50000',accountId:'bank'}).transaction;
+  const next=auto([source,manual],'2026-08-01');
+  assert.equal(next.filter(t=>t.salary.month==='2026-08').length,0);
+  assert.equal(auto([source,...list],'2026-11-01').length,0);
+});
+
+test('東京五輪の特例休日は元の日と移動先を区別する', () => {
+  assert.equal(evaluate('fmt(prevBizDay(parseISO("2021-07-23")))'),'2021-07-21');
+  assert.equal(evaluate('fmt(prevBizDay(parseISO("2021-08-09")))'),'2021-08-06');
+  assert.equal(evaluate('fmt(prevBizDay(parseISO("2021-07-19")))'),'2021-07-19');
 });

@@ -31,6 +31,7 @@ function loadContext(stockUpdatedAt) {
   };
   const context = {
     localStorage,
+    portfolioStorage:localStorage,
     document: { getElementById: id => id === 'stockConflictBanner' ? banner : { textContent: '' } },
     stocks: [localStock], portfolioLog: [], collateralEntries: [], watchlist: [], transactions: [],
     transactionDeletions: {}, watchlistBudgetJPY: 0,

@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cashflow</title>
+  <script src="./account-storage.js"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='32' fill='%2310b981'/><text x='32' y='46' text-anchor='middle' font-family='sans-serif' font-size='38' font-weight='bold' fill='white'>¥</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -18,12 +19,20 @@
     .dark ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
     .dark input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7)}
     input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+    html{color-scheme:light;scroll-padding-bottom:6rem}
+    html.dark{color-scheme:dark}
+    button,a,summary,[role=button]{touch-action:manipulation}
+    button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid #6366f1;outline-offset:3px}
+    .dark button:focus-visible,.dark a:focus-visible,.dark summary:focus-visible,.dark [tabindex]:focus-visible{outline-color:#a5b4fc}
+    [role=dialog],[role=alertdialog]{overscroll-behavior:contain}
+    @media (pointer:coarse){button:not([role=tab]),summary{min-height:44px}input:not([type=checkbox]):not([type=radio]),select,textarea{font-size:16px!important}}
+    @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:0.01ms!important;transition-duration:0.01ms!important}}
   </style>
 </head>
 <body class="min-h-screen">
 <!-- Apply dark class before React renders to avoid flash -->
 <script>try{if(localStorage.getItem('cf_dark')==='1')document.documentElement.classList.add('dark')}catch{}</script>
-<div id="root"></div>
+<div id="root"><div style="max-width:32rem;margin:20vh auto;padding:24px;font-family:system-ui;text-align:center"><p role="status">Cashflow を読み込んでいます…</p><p style="font-size:14px">画面が切り替わらない場合は、通信状況を確認して再読み込みしてください。</p><button onclick="location.reload()" style="padding:12px 24px;border-radius:12px;border:1px solid #94a3b8">再読み込み</button></div></div>
 <script>
 const { useState, useEffect, useMemo, useRef, createElement: h } = React;
 
@@ -53,6 +62,11 @@ function jpHolidays(y){
   const autumn=Math.floor(23.2488+0.242194*(y-1980)-Math.floor((y-1980)/4));
   const set=new Set([[1,1],[1,nthMonday(y,1,2)],[2,11],[2,23],[3,vernal],[4,29],[5,3],[5,4],[5,5],
     [7,nthMonday(y,7,3)],[8,11],[9,nthMonday(y,9,3)],[9,autumn],[10,nthMonday(y,10,2)],[11,3],[11,23]].map(([m,d])=>k(m,d)));
+  // 内閣府の特例日程: https://www8.cao.go.jp/chosei/shukujitsu/gaiyou.html
+  if(y===2020||y===2021){
+    [[7,nthMonday(y,7,3)],[8,11],[10,nthMonday(y,10,2)]].forEach(([m,d])=>set.delete(k(m,d)));
+    (y===2020?[[7,23],[7,24],[8,10]]:[[7,22],[7,23],[8,8]]).forEach(([m,d])=>set.add(k(m,d)));
+  }
   [...set].forEach(ds=>{ // 国民の休日: 祝日に挟まれた平日
     const mid=addDays(parseISO(ds),1);
     if(!set.has(fmt(mid))&&set.has(fmt(addDays(mid,1)))&&mid.getDay()!==0) set.add(fmt(mid));
@@ -108,8 +122,14 @@ const INVESTMENT_LOCAL_ONLY=new URLSearchParams(window.location.search).get('loc
 const INVESTMENT_FULL_SRC=`${INVESTMENT_FULL_URL}?api=${encodeURIComponent(INVESTMENT_API)}${INVESTMENT_LOCAL_ONLY?'&local-only=1':''}`;
 const LS_CACHE_PREFIX='cf_cache_v2:';
 const LS_PENDING='cf_pending_v1';
-function localGet(key){try{return localStorage.getItem(key);}catch{return null;}}
-function localSet(key,value){try{localStorage.setItem(key,value);return true;}catch{return false;}}
+let accountStorage=null;
+function localGet(key){try{if(window.CashflowStorage&&!accountStorage&&key!=='cf_dark')return null;return (accountStorage||localStorage).getItem(key);}catch{return null;}}
+function localSet(key,value){try{if(window.CashflowStorage&&!accountStorage&&key!=='cf_dark')return false;(accountStorage||localStorage).setItem(key,value);return true;}catch{return false;}}
+async function assertAccountSession(){
+  if(!accountStorage)return;
+  const {data,error}=await _sb.auth.getSession();
+  if(error||data?.session?.user?.id!==accountStorage.userId)throw new Error('ログイン状態が変わりました。ページを開き直してください');
+}
 function readLocalCache(){
   try{return JSON.parse(localGet(LS_CACHE_PREFIX+'legacy')||'{}');}catch{return {};}
 }
@@ -145,17 +165,21 @@ function syncConflictError(key){
   return error;
 }
 async function _sbGet(key){
+  await assertAccountSession();
   const {data,error}=await _sb.from('user_data').select('value').eq('key',key).maybeSingle();
   if(error) throw error;
   return data?.value;
 }
 async function _sbSet(key,value){
+  await assertAccountSession();
   if(key==='sp_stocks'){
     const base=readStocksBase();
     if(base){const latest=await _sbGet('sp_stocks');if(Array.isArray(latest))value=mergeStockEdits(base,value,latest);}
   }
   const updated_at=new Date().toISOString();
   const known=DATA_KEYS.includes(key)?remoteStamps[key]:undefined;
+  // 読み込みに失敗して比較元がない家計データは、既存のクラウドを上書きしない。
+  if(DATA_KEYS.includes(key)&&known===undefined)throw syncConflictError(key);
   let result;
   if(known===null) result=await _sb.from('user_data').insert({key,value,updated_at}).select('updated_at');
   else if(known!==undefined) result=await _sb.from('user_data').update({value,updated_at}).eq('key',key).eq('updated_at',known).select('updated_at');
@@ -167,6 +191,7 @@ async function _sbSet(key,value){
   return value;
 }
 async function loadAllData(){
+  await assertAccountSession();
   const {data,error}=await _sb.from('user_data').select('key,value,updated_at').in('key',DATA_KEYS);
   if(error) throw error;
   const rows=Object.fromEntries((data||[]).map(row=>[row.key,row]));
@@ -176,6 +201,7 @@ async function loadAllData(){
   };
 }
 async function loadRemoteStamps(){
+  await assertAccountSession();
   const {data,error}=await _sb.from('user_data').select('key,updated_at').in('key',DATA_KEYS);
   if(error) throw error;
   const rows=Object.fromEntries((data||[]).map(row=>[row.key,row.updated_at]));
@@ -619,21 +645,101 @@ function downloadBlob(name,content,type){
 function downloadFullBackup(data){
   downloadBlob(`cashflow_backup_${todayStr()}.json`,JSON.stringify({version:2,exportedAt:new Date().toISOString(),...data},null,2),'application/json');
 }
+const LS_BEFORE_RESTORE='cf_before_restore_v1';
+function isDataObject(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
+function validateBackup(data){
+  const fail=message=>{throw new Error(`バックアップを復元できません: ${message}`);};
+  if(!isDataObject(data))fail('JSONの形式が正しくありません');
+  if(data.version!==undefined&&![1,2].includes(data.version))fail('このバージョンには対応していません');
+  const list=(value,label)=>{
+    if(!Array.isArray(value))fail(`${label}は一覧である必要があります`);
+    const ids=new Set();
+    value.forEach((item,index)=>{
+      if(!isDataObject(item)||typeof item.id!=='string'||!item.id.trim())fail(`${label}${index+1}件目のIDが不正です`);
+      if(ids.has(item.id))fail(`${label}のIDが重複しています`);
+      ids.add(item.id);
+    });
+    return value;
+  };
+  const amount=(value,label,negative=false)=>{
+    if(typeof value!=='number'||!Number.isFinite(value)||Math.abs(value)>Number.MAX_SAFE_INTEGER||(!negative&&value<0))fail(`${label}の金額が不正です`);
+  };
+  const date=(value,label,optional=false)=>{if(!(optional&&(value===undefined||value===null||value===''))&&!validTxDate(value))fail(`${label}の日付が不正です`);};
+  const optionalText=(item,fields,label)=>fields.forEach(field=>{if(item[field]!==undefined&&typeof item[field]!=='string')fail(`${label}の${field}が不正です`);});
+  const schedule=(item,label)=>{
+    for(const field of ['overrides','repaymentOverrides'])if(item[field]!==undefined){
+      if(!isDataObject(item[field]))fail(`${label}の確定額が不正です`);
+      Object.entries(item[field]).forEach(([key,value])=>{date(key,label);amount(value,label,true);});
+    }
+    for(const field of ['dateMoves','repaymentDateMoves'])if(item[field]!==undefined){
+      if(!isDataObject(item[field]))fail(`${label}の移動日が不正です`);
+      Object.entries(item[field]).forEach(([key,value])=>{date(key,label);date(value,label);});
+    }
+  };
+  const accounts=list(data.accounts,'口座'),transactions=list(data.transactions,'取引');
+  const loans=list(data.loans===undefined?[]:data.loans,'借入');
+  accounts.forEach(account=>{
+    if(typeof account.name!=='string'||!account.name.trim())fail('口座名が不正です');
+    optionalText(account,['bankName','color'],'口座');amount(account.balance,'口座残高',true);date(account.balanceAsOf,'残高基準日',true);
+    if(account.loanRepayments!==undefined)list(account.loanRepayments,'口座の返済履歴').forEach(item=>{amount(item.amount,'返済履歴');date(item.paidAt,'返済履歴');optionalText(item,['loanId','paymentId','label'],'返済履歴');});
+  });
+  transactions.forEach(tx=>{
+    if(typeof tx.label!=='string'||!tx.label.trim())fail('取引名が不正です');
+    if(!['income','expense','transfer'].includes(tx.type))fail('取引の種別が不正です');
+    amount(tx.amount,'取引');date(tx.startDate,'取引開始日');date(tx.endDate,'取引終了日',true);
+    if(tx.endDate&&tx.endDate<tx.startDate)fail('取引終了日が開始日より前です');
+    if(tx.recurring!==undefined&&typeof tx.recurring!=='boolean')fail('取引の繰り返し設定が不正です');
+    if(tx.recurring&&!Object.prototype.hasOwnProperty.call(FREQS,tx.frequency))fail('取引の頻度が不正です');
+    optionalText(tx,['accountId','fromAccountId','toAccountId','category','memo'],'取引');schedule(tx,'取引');
+    if(tx.salary!==undefined){
+      if(!isDataObject(tx.salary)||!/^\d{4}-(0[1-9]|1[0-2])$/.test(tx.salary.month||''))fail('給与の対象月が不正です');
+      optionalText(tx.salary,['employer','kind'],'給与');
+      for(const field of ['gross','socialInsurance','incomeTax','residentTax','otherDeductions','deductions'])if(tx.salary[field]!==undefined)amount(tx.salary[field],'給与');
+      date(tx.salary.payDate,'給与指定日',true);
+    }
+  });
+  loans.forEach(loan=>{
+    if(typeof loan.name!=='string'||!loan.name.trim())fail('借入名が不正です');
+    amount(loan.balance,'借入残高');
+    for(const field of ['originalAmount','monthlyPayment','interestRate'])if(loan[field]!==undefined)amount(loan[field],'借入');
+    optionalText(loan,['lender','notes','loanType','repaymentAccountId','repaymentTransactionId','color'],'借入');date(loan.nextPaymentDate,'次回返済日',true);schedule(loan,'借入');
+    if(loan.payments!==undefined)list(loan.payments,'返済履歴').forEach(item=>{amount(item.amount,'返済履歴');date(item.paidAt,'返済履歴');date(item.coversDate,'返済対象日',true);optionalText(item,['note','accountId'],'返済履歴');});
+    if(loan.borrowings!==undefined)list(loan.borrowings,'借入履歴').forEach(item=>{amount(item.amount,'借入履歴');date(item.date,'借入履歴');optionalText(item,['accountId','transactionId'],'借入履歴');});
+  });
+  const budgets=data.budgets===undefined?{}:data.budgets,preferences=data.preferences===undefined?{}:data.preferences,skipped=data.skipped===undefined?[]:data.skipped;
+  if(!isDataObject(budgets))fail('予算の形式が不正です');
+  Object.values(budgets).forEach(value=>amount(value,'予算'));
+  if(!Array.isArray(skipped)||skipped.some(value=>typeof value!=='string'))fail('予定から外した回の形式が不正です');
+  if(!isDataObject(preferences))fail('設定の形式が不正です');
+  for(const field of ['notifications','autoLoanPayments','autoSalary'])if(preferences[field]!==undefined&&typeof preferences[field]!=='boolean')fail('設定の形式が不正です');
+  for(const field of ['notifyDays','largePayment','lowBalance'])if(preferences[field]!==undefined)amount(preferences[field],'通知設定');
+  if(preferences.salaryAutoDismissed!==undefined&&(!Array.isArray(preferences.salaryAutoDismissed)||preferences.salaryAutoDismissed.some(value=>typeof value!=='string')))fail('給与予定の設定が不正です');
+  return {accounts,transactions,loans,budgets,skipped,preferences:{...DEFAULT_PREFS,...preferences}};
+}
+function readRecoveryBackup(){
+  try{const data=JSON.parse(localGet(LS_BEFORE_RESTORE)||'null');return isDataObject(data)&&Array.isArray(data.accounts)&&Array.isArray(data.transactions)?data:null;}catch{return null;}
+}
+function stageBackupRestore(next,current){
+  if(!localSet(LS_BEFORE_RESTORE,JSON.stringify({version:2,exportedAt:new Date().toISOString(),...current})))throw new Error('復元前の控えを端末に保存できません。空き容量を確保してから再試行してください');
+  // 一つの未同期記録へまとめ、途中失敗による口座と取引の食い違いを防ぐ。
+  if(!localSet(LS_PENDING,JSON.stringify({...readPending(),...next})))throw new Error('復元データを端末に保存できません。現在のデータは変更していません');
+}
 function parseCsvRows(text){
-  const rows=[]; let row=[],cell='',quoted=false;
+  const rows=[]; let row=[],cell='',quoted=false,closed=false;
   const src=String(text||'').replace(/^\uFEFF/,'');
   for(let i=0;i<src.length;i++){
     const ch=src[i];
     if(quoted){
       if(ch==='"'&&src[i+1]==='"'){cell+='"';i++;}
-      else if(ch==='"') quoted=false;
+      else if(ch==='"'){quoted=false;closed=true;}
       else cell+=ch;
-    } else if(ch==='"') quoted=true;
-    else if(ch===','){row.push(cell);cell='';}
-    else if(ch==='\n'){row.push(cell.replace(/\r$/,''));rows.push(row);row=[];cell='';}
-    else cell+=ch;
+    } else if(ch==='"'){if(cell||closed)throw new Error('CSVの引用符が不正です');quoted=true;}
+    else if(ch===','){row.push(cell);cell='';closed=false;}
+    else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&src[i+1]==='\n')i++;row.push(cell);rows.push(row);row=[];cell='';closed=false;}
+    else{if(closed)throw new Error('CSVの引用符の後に不要な文字があります');cell+=ch;}
   }
-  if(cell||row.length){row.push(cell.replace(/\r$/,''));rows.push(row);}
+  if(quoted)throw new Error('CSVの引用符が閉じられていません');
+  if(cell||row.length||closed){row.push(cell);rows.push(row);}
   return rows.filter(r=>r.some(v=>String(v).trim()));
 }
 // YYYY-MM-DD / YYYY/M/D を受け付け、無効なら null。
@@ -644,24 +750,30 @@ function csvDate(value){
   return validTxDate(ds)?ds:null;
 }
 function transactionsFromCsv(text,accounts){
-  const rows=parseCsvRows(text); if(rows.length<2) return {items:[],skipped:0};
+  const rows=parseCsvRows(text); if(!rows.length) return {items:[],skipped:0};
   const headers=rows[0].map(v=>v.trim());
+  if(new Set(headers).size!==headers.length)throw new Error('CSVの列名が重複しています');
+  const missing=['名前','種別','口座','金額','開始日'].filter(name=>!headers.includes(name));
+  if(missing.length)throw new Error(`CSVに必要な列がありません: ${missing.join('・')}`);
   const idx=name=>headers.indexOf(name);
-  const accountByName=Object.fromEntries(accounts.map(a=>[a.name,a]));
+  const accountsByName=new Map();
+  accounts.forEach(account=>{const name=account.name.trim();accountsByName.set(name,[...(accountsByName.get(name)||[]),account]);});
+  const findAccount=value=>{const matches=accountsByName.get(String(value||'').trim())||[];return matches.length===1?matches[0]:null;};
   let skipped=0;
   const items=rows.slice(1).map(row=>{
-    const typeLabel=row[idx('種別')]||'支出';
+    const typeLabel=(row[idx('種別')]||'').trim();
     const type=typeLabel==='収入'?'income':typeLabel==='振替'?'transfer':'expense';
     const rawAmount=parseJpAmt(row[idx('金額')]);
-    const account=accountByName[row[idx('口座')]];
-    const toAccount=accountByName[row[idx('振替先口座')]];
-    if(!row[idx('名前')]||!rawAmount||(!account&&type!=='transfer')||(type==='transfer'&&(!account||!toAccount||account.id===toAccount.id))){skipped++;return null;}
+    const account=findAccount(row[idx('口座')]);
+    const toAccount=findAccount(row[idx('振替先口座')]);
+    if(row.length!==headers.length||!['収入','支出','振替'].includes(typeLabel)||!row[idx('名前')]?.trim()||!Number.isSafeInteger(rawAmount)||rawAmount===0||(!account&&type!=='transfer')||(type==='transfer'&&(!account||!toAccount||account.id===toAccount.id))){skipped++;return null;}
     const freqLabel=(row[idx('頻度')]||'単発').trim();
     const frequency=Object.entries(FREQS).find(([,label])=>label===freqLabel)?.[0];
-    const startDate=csvDate(row[idx('開始日')])??(row[idx('開始日')]?.trim()?null:todayStr());
+    const startDate=csvDate(row[idx('開始日')]);
     const endDate=row[idx('終了日')]?.trim()?csvDate(row[idx('終了日')]):'';
-    const adjustBizDay=Object.entries(BIZ_ADJUST_LABELS).find(([,label])=>label===(row[idx('営業日調整')]||'').trim())?.[0]||'';
-    if((freqLabel!=='単発'&&!frequency)||!startDate||endDate===null||(endDate&&endDate<startDate)){skipped++;return null;}
+    const adjustLabel=(row[idx('営業日調整')]||'').trim();
+    const adjustBizDay=Object.entries(BIZ_ADJUST_LABELS).find(([,label])=>label===adjustLabel)?.[0]||'';
+    if((freqLabel!=='単発'&&!frequency)||!startDate||endDate===null||(endDate&&endDate<startDate)||(adjustLabel&&!adjustBizDay)){skipped++;return null;}
     return {id:genId(),label:row[idx('名前')].trim(),type,amount:Math.abs(rawAmount),category:row[idx('カテゴリ')]||'その他',accountId:type==='transfer'?'':(account?.id||''),fromAccountId:type==='transfer'?account.id:'',toAccountId:type==='transfer'?toAccount.id:'',overrides:{},recurring:freqLabel!=='単発',frequency:frequency||'monthly',startDate,endDate:endDate||null,adjustBizDay};
   }).filter(Boolean);
   return {items,skipped};
@@ -673,16 +785,54 @@ const selectCls='w-full border border-gray-200 dark:border-gray-600 rounded-xl p
 const labelCls='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1';
 const cardCls='bg-white dark:bg-gray-800 rounded-2xl shadow-[0_1px_8px_rgba(0,0,0,0.06)] dark:shadow-none border border-gray-100 dark:border-gray-700/60';
 
+// モーダルの重なりを管理し、最前面だけがキーボードを受け取る。
+const modalDialogStack=[];
+let modalBodyOverflow='';
+function useModalDialog(open,onClose){
+  const dialogRef=useRef(null);
+  const closeRef=useRef(onClose);
+  closeRef.current=onClose;
+  useEffect(()=>{
+    const dialog=dialogRef.current;
+    if(!open||!dialog)return;
+    const previous=document.activeElement;
+    const focusable=()=>[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])')].filter(el=>el.tabIndex>=0&&el.getClientRects().length>0);
+    if(!modalDialogStack.length){modalBodyOverflow=document.body.style.overflow;document.body.style.overflow='hidden';}
+    modalDialogStack.push(dialog);
+    dialog.tabIndex=-1;
+    if(!dialog.contains(document.activeElement))(dialog.querySelector('[data-dialog-initial-focus]')||focusable()[0]||dialog).focus({preventScroll:true});
+    const onKey=e=>{
+      if(modalDialogStack.at(-1)!==dialog||e.isComposing)return;
+      if(e.key==='Escape'&&closeRef.current){e.preventDefault();e.stopPropagation();closeRef.current();return;}
+      if(e.key!=='Tab')return;
+      const elements=focusable(),first=elements[0],last=elements.at(-1);
+      if(!first){e.preventDefault();dialog.focus();return;}
+      if(!dialog.contains(document.activeElement)||document.activeElement===dialog){e.preventDefault();(e.shiftKey?last:first).focus();}
+      else if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+      else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+    };
+    document.addEventListener('keydown',onKey,true);
+    return()=>{
+      document.removeEventListener('keydown',onKey,true);
+      const wasTop=modalDialogStack.at(-1)===dialog;
+      const index=modalDialogStack.indexOf(dialog);
+      if(index>=0)modalDialogStack.splice(index,1);
+      if(!modalDialogStack.length)document.body.style.overflow=modalBodyOverflow;
+      if(wasTop&&previous?.isConnected)previous.focus({preventScroll:true});
+    };
+  },[open]);
+  return dialogRef;
+}
+
 // ─── Toast notification system ────────────────────────
 function Toast({ toasts }){
-  if(!toasts.length) return null;
-  return h('div',{className:'fixed bottom-24 right-4 z-[100] space-y-2 pointer-events-none'},
+  return h('div',{'aria-live':'polite','aria-relevant':'additions text',className:'fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] right-4 left-4 sm:left-auto sm:max-w-md z-[400] space-y-2 pointer-events-none'},
     toasts.map(t=>h('div',{key:t.id,
-      className:`px-4 py-3 rounded-xl shadow-xl text-sm font-semibold text-white flex items-center gap-2 ${t.type==='error'?'bg-red-600':'bg-emerald-600'}`},
+      role:t.type==='error'?'alert':'status','aria-atomic':'true',className:`px-4 py-3 rounded-xl shadow-xl text-sm font-semibold text-white flex items-center gap-2 break-words ${t.type==='error'?'bg-red-700':'bg-emerald-700'}`},
       t.type==='error'
-        ? h('svg',{className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+        ? h('svg',{'aria-hidden':'true',className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
             h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M6 18L18 6M6 6l12 12'}))
-        : h('svg',{className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
+        : h('svg',{'aria-hidden':'true',className:'w-4 h-4 flex-shrink-0',fill:'none',stroke:'currentColor',viewBox:'0 0 24 24'},
             h('path',{strokeLinecap:'round',strokeLinejoin:'round',strokeWidth:2,d:'M5 13l4 4L19 7'})),
       t.message
     ))
@@ -691,14 +841,14 @@ function Toast({ toasts }){
 
 // ─── Confirm Dialog ────────────────────────────────────
 function ConfirmDialog({ title, message, onConfirm, onCancel, confirmLabel='削除する' }){
-  useEffect(()=>{const fn=e=>{if(e.key==='Escape')onCancel();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onCancel]);
+  const dialogRef=useModalDialog(true,onCancel);
   return h('div',{className:'fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-[200] px-4',onClick:e=>{if(e.target===e.currentTarget)onCancel();}},
-    h('div',{role:'alertdialog','aria-modal':'true','aria-labelledby':'confirm-title','aria-describedby':'confirm-message',className:'bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6'},
+    h('div',{ref:dialogRef,role:'alertdialog','aria-modal':'true','aria-labelledby':title?'confirm-title':undefined,'aria-label':title?undefined:'操作の確認','aria-describedby':'confirm-message',className:'bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6 max-h-[calc(100dvh-2rem)] overflow-y-auto'},
       title&&h('h3',{id:'confirm-title',className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-2'},title),
       h('p',{id:'confirm-message',className:'text-sm text-gray-500 dark:text-gray-400 mb-5'},message),
       h('div',{className:'flex gap-3'},
         h('button',{onClick:onConfirm,className:'flex-1 bg-red-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-red-700 active:bg-red-800 transition-colors shadow-sm'},confirmLabel),
-        h('button',{onClick:onCancel,className:'flex-1 border border-gray-200 dark:border-gray-600 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors'},'キャンセル')
+        h('button',{'data-dialog-initial-focus':true,onClick:onCancel,className:'flex-1 border border-gray-200 dark:border-gray-600 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors'},'キャンセル')
       )
     )
   );
@@ -975,11 +1125,13 @@ function salaryTransactionFromDraft(draft,existing){
   if(!draft.accountId) return {error:'入金口座を選択してください'};
   const employer=(draft.employer||'').trim();
   const name=kind==='summerBonus'?'夏季賞与':kind==='winterBonus'?'冬季賞与':'給与';
+  const paySchedule=kind==='monthly'?salaryPaySchedule({startDate:draft.payDate,salary:{month:draft.month,payDate:draft.payDate,paySchedule:draft.paySchedule}}):null;
   return {transaction:{
     ...(existing||{}),id:existing?.id||genId(),type:'income',category:'給与',
     label:employer?`${name}（${employer}）`:name,amount:gross-deductions,
-    accountId:draft.accountId,startDate:draft.payDate,recurring:false,
-    salary:{month:draft.month,kind,employer,gross,socialInsurance,incomeTax,residentTax,otherDeductions,deductions}
+    accountId:draft.accountId,startDate:fmt(prevBizDay(parseISO(draft.payDate))),recurring:false,
+    salary:{month:draft.month,kind,employer,gross,socialInsurance,incomeTax,residentTax,otherDeductions,deductions,
+      payDate:draft.payDate,...(paySchedule?{paySchedule}:{})}
   }};
 }
 
@@ -999,20 +1151,49 @@ function previousSalaryMonth(month){
   return fmt(addMonths(parseISO(`${month}-01`),-1)).slice(0,7);
 }
 
-function salaryDefaultPayDate(month,kind){
+function salaryDefaultScheduledPayDate(month,kind){
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||!['monthly','summerBonus','winterBonus'].includes(kind))return '';
   const [year,number]=month.split('-').map(Number);
   const date=kind==='monthly'?new Date(year,number,0):new Date(year,number-1,15);
-  const day=date.getDay();
-  if(day===0)date.setDate(date.getDate()-2);
-  if(day===6)date.setDate(date.getDate()-1);
   return fmt(date);
+}
+
+function salaryDefaultPayDate(month,kind){
+  const scheduled=salaryDefaultScheduledPayDate(month,kind);
+  return scheduled?fmt(prevBizDay(parseISO(scheduled))):'';
+}
+
+// 指定日を保持し、休日の繰上げや2月の月末調整が次月の支給日に影響しないようにする。
+function salaryScheduledPayDate(month,schedule){
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month||'')||!schedule||
+    !Number.isInteger(schedule.day)||schedule.day<1||schedule.day>31||!Number.isSafeInteger(schedule.monthOffset))return '';
+  const [year,number]=month.split('-').map(Number);
+  const date=new Date(year,number-1+schedule.monthOffset,1);
+  const last=new Date(date.getFullYear(),date.getMonth()+1,0).getDate();
+  date.setDate(schedule.monthEnd?last:Math.min(schedule.day,last));
+  const result=fmt(date);
+  return validTxDate(result)?result:'';
+}
+
+function salaryPaySchedule(tx){
+  const salary=tx?.salary;
+  const specified=validTxDate(salary?.payDate)?salary.payDate:tx?.startDate;
+  if(!salary||!/^\d{4}-(0[1-9]|1[0-2])$/.test(salary.month||'')||!validTxDate(specified))return null;
+  if(salaryScheduledPayDate(salary.month,salary.paySchedule)===specified)return {...salary.paySchedule};
+  const [year,month,day]=specified.split('-').map(Number);
+  const monthOffset=(year-Number(salary.month.slice(0,4)))*12+month-Number(salary.month.slice(5));
+  const monthEnd=day===new Date(year,month,0).getDate()||
+    (!salary.payDate&&specified===salaryDefaultPayDate(salary.month,'monthly'));
+  return {day,monthOffset,monthEnd};
 }
 
 function salaryDraftFromSource(tx,targetMonth){
   if(!tx?.salary||!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth||''))return null;
   const part=salaryBreakdown(tx);
-  return {month:targetMonth,payDate:salaryDefaultPayDate(targetMonth,'monthly'),kind:'monthly',
+  const paySchedule=salaryPaySchedule(tx);
+  const payDate=salaryScheduledPayDate(targetMonth,paySchedule);
+  if(!payDate)return null;
+  return {month:targetMonth,payDate,paySchedule,kind:'monthly',
     employer:tx.salary.employer||'',gross:String(part.gross),socialInsurance:String(part.socialInsurance),
     incomeTax:String(part.incomeTax),residentTax:String(part.residentTax),
     otherDeductions:String(part.otherDeductions),accountId:tx.accountId||''};
@@ -1047,6 +1228,7 @@ function monthlyRunRate(txs,currentMonth){
 
 function salaryBulkCopyPlan(records,source,startMonth,endMonth){
   if(!source?.salary||source.salary.kind&&source.salary.kind!=='monthly')return {error:'月給の明細をコピー元に選んでください',rows:[]};
+  if(!salaryPaySchedule(source))return {error:'コピー元の対象月と支給日を確認してください',rows:[]};
   const validMonth=value=>/^\d{4}-(0[1-9]|1[0-2])$/.test(value||'');
   if(!validMonth(startMonth)||!validMonth(endMonth))return {error:'開始月と終了月を選択してください',rows:[]};
   const monthIndex=value=>Number(value.slice(0,4))*12+Number(value.slice(5))-1;
@@ -1058,7 +1240,7 @@ function salaryBulkCopyPlan(records,source,startMonth,endMonth){
   const rows=[];
   for(let index=start;index<=end;index++){
     const month=`${String(Math.floor(index/12)).padStart(4,'0')}-${String(index%12+1).padStart(2,'0')}`;
-    rows.push({month,payDate:salaryDefaultPayDate(month,'monthly'),status:month===source.salary.month?'コピー元':existing.has(month)?'登録済み':'作成'});
+    rows.push({month,payDate:salaryPayDateLike(source,month),status:month===source.salary.month?'コピー元':existing.has(month)?'登録済み':'作成'});
   }
   return {error:'',rows};
 }
@@ -1096,12 +1278,10 @@ function autoLoanPayments(loans,txs,accounts,today=todayStr()){
   }
   return {loans:nextLoans,accounts:nextAccounts,records};
 }
-// 前回の支給日が月末基準ならその月の既定日、そうでなければ同じ日付（休日なら前営業日）。
+// コピー元の指定日・月末払い・翌月払いを引き継ぎ、土日祝なら前営業日にする。
 function salaryPayDateLike(source,month){
-  if(source.startDate===salaryDefaultPayDate(source.salary.month,'monthly'))return salaryDefaultPayDate(month,'monthly');
-  const [year,number]=month.split('-').map(Number);
-  const day=Math.min(Number(source.startDate.slice(8)),new Date(year,number,0).getDate());
-  return fmt(prevBizDay(new Date(year,number-1,day)));
+  const specified=salaryScheduledPayDate(month,salaryPaySchedule(source));
+  return specified?fmt(prevBizDay(parseISO(specified))):'';
 }
 // 勤務先ごとに最新の月給と同じ内容で、来月分までの月給を「仮」で用意する。
 // 3か月以上登録のない勤務先は対象外。削除した仮の月給（dismissed）は作り直さない。
@@ -1109,19 +1289,23 @@ function autoSalaryEstimates(txs,today=todayStr(),dismissed=[]){
   const shift=(month,n)=>fmt(addMonths(parseISO(`${month}-01`),n)).slice(0,7);
   const currentMonth=today.slice(0,7),lastMonth=shift(currentMonth,1),oldest=shift(currentMonth,-2);
   const latest=new Map();
-  txs.filter(tx=>tx.type==='income'&&tx.salary&&(!tx.salary.kind||tx.salary.kind==='monthly')&&
-    /^\d{4}-(0[1-9]|1[0-2])$/.test(tx.salary.month||'')&&validTxDate(tx.startDate))
+  txs.filter(tx=>tx.type==='income'&&tx.salary&&!tx.salary.estimated&&(!tx.salary.kind||tx.salary.kind==='monthly')&&
+    /^\d{4}-(0[1-9]|1[0-2])$/.test(tx.salary.month||'')&&tx.salary.month<=currentMonth&&validTxDate(tx.startDate))
     .forEach(tx=>{
       const employer=(tx.salary.employer||'').trim(),previous=latest.get(employer);
       if(!previous||previous.salary.month<tx.salary.month)latest.set(employer,tx);
     });
   const skip=new Set(dismissed),ids=new Set(txs.map(tx=>tx.id)),created=[];
+  const registered=new Set(txs.filter(tx=>tx.type==='income'&&tx.salary&&(!tx.salary.kind||tx.salary.kind==='monthly'))
+    .map(tx=>`${(tx.salary.employer||'').trim()}|${tx.salary.month}`));
   latest.forEach((source,employer)=>{
     if(source.salary.month<oldest)return;
     for(let month=shift(source.salary.month,1);month<=lastMonth;month=shift(month,1)){
       const id=`salary-auto:${employer}:${month}`;
-      if(skip.has(`${employer}|${month}`)||ids.has(id))continue;
-      const result=salaryTransactionFromDraft({...salaryDraftFromSource(source,month),payDate:salaryPayDateLike(source,month),accountId:source.accountId});
+      if(skip.has(`${employer}|${month}`)||ids.has(id)||registered.has(`${employer}|${month}`))continue;
+      const draft=salaryDraftFromSource(source,month);
+      if(!draft)continue;
+      const result=salaryTransactionFromDraft(draft);
       if(result.error)continue;
       created.push({...result.transaction,id,salary:{...result.transaction.salary,estimated:true}});
     }
@@ -1363,8 +1547,6 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   const [deleteTarget,setDeleteTarget]=useState(null);
   const [bulkCopy,setBulkCopy]=useState(null);
   const bulkPanelRef=useRef(null);
-  const editDialogRef=useRef(null);
-  const editReturnFocusRef=useRef(null);
   const salaryAccount=accounts.find(account=>account.name?.trim()==='千葉銀')||accounts.find(account=>account.name?.trim()==='千葉銀行');
   const records=txs.filter(tx=>tx.salary&&tx.type==='income');
   const existingSalaryCount=txs.filter(tx=>tx.type==='income'&&tx.category==='給与'&&!tx.salary).length;
@@ -1387,22 +1569,17 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   }
   const showOther=totals.otherDeductions>0;
   const money=n=>`¥${Number(n||0).toLocaleString()}`;
-  const change=(key,value)=>setForm(current=>({...current,[key]:value,...(key==='kind'?{payDate:salaryDefaultPayDate(current.month,value)}:{})}));
+  const change=(key,value)=>setForm(current=>({...current,[key]:value,...(key==='kind'?{payDate:salaryDefaultScheduledPayDate(current.month,value),paySchedule:null}:key==='payDate'?{paySchedule:null}:{})}));
   const close=()=>{setForm(null);setEditId(null);setError('');};
+  const editDialogRef=useModalDialog(!!editId,close);
   const previousMonth=previousSalaryMonth(form?.month);
   const previousCandidates=records.filter(tx=>tx.salary.month===previousMonth&&(!tx.salary.kind||tx.salary.kind==='monthly'));
   const bulkSource=bulkCopy&&records.find(tx=>tx.id===bulkCopy.sourceId);
   const bulkPlan=bulkSource?salaryBulkCopyPlan(records,bulkSource,bulkCopy.startMonth,bulkCopy.endMonth):null;
   useEffect(()=>{
-    if(!form)return;
+    if(!form||editId)return;
     const onKey=e=>{
-      if(e.key==='Escape'){close();return;}
-      if(e.key!=='Tab'||!editId||!editDialogRef.current)return;
-      const focusable=[...editDialogRef.current.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(element=>!element.disabled);
-      if(!focusable.length)return;
-      const first=focusable[0],last=focusable.at(-1);
-      if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
-      else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+      if(e.key==='Escape'&&!e.isComposing)close();
     };
     document.addEventListener('keydown',onKey);
     return()=>document.removeEventListener('keydown',onKey);
@@ -1410,19 +1587,12 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   useEffect(()=>{
     if(bulkCopy?.sourceId)bulkPanelRef.current?.scrollIntoView({behavior:'smooth',block:'start'});
   },[bulkCopy?.sourceId]);
-  useEffect(()=>{
-    if(!editId)return;
-    const previousOverflow=document.body.style.overflow;
-    document.body.style.overflow='hidden';
-    editDialogRef.current?.querySelector('#salary-kind')?.focus();
-    return()=>{document.body.style.overflow=previousOverflow;editReturnFocusRef.current?.focus?.();};
-  },[editId]);
   function add(kind='monthly'){
     const month=todayStr().slice(0,7);
     setBulkCopy(null);
     setYear(Number(month.slice(0,4)));
     setEditId(null);
-    setForm({month,payDate:salaryDefaultPayDate(month,kind),kind,employer:'',gross:'',socialInsurance:'0',incomeTax:'0',residentTax:'0',otherDeductions:'0',accountId:salaryAccount?.id||''});
+    setForm({month,payDate:salaryDefaultScheduledPayDate(month,kind),kind,employer:'',gross:'',socialInsurance:'0',incomeTax:'0',residentTax:'0',otherDeductions:'0',accountId:salaryAccount?.id||''});
     setError('');
   }
   function copyPrevious(month,sourceId){
@@ -1440,11 +1610,10 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   }
   function edit(tx){
     setBulkCopy(null);
-    if(typeof document!=='undefined')editReturnFocusRef.current=document.activeElement;
     const part=salaryBreakdown(tx);
     setYear(Number(tx.salary.month.slice(0,4)));
     setEditId(tx.id);
-    setForm({month:tx.salary.month,payDate:tx.startDate,kind:tx.salary.kind||'monthly',employer:tx.salary.employer||'',gross:String(part.gross),socialInsurance:String(part.socialInsurance),incomeTax:String(part.incomeTax),residentTax:String(part.residentTax),otherDeductions:String(part.otherDeductions),accountId:salaryAccount?.id||'',originalAccountId:tx.accountId||''});
+    setForm({month:tx.salary.month,payDate:tx.salary.payDate||tx.startDate,paySchedule:salaryPaySchedule(tx),kind:tx.salary.kind||'monthly',employer:tx.salary.employer||'',gross:String(part.gross),socialInsurance:String(part.socialInsurance),incomeTax:String(part.incomeTax),residentTax:String(part.residentTax),otherDeductions:String(part.otherDeductions),accountId:salaryAccount?.id||'',originalAccountId:tx.accountId||''});
     setError('');
   }
   function openBulkCopy(tx){
@@ -1491,7 +1660,8 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
   const deductionValues=['socialInsurance','incomeTax','residentTax','otherDeductions'].map(key=>parseJpAmt(form?.[key]));
   const deductions=deductionValues.every(value=>Number.isSafeInteger(value)&&value>=0)?deductionValues.reduce((sum,value)=>sum+value,0):null;
   const net=Number.isSafeInteger(gross)&&Number.isSafeInteger(deductions)?gross-deductions:null;
-  const defaultPayDate=form?salaryDefaultPayDate(form.month,form.kind):'';
+  const defaultPayDate=form?salaryDefaultScheduledPayDate(form.month,form.kind):'';
+  const depositDate=validTxDate(form?.payDate)?fmt(prevBizDay(parseISO(form.payDate))):'';
   const columns=[['gross','額面'],['socialInsurance','社保'],['incomeTax','源泉所得税'],['residentTax','住民税'],...(showOther?[['otherDeductions','その他控除']]:[]),['net','振込']];
   const amountText=value=>Number(value||0).toLocaleString();
   const salaryName=tx=>tx.salary.kind==='summerBonus'?'夏季賞与':tx.salary.kind==='winterBonus'?'冬季賞与':`${Number(tx.salary.month.slice(5))}月の給与`;
@@ -1515,14 +1685,14 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
       error&&h('p',{role:'alert',className:'mb-3 text-sm text-rose-600 dark:text-rose-400'},error),
       h('form',{onSubmit:save,className:'grid grid-cols-1 sm:grid-cols-2 gap-4'},
         h('div',{className:'sm:col-span-2'},h('label',{htmlFor:'salary-kind',className:labelCls},'区分 *'),h('select',{id:'salary-kind',value:form.kind,onChange:e=>change('kind',e.target.value),className:inputCls},[['monthly','月給'],['summerBonus','夏季賞与'],['winterBonus','冬季賞与']].map(([value,label])=>h('option',{key:value,value},label)))),
-        h('div',null,h('label',{htmlFor:'salary-month',className:labelCls},'対象月 *'),h('input',{id:'salary-month',type:'month',required:true,value:form.month,onChange:e=>setForm(current=>({...current,month:e.target.value,payDate:salaryDefaultPayDate(e.target.value,current.kind),copySourceId:'',copiedFrom:''})),className:inputCls})),
-        h('div',null,h('label',{htmlFor:'salary-pay-date',className:labelCls},'支給日 *'),h('div',{className:'flex items-center gap-2'},h('input',{id:'salary-pay-date',type:'date',required:true,value:form.payDate,onChange:e=>change('payDate',e.target.value),className:inputCls}),form.payDate!==defaultPayDate&&defaultPayDate&&h('button',{type:'button',onClick:()=>change('payDate',defaultPayDate),className:'shrink-0 rounded-lg border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},'規定日に戻す')),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},'月給は月末、賞与は15日。土日は直前の金曜日に繰り上げます。日付は手動で変更できます。')),
+        h('div',null,h('label',{htmlFor:'salary-month',className:labelCls},'対象月 *'),h('input',{id:'salary-month',type:'month',required:true,value:form.month,onChange:e=>setForm(current=>({...current,month:e.target.value,payDate:salaryDefaultScheduledPayDate(e.target.value,current.kind),paySchedule:null,copySourceId:'',copiedFrom:''})),className:inputCls})),
+        h('div',null,h('label',{htmlFor:'salary-pay-date',className:labelCls},'指定支給日 *'),h('div',{className:'flex items-center gap-2'},h('input',{id:'salary-pay-date',type:'date',required:true,value:form.payDate,onChange:e=>change('payDate',e.target.value),'aria-describedby':'salary-deposit-date',className:inputCls}),form.payDate!==defaultPayDate&&defaultPayDate&&h('button',{type:'button',onClick:()=>change('payDate',defaultPayDate),className:'shrink-0 rounded-lg border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},'規定日に戻す')),h('p',{className:'mt-1 text-xs text-gray-500 dark:text-gray-400'},'月給は月末、賞与は15日が初期値です。指定日が土日祝なら前営業日に振り込みます。'),h('p',{id:'salary-deposit-date',role:'status',className:'mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300'},depositDate?`振込日: ${fmtDisp(depositDate)}${depositDate!==form.payDate?'（土日祝のため繰上げ）':''}`:'指定支給日を入力してください')),
         form.kind==='monthly'&&!editId&&previousCandidates.length>0&&h('div',{className:'sm:col-span-2 rounded-xl border border-gray-200 dark:border-gray-700 p-3'},
           h('div',{className:'flex flex-wrap items-center gap-2'},
             h('button',{type:'button',onClick:()=>copyPrevious(form.month,form.copySourceId),className:'rounded-lg border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300'},`${previousMonth||'前月'}の月給をコピー`),
             previousCandidates.length>1&&h('select',{value:form.copySourceId||'',onChange:e=>change('copySourceId',e.target.value),'aria-label':'コピー元の給与を選択',className:'rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-800 dark:text-gray-100'},h('option',{value:''},'コピー元を選択'),previousCandidates.map((tx,index)=>h('option',{key:tx.id,value:tx.id},`${index+1}. ${fmtDisp(tx.startDate)} · ${money(tx.amount)}`)))
           ),
-          h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除を転記し、入金口座は千葉銀、支給日は対象月の月末（土日は直前の金曜日）に設定します。保存前に内容を確認してください。'),
+          h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400'},'額面・控除と指定支給日を引き継ぎます。月末払い・翌月払いも保持し、土日祝は前営業日に調整します。保存前に内容を確認してください。'),
           form.copiedFrom&&h('p',{className:'mt-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300'},`${form.copiedFrom}の給与をコピーしました。まだ保存されていません。`)
         ),
         h('div',null,h('p',{className:labelCls},'入金口座'),h('p',{className:'rounded-xl border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 px-3 py-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100'},salaryAccount?'千葉銀（固定）':'千葉銀（未登録）'),editId&&salaryAccount&&form.originalAccountId&&form.originalAccountId!==salaryAccount.id&&h('p',{className:'mt-1 text-xs text-amber-700 dark:text-amber-300'},`現在の入金口座は${accounts.find(account=>account.id===form.originalAccountId)?.name||'別の口座'}です。保存すると千葉銀に変更します。`)),
@@ -1566,7 +1736,7 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
         ),
         bulkCopy?.sourceId===tx.id&&bulkPlan&&h('form',{ref:bulkPanelRef,onSubmit:saveBulkCopy,className:'mt-4 scroll-mt-20 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/20 p-4'},
           h('h4',{className:'font-semibold text-gray-900 dark:text-gray-100'},`${Number(tx.salary.month.slice(5))}月の月給をまとめてコピー`),
-          h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300'},'額面・控除を同じ内容で複製します。入金口座は千葉銀、各月の支給日は月末（土日は直前の金曜日）です。'),
+          h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300'},'額面・控除と指定支給日を各月へ引き継ぎます。入金口座は千葉銀、土日祝は前営業日に調整します。'),
           h('div',{className:'mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3'},
             h('div',null,h('label',{htmlFor:'salary-copy-start',className:labelCls},'開始月'),h('input',{id:'salary-copy-start',type:'month',required:true,value:bulkCopy.startMonth,onChange:e=>setBulkCopy(current=>({...current,startMonth:e.target.value,error:''})),className:inputCls})),
             h('div',null,h('label',{htmlFor:'salary-copy-end',className:labelCls},'終了月'),h('input',{id:'salary-copy-end',type:'month',required:true,value:bulkCopy.endMonth,onChange:e=>setBulkCopy(current=>({...current,endMonth:e.target.value,error:''})),className:inputCls}))
@@ -3365,7 +3535,7 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
 
 function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,loans,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport,userEmail}){
   const [message,setMessage]=useState('');
-  useEffect(()=>{const fn=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onClose]);
+  const dialogRef=useModalDialog(true,onClose);
   function readFile(file,handler){
     if(!file)return; const reader=new FileReader();
     reader.onload=()=>{try{handler(String(reader.result||''));}catch(e){setMessage(`読み込み失敗: ${e.message}`);}};
@@ -3378,7 +3548,7 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
     setMessage(permission==='granted'?'通知を有効にしました':'通知が許可されませんでした');
   }
   return h('div',{className:'fixed inset-0 bg-black/50 dark:bg-black/70 z-50 flex items-end sm:items-center justify-center sm:p-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
-    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'preferences-title',className:'bg-white dark:bg-gray-900 rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-xl flex flex-col overflow-hidden',style:{maxHeight:'90vh'}},
+    h('div',{ref:dialogRef,role:'dialog','aria-modal':'true','aria-labelledby':'preferences-title',className:'bg-white dark:bg-gray-900 rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-xl flex flex-col overflow-hidden',style:{maxHeight:'90dvh'}},
       h('div',{className:'flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800'},h('h2',{id:'preferences-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'設定'),h('button',{onClick:onClose,'aria-label':'設定を閉じる',className:'w-8 h-8 rounded-full text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'},'✕')),
       h('div',{className:'overflow-y-auto p-5 space-y-5'},
         h('section',{className:cardCls+' p-4'},
@@ -3409,11 +3579,12 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
         ),
         h('section',{className:cardCls+' p-4 flex items-center justify-between gap-3'},
           h('div',{className:'min-w-0'},h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100'},'アカウント'),h('p',{className:'text-xs text-gray-400 mt-0.5 truncate'},userEmail?`${userEmail} でログイン中`:'ログイン中')),
-          h('button',{onClick:signOut,className:'shrink-0 text-xs font-semibold text-rose-600 border border-rose-200 dark:border-rose-800 rounded-lg px-3 py-2'},'ログアウト')
+          h('button',{onClick:()=>signOut().catch(()=>setMessage('ログアウトできませんでした。通信状況を確認して再試行してください。')),className:'shrink-0 text-xs font-semibold text-rose-600 border border-rose-200 dark:border-rose-800 rounded-lg px-3 py-2'},'ログアウト')
         ),
         h('section',{className:cardCls+' p-4'},
           h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'バックアップ・取り込み'),
-          h('p',{className:'text-xs text-gray-400 mb-3'},'口座・取引・予算・予定から外した回をまとめて保存できます。'),
+          h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-3'},'口座・取引・給与・借入・予算・設定を保存できます。投資の明細は投資画面から書き出してください。復元前の内容は端末に控えを残します。'),
+          readRecoveryBackup()&&h('button',{type:'button',onClick:()=>downloadFullBackup(readRecoveryBackup()),className:'mb-3 text-sm font-semibold text-indigo-700 dark:text-indigo-300 underline'},'前回の復元前データをダウンロード'),
           h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-2'},
             h('button',{onClick:()=>downloadFullBackup({accounts,transactions:txs,loans,budgets,skipped,preferences:prefs}),className:'border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300'},'JSONバックアップ'),
             h('label',{className:'text-center border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer'},'JSONを復元',h('input',{type:'file',accept:'.json,application/json',className:'sr-only',onChange:e=>readFile(e.target.files?.[0],text=>onRestore(JSON.parse(text)))})),
@@ -3479,9 +3650,10 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
     const balance=form.balance===''?NaN:Number(form.balance);
     const original=form.originalAmount===''?(Number.isNaN(balance)?0:balance):Number(form.originalAmount);
     if(!form.name.trim()){setErr('借入名を入力してください');return;}
-    if(Number.isNaN(balance)||balance<0){setErr('現在残高を入力してください');return;}
+    if(!Number.isSafeInteger(balance)||balance<0){setErr('現在残高を0以上の整数の円で入力してください');return;}
+    if(!Number.isSafeInteger(original)||original<0){setErr('借入総額を0以上の整数の円で入力してください');return;}
     if(original<balance){setErr('借入総額は現在残高以上で入力してください');return;}
-    if(Number(form.interestRate||0)<0||Number(form.monthlyPayment||0)<0){setErr('金利・返済額は0以上で入力してください');return;}
+    if(!Number.isFinite(Number(form.interestRate||0))||Number(form.interestRate||0)<0||Number(form.monthlyPayment||0)<0){setErr('金利・返済額は0以上で入力してください');return;}
     if(!Number.isSafeInteger(Number(form.monthlyPayment||0))){setErr('月間返済額は整数の円で入力してください');return;}
     if(form.nextPaymentDate&&!validTxDate(form.nextPaymentDate)){setErr('有効な次回返済日を入力してください');return;}
     if(form.repaymentAccountId&&!accounts.some(account=>account.id===form.repaymentAccountId)){setErr('返済元口座を選び直してください');return;}
@@ -3980,7 +4152,7 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
   },[mode]);
   useEffect(()=>{
     const receive=e=>{
-      if(e.origin!==window.location.origin||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
+      if(e.origin!==window.location.origin||e.source!==frameRef.current?.contentWindow||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
       onEmbeddedChange&&onEmbeddedChange({stocks:e.data.stocks,log:e.data.log,collateral:e.data.collateral});
     };
     window.addEventListener('message',receive);
@@ -4023,15 +4195,26 @@ function AppNavigation({active,onChange}){
   const buttons=items.map(([id,label])=>h('button',{key:id,onClick:()=>onChange(id),'aria-current':active===id?'page':undefined,className:`flex items-center justify-center gap-1.5 rounded-lg transition-colors ${active===id?'text-white bg-slate-900 dark:bg-slate-100 dark:text-slate-950':'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800'}`},icon(id),h('span',{className:'text-[10px] sm:text-sm font-semibold'},label)));
   // スマホの下部バーはよく使う4つ＋「その他」に絞る（PCの上部バーは全項目）。
   const [moreOpen,setMoreOpen]=useState(false);
+  const moreMenuRef=useRef(null),moreButtonRef=useRef(null);
+  useEffect(()=>{if(moreOpen)moreMenuRef.current?.querySelector('button')?.focus();},[moreOpen]);
+  const moreKeyDown=e=>{
+    if(e.isComposing)return;
+    if(e.key==='Escape'){e.preventDefault();setMoreOpen(false);moreButtonRef.current?.focus();return;}
+    if(e.key==='Tab'){setMoreOpen(false);moreButtonRef.current?.focus();return;}
+    const buttons=[...moreMenuRef.current.querySelectorAll('button')];
+    const index=buttons.indexOf(document.activeElement);
+    const next=e.key==='Home'?0:e.key==='End'?buttons.length-1:['ArrowRight','ArrowDown'].includes(e.key)?(index+1)%buttons.length:['ArrowLeft','ArrowUp'].includes(e.key)?(index-1+buttons.length)%buttons.length:null;
+    if(next!==null){e.preventDefault();buttons[next]?.focus();}
+  };
   const moreIds=['salary','accounts','loans'];
   const moreActive=moreIds.includes(active);
-  const mobileItem=(id,label,iconNode,isActive,onClick)=>h('button',{key:id,type:'button',onClick,'aria-current':isActive?'page':undefined,className:`flex flex-col items-center justify-center gap-1 rounded-lg py-1.5 transition-colors ${isActive?'text-white bg-slate-900 dark:bg-slate-100 dark:text-slate-950':'text-gray-500 dark:text-gray-400'}`},iconNode,h('span',{className:'text-[11px] font-semibold'},label));
+  const mobileItem=(id,label,iconNode,isActive,onClick)=>h('button',{key:id,type:'button',onClick,ref:id==='more'?moreButtonRef:undefined,'aria-expanded':id==='more'?moreOpen:undefined,'aria-controls':id==='more'?'more-navigation':undefined,'aria-haspopup':id==='more'?'menu':undefined,'aria-current':isActive&&(id!=='more'||moreActive)?'page':undefined,className:`flex flex-col items-center justify-center gap-1 rounded-lg py-1.5 transition-colors ${isActive?'text-white bg-slate-900 dark:bg-slate-100 dark:text-slate-950':'text-gray-500 dark:text-gray-400'}`},iconNode,h('span',{className:'text-[11px] font-semibold'},label));
   const go=id=>{setMoreOpen(false);onChange(id);};
   const moreIcon=h('svg',{className:'w-[18px] h-[18px]',viewBox:'0 0 24 24',fill:'currentColor','aria-hidden':'true'},h('circle',{cx:'5',cy:'12',r:'1.8'}),h('circle',{cx:'12',cy:'12',r:'1.8'}),h('circle',{cx:'19',cy:'12',r:'1.8'}));
   return h(React.Fragment,null,
     h('nav',{className:'hidden lg:grid grid-cols-7 gap-1 w-[34rem]','aria-label':'メインナビゲーション'},buttons),
     moreOpen&&h('div',{className:'lg:hidden fixed inset-0 z-40 bg-black/20',onClick:()=>setMoreOpen(false)}),
-    moreOpen&&h('div',{role:'menu','aria-label':'その他のメニュー',className:'lg:hidden fixed inset-x-3 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-50 grid grid-cols-3 gap-2 rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 shadow-xl'},
+    moreOpen&&h('div',{id:'more-navigation',ref:moreMenuRef,role:'menu',onKeyDown:moreKeyDown,'aria-label':'その他のメニュー',className:'lg:hidden fixed inset-x-3 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] z-50 grid grid-cols-3 gap-2 rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 shadow-xl'},
       [['salary','給与'],['accounts','口座'],['loans','借入']].map(([id,label])=>h('button',{key:id,type:'button',role:'menuitem',onClick:()=>go(id),'aria-current':active===id?'page':undefined,className:`flex flex-col items-center gap-1 rounded-xl py-3 ${active===id?'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950':'text-gray-700 dark:text-gray-200 bg-gray-50 dark:bg-gray-800'}`},icon(id),h('span',{className:'text-xs font-semibold'},label)))
     ),
     h('nav',{className:'lg:hidden fixed bottom-0 inset-x-0 z-50 grid grid-cols-5 gap-1 bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-t border-gray-200 dark:border-gray-800 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]','aria-label':'メインナビゲーション'},
@@ -4056,7 +4239,8 @@ function AuthScreen({mode,onDone}){
   const [info,setInfo]=useState('');
   const recovery=mode==='recovery';
   async function submit(e){
-    e.preventDefault();setError('');setInfo('');
+    e.preventDefault();if(busy)return;setError('');setInfo('');
+    try{
     if(recovery){
       if(password.length<8){setError('パスワードは8文字以上にしてください');return;}
       setBusy(true);
@@ -4070,13 +4254,20 @@ function AuthScreen({mode,onDone}){
     const {error:err}=await _sb.auth.signInWithPassword({email:email.trim(),password});
     setBusy(false);
     if(err)setError(/invalid/i.test(err.message)?'メールアドレスまたはパスワードが違います':'ログインできませんでした: '+err.message);
+    }catch{setError('通信できませんでした。接続を確認して再試行してください。');}
+    finally{setBusy(false);}
   }
   async function forgot(){
+    if(busy)return;
     setError('');setInfo('');
     if(!email.trim()){setError('先にメールアドレスを入力してください');return;}
+    setBusy(true);
+    try{
     const {error:err}=await _sb.auth.resetPasswordForEmail(email.trim(),{redirectTo:window.location.origin+window.location.pathname});
     if(err)setError('送信できませんでした: '+err.message);
     else setInfo('パスワード再設定のメールを送りました。メール内のリンクから開いてください。');
+    }catch{setError('通信できませんでした。接続を確認して再試行してください。');}
+    finally{setBusy(false);}
   }
   return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center px-4'},
     h('form',{onSubmit:submit,className:cardCls+' w-full max-w-sm p-6 space-y-4'},
@@ -4086,33 +4277,58 @@ function AuthScreen({mode,onDone}){
       ),
       !recovery&&h('div',null,h('label',{htmlFor:'login-email',className:labelCls},'メールアドレス'),h('input',{id:'login-email',type:'email',autoComplete:'username',className:inputCls,value:email,onChange:e=>setEmail(e.target.value)})),
       h('div',null,h('label',{htmlFor:'login-password',className:labelCls},recovery?'新しいパスワード（8文字以上）':'パスワード'),h('input',{id:'login-password',type:'password',autoComplete:recovery?'new-password':'current-password',className:inputCls,value:password,onChange:e=>setPassword(e.target.value)})),
-      error&&h('p',{role:'alert',className:'text-sm text-rose-600'},error),
+      error&&h('p',{role:'alert',className:'text-sm text-rose-600 dark:text-rose-400'},error),
       info&&h('p',{className:'text-sm text-emerald-700 dark:text-emerald-400'},info),
       h('button',{type:'submit',disabled:busy,className:'w-full rounded-xl bg-slate-900 dark:bg-white py-2.5 text-sm font-semibold text-white dark:text-slate-900 disabled:opacity-50'},busy?'処理中…':recovery?'パスワードを変更':'ログイン'),
-      !recovery&&h('button',{type:'button',onClick:forgot,className:'w-full text-xs text-gray-500 dark:text-gray-400 hover:underline'},'パスワードを忘れた場合')
+      !recovery&&h('button',{type:'button',disabled:busy,onClick:forgot,className:'w-full text-xs text-gray-500 dark:text-gray-400 hover:underline disabled:opacity-50'},'パスワードを忘れた場合')
     )
   );
 }
 function AuthGate(){
-  const [state,setState]=useState({checking:true,session:null,recovery:false});
+  const [state,setState]=useState({checking:true,session:null,recovery:false,error:''});
+  const [revision,setRevision]=useState(0);
   useEffect(()=>{
-    let alive=true;
-    _sb.auth.getSession().then(({data})=>{if(alive)setState(current=>({...current,checking:false,session:data?.session||null}));});
+    let alive=true,receivedEvent=false;
+    const apply=(session,event)=>{
+      if(!alive)return;
+      const id=session?.user?.id;
+      if(accountStorage&&accountStorage.userId!==id){setState({checking:true,session:null,recovery:false,error:''});window.location.reload();return;}
+      try{
+        if(id){
+          if(!window.CashflowStorage)throw new Error('保存機能を読み込めませんでした。ページを再読み込みしてください。');
+          accountStorage=window.CashflowStorage.activate(id);
+        }
+        setState(current=>({...current,checking:false,error:'',session:session||null,recovery:event==='PASSWORD_RECOVERY'?true:current.recovery&&event!=='SIGNED_OUT'}));
+      }catch(error){setState(current=>({...current,checking:false,error:error.message}));}
+    };
+    _sb.auth.getSession().then(({data,error})=>{if(error)throw error;if(!receivedEvent)apply(data?.session);}).catch(()=>{if(alive&&!receivedEvent)setState(current=>({...current,checking:false,error:'ログイン状態を確認できませんでした。通信状況を確認して再試行してください。'}));});
     const {data:listener}=_sb.auth.onAuthStateChange((event,session)=>{
       if(!alive)return;
-      setState(current=>({checking:false,session:session||null,recovery:event==='PASSWORD_RECOVERY'?true:current.recovery&&event!=='SIGNED_OUT'}));
+      receivedEvent=true;apply(session,event);
     });
     return()=>{alive=false;listener?.subscription?.unsubscribe();};
-  },[]);
-  if(state.checking)return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950'});
+  },[revision]);
+  if(state.checking)return h('div',{role:'status',className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center text-gray-600 dark:text-gray-300'},'ログインを確認しています…');
+  if(state.error)return h('div',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex flex-col items-center justify-center gap-4 p-6'},h('p',{role:'alert',className:'text-gray-800 dark:text-gray-200'},state.error),h('button',{onClick:()=>{setState(current=>({...current,checking:true,error:''}));setRevision(n=>n+1);},className:'rounded-xl bg-indigo-600 px-5 py-3 text-white'},'再試行'));
   if(state.recovery)return h(AuthScreen,{mode:'recovery',onDone:()=>setState(current=>({...current,recovery:false}))});
   if(!state.session)return h(AuthScreen,{mode:'login'});
-  return h(App,{userEmail:state.session.user?.email||''});
+  const userId=state.session.user.id;
+  if(window.CashflowStorage.needsLegacyChoice(userId))return h('main',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center p-4'},
+    h('section',{className:cardCls+' max-w-lg p-6 space-y-4 text-gray-800 dark:text-gray-100'},
+      h('h1',{className:'text-lg font-bold'},'端末データを引き継ぐ'),
+      h('p',{className:'text-sm break-all'},`ログイン中: ${state.session.user.email||userId}`),
+      h('p',{className:'text-sm'},'このブラウザに以前のデータがあります。このアカウントのデータであることを確認して引き継いでください。未同期の変更も含まれます。'),
+      h('button',{className:'w-full rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white',onClick:()=>{try{window.CashflowStorage.resolveLegacy(userId,true);setRevision(n=>n+1);}catch{setState(current=>({...current,error:'端末データを保存できません。空き容量を確認してください。'}));}}},'このアカウントのデータとして引き継ぐ'),
+      h('button',{className:'w-full rounded-xl border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm',onClick:()=>{try{window.CashflowStorage.resolveLegacy(userId,false);setRevision(n=>n+1);}catch{setState(current=>({...current,error:'端末に設定を保存できませんでした。'}));}}},'クラウドのデータで始める'),
+      h('p',{className:'text-xs text-gray-500 dark:text-gray-400'},'以前のデータは端末に残ります。必要なら先に控えを保存できます。'),
+      h('button',{className:'text-sm underline text-indigo-700 dark:text-indigo-300',onClick:()=>downloadBlob(`cashflow_legacy_${todayStr()}.json`,JSON.stringify({version:1,format:'cashflow-legacy-storage',storage:window.CashflowStorage.legacySnapshot()},null,2),'application/json')},'以前の端末データの控えを保存')));
+  return h(App,{key:userId,userEmail:state.session.user?.email||''});
 }
 async function signOut(){
   const pending=Object.keys(readPending()).length;
   if(pending&&!window.confirm('クラウドに未同期の変更があります。ログアウトすると、次にログインするまで同期されません。ログアウトしますか？'))return;
-  await _sb.auth.signOut();
+  const {error}=await _sb.auth.signOut();
+  if(error)throw error;
   window.location.reload();
 }
 
@@ -4337,10 +4553,13 @@ function App({userEmail}={}){
     localSet(LS_PENDING,JSON.stringify(pending));
     window.location.reload();
   }
-  function resolveConflictWithLocal(){
+  async function resolveConflictWithLocal(){
     if(!window.confirm('この端末の内容でクラウドを上書きします。他の端末での変更は失われます。よろしいですか？'))return;
-    conflictKeys().forEach(key=>{delete remoteStamps[key];});
-    syncAll();
+    try{
+      const stamps=await loadRemoteStamps();
+      conflictKeys().forEach(key=>rememberStamp(key,stamps[key]));
+      await syncAll();
+    }catch(error){reportSyncError(error,'最新の同期状態を確認できませんでした');}
   }
   async function checkRemoteChanges(){
     if(!hydratedRef.current||loadFailedRef.current||!navigator.onLine)return;
@@ -4459,16 +4678,22 @@ function App({userEmail}={}){
     setSkippedOccurrences(next);persist('skipped',next);
   }
   function restoreBackup(data){
-    if(!data||!Array.isArray(data.accounts)||!Array.isArray(data.transactions)){addToast('対応していないバックアップ形式です','error');return;}
-    if(!window.confirm(`口座${data.accounts.length}件・取引${data.transactions.length}件で現在のデータを置き換えますか？`))return;
-    const nextLoans=data.loans||[],nextBudgets=data.budgets||{},nextSkipped=data.skipped||[],nextPrefs={...DEFAULT_PREFS,...(data.preferences||{})};
+    let next;
+    try{next=validateBackup(data);}catch(error){addToast(error.message,'error');return;}
+    if(!window.confirm(`口座${next.accounts.length}件・取引${next.transactions.length}件・借入${next.loans.length}件で現在のデータを置き換えますか？復元前の控えを端末に保存します。`))return;
+    try{stageBackupRestore(next,{accounts:accountsRef.current,transactions:txsRef.current,loans:loansRef.current,budgets,skipped:skippedOccurrences,preferences});}catch(error){addToast(error.message,'error');return;}
+    data=next;
+    const nextLoans=next.loans,nextBudgets=next.budgets,nextSkipped=next.skipped,nextPrefs=next.preferences;
     accountsRef.current=data.accounts;txsRef.current=data.transactions;loansRef.current=nextLoans;setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
     persist('accounts',data.accounts);persist('transactions',data.transactions);persist('loans',nextLoans);persist('budgets',nextBudgets);persist('skipped',nextSkipped);persist('preferences',nextPrefs);
     addToast('バックアップを復元しました');setShowSettings(false);
   }
   function importCsv(text){
-    const {items,skipped}=transactionsFromCsv(text,accounts);
+    let parsed;
+    try{parsed=transactionsFromCsv(text,accounts);}catch(error){addToast(error.message,'error');return;}
+    const {items,skipped}=parsed;
     if(!items.length){addToast('追加できる取引がありませんでした','error');return;}
+    if(!window.confirm(`${items.length}件の取引を追加します${skipped?`（形式や口座を確認できない${skipped}件は追加しません）`:''}。同じファイルの再取り込みは重複登録になります。追加しますか？`))return;
     updTxs(current=>[...current,...items]);addToast(`${items.length}件を追加しました${skipped?`（${skipped}件スキップ）`:''}`);setShowSettings(false);setActiveView('transactions');
   }
 
@@ -4558,7 +4783,19 @@ function App({userEmail}={}){
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(h(React.StrictMode,null,h(AuthGate)));
+const AppErrorBoundary=React.Component&&class extends React.Component{
+  constructor(props){super(props);this.state={failed:false};}
+  static getDerivedStateFromError(){return {failed:true};}
+  render(){
+    if(!this.state.failed)return this.props.children;
+    return h('main',{className:'min-h-screen bg-[#f7f7f5] dark:bg-gray-950 flex items-center justify-center p-5'},h('section',{role:'alert',className:cardCls+' max-w-lg p-6 space-y-4 text-gray-800 dark:text-gray-100'},
+      h('h1',{className:'text-lg font-bold'},'画面を表示できませんでした'),
+      h('p',{className:'text-sm'},'保存済みのデータは削除していません。端末に保存された内容の控えを取り、ページを再読み込みしてください。'),
+      h('button',{className:'rounded-xl border border-gray-300 dark:border-gray-600 px-4 py-3 mr-2',onClick:()=>downloadBlob(`cashflow_recovery_${todayStr()}.json`,JSON.stringify({cache:readLocalCache(),pending:readPending()},null,2),'application/json')},'保存データの控え'),
+      h('button',{className:'rounded-xl bg-indigo-600 text-white px-4 py-3',onClick:()=>window.location.reload()},'再読み込み')));
+  }
+};
+ReactDOM.createRoot(document.getElementById('root')).render(h(React.StrictMode,null,h(AppErrorBoundary,null,h(AuthGate))));
 </script>
 </body>
 </html>

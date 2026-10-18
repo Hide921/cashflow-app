@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tests/*.mjs"
+    "test": "node --test tests/*.mjs",
+    "build": "node scripts/build.mjs",
+    "check": "npm test && npm run build"
   },
   "devDependencies": {
     "vite": "^5.0.12"
