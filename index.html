@@ -4147,6 +4147,11 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
     changeMode('full');
   }
   const fullSrc=INVESTMENT_FULL_SRC+(watchRequest||'');
+  // Google Finance 用CSV: 信用取引を含めるかは明示的に選ぶ（既定は含めない）。
+  const [exportOpen,setExportOpen]=useState(false);
+  const exportStocks=(data?.stocks||[]).filter(stock=>Number(stock.quantity)>0);
+  const exportCounts={spot:exportStocks.filter(stock=>stock.tradeType!=='margin').length,margin:exportStocks.filter(stock=>stock.tradeType==='margin').length};
+  function exportCsv(includeMargin){setExportOpen(false);downloadGoogleFinanceCsv(data?.stocks||[],{includeMargin});}
   // 完全管理は画面の残りの高さにぴったり合わせ、ページ側はスクロールさせない（スクロールは完全管理の中だけ）。
   const frameRef=useRef(null);
   const [frameHeight,setFrameHeight]=useState(null);
@@ -4188,11 +4193,17 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
           h('button',{onClick:()=>changeMode('full'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='full'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'完全管理'),
           h('button',{onClick:()=>changeMode('buy'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='buy'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'買える株数')
         ),
-        (data?.stocks||[]).length>0&&h('button',{type:'button',onClick:()=>{
-          const hasMargin=(data.stocks||[]).some(stock=>stock.tradeType==='margin');
-          const includeMargin=hasMargin&&window.confirm('信用取引の建玉もGoogle Financeに含めますか？\n（OK: 含める／キャンセル: 現物・投資信託だけ）\n信用は評価額に借入分が含まれるため、含めると総額が大きく表示されます。');
-          downloadGoogleFinanceCsv(data.stocks,{includeMargin});
-        },className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white',title:'Google Finance のポートフォリオに取り込むCSVを保存'},'Google Finance用CSV'),
+        (data?.stocks||[]).length>0&&h('div',{className:'relative'},
+          h('button',{type:'button',onClick:()=>setExportOpen(v=>!v),'aria-expanded':exportOpen,className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white',title:'Google Finance のポートフォリオに取り込むCSVを保存'},'Google Finance用CSV'),
+          exportOpen&&h('div',{role:'menu',className:'absolute right-0 z-40 mt-2 w-72 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 shadow-lg'},
+            h('button',{type:'button',role:'menuitem',onClick:()=>exportCsv(false),className:'block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700'},
+              h('span',{className:'block font-semibold text-gray-900 dark:text-gray-100'},`現物・投資信託のみ（${exportCounts.spot}銘柄）`),
+              h('span',{className:'block text-xs text-gray-500 dark:text-gray-400'},'おすすめ。信用取引は含めません')),
+            exportCounts.margin>0&&h('button',{type:'button',role:'menuitem',onClick:()=>exportCsv(true),className:'block w-full rounded-lg px-3 py-2.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700'},
+              h('span',{className:'block font-semibold text-gray-900 dark:text-gray-100'},`信用取引も含める（+${exportCounts.margin}銘柄）`),
+              h('span',{className:'block text-xs text-gray-500 dark:text-gray-400'},'信用は借入分を含む評価額になり、総額が大きく表示されます'))
+          )
+        ),
         mode==='full'&&h('a',{href:INVESTMENT_FULL_SRC,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white'},'別画面 ↗')
       )
     ),

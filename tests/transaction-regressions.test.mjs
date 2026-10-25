@@ -647,3 +647,24 @@ test('Google Finance用CSVは銘柄・取引所・数量・平均取得単価・
   assert.equal(withMargin.length, 6);
   assert.match(withMargin.find(line => line.startsWith('"NVDA"')), /"Taxable \/ Margin"$/);
 });
+
+test('Google Finance用CSVは選択肢で信用の扱いを選び、既定の「現物・投資信託のみ」では信用を含めない', () => {
+  const app = appContext();
+  let saved = null;
+  app.context.downloadGoogleFinanceCsv = (stocks, options) => { saved = { stocks, options }; };
+  const data = { stocks: [
+    { id: 's', ticker: '7203', market: 'JP', tradeType: 'spot', quantity: 100, avgPrice: 2850 },
+    { id: 'm', ticker: 'NVDA', market: 'US', tradeType: 'margin', quantity: 5, avgPrice: 120 },
+  ], log: [], collateral: [] };
+  const render = () => { app.resetHooks(); return app.evaluate('InvestmentHub')({ data, onReload: () => {}, onStocksChange: () => {}, onEmbeddedChange: () => {} }); };
+  findElement(render(), node => node.type === 'button' && node.props.children?.includes?.('Google Finance用CSV')).props.onClick();
+  const menuTree = render();
+  const spot = findElement(menuTree, node => node.type === 'button' && JSON.stringify(node.props.children).includes('現物・投資信託のみ（1銘柄）'));
+  const margin = findElement(menuTree, node => node.type === 'button' && JSON.stringify(node.props.children).includes('信用取引も含める（+1銘柄）'));
+  assert.ok(spot && margin);
+  spot.props.onClick();
+  assert.equal(saved.options.includeMargin, false);
+  const lines = app.evaluate('googleFinanceCsv')(saved.stocks, saved.options).split('\n');
+  assert.equal(lines.length, 2);
+  assert.ok(!lines.some(line => line.includes('NVDA')));
+});
