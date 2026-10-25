@@ -3940,6 +3940,27 @@ function investmentTotals(rows,collateral,fxRate){
 }
 // 投信の平均取得価格は基準価額と同じ円/1万口で入力し、保存は完全管理と同じ円/口。
 const FUND_PRICE_UNIT=10000;
+// Google Finance のポートフォリオ取り込み用 CSV。Google 側は AI でファイルを読み取るため、
+// 英語の列名で「銘柄・取引所・数量・平均取得単価・通貨」をはっきり書く。
+// 信用取引は評価額が借入分を含み総額を過大に見せるので、既定では含めない。
+function googleFinanceCsv(stocks,{includeMargin=false}={}){
+  const header=['Symbol','Exchange','Name','Quantity','Average Cost','Currency','Asset Type','Account'];
+  const rows=(stocks||[]).filter(stock=>Number(stock.quantity)>0&&(includeMargin||stock.tradeType!=='margin')).map(stock=>{
+    const ticker=String(stock.ticker||'').trim().toUpperCase();
+    const market=stock.market||'JP';
+    const symbol=market==='CRYPTO'?ticker.replace(/-USD$/,''):ticker;
+    const exchange=market==='JP'?'TYO':market==='CRYPTO'?'CRYPTO':'';
+    const type={JP:'Stock (Japan)',US:'Stock (US)',FUND:'Mutual fund (Japan, price per unit)',CRYPTO:'Cryptocurrency'}[market]||market;
+    const account=[stock.accountType==='nisa'?'NISA':'Taxable',stock.tradeType==='margin'?'Margin':''].filter(Boolean).join(' / ');
+    const currency=stock.avgCurrency||stock.currency||(market==='US'||market==='CRYPTO'?'USD':'JPY');
+    const cost=Number(stock.avgPrice)||0;
+    return [symbol,exchange,stock.name||'',Number(stock.quantity),Math.round(cost*1e6)/1e6,currency,type,account];
+  });
+  return [header,...rows].map(row=>row.map(csvCell).join(',')).join('\n');
+}
+function downloadGoogleFinanceCsv(stocks,options){
+  downloadBlob(`google_finance_portfolio_${todayStr()}.csv`,'﻿'+googleFinanceCsv(stocks,options),'text/csv');
+}
 const EMPTY_INVESTMENT_FORM={market:'JP',tradeType:'spot',accountType:'specific',ticker:'',name:'',sector:'',quantity:'',avgPrice:'',avgCurrency:'',note:''};
 function InvestmentView({data,onReload,onStocksChange}){
   const stocks=data?.stocks||[];
@@ -4167,6 +4188,11 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
           h('button',{onClick:()=>changeMode('full'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='full'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'完全管理'),
           h('button',{onClick:()=>changeMode('buy'),className:`rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${mode==='buy'?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':'text-gray-500 dark:text-gray-400'}`},'買える株数')
         ),
+        (data?.stocks||[]).length>0&&h('button',{type:'button',onClick:()=>{
+          const hasMargin=(data.stocks||[]).some(stock=>stock.tradeType==='margin');
+          const includeMargin=hasMargin&&window.confirm('信用取引の建玉もGoogle Financeに含めますか？\n（OK: 含める／キャンセル: 現物・投資信託だけ）\n信用は評価額に借入分が含まれるため、含めると総額が大きく表示されます。');
+          downloadGoogleFinanceCsv(data.stocks,{includeMargin});
+        },className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white',title:'Google Finance のポートフォリオに取り込むCSVを保存'},'Google Finance用CSV'),
         mode==='full'&&h('a',{href:INVESTMENT_FULL_SRC,target:'_blank',rel:'noopener noreferrer',className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-xs font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white'},'別画面 ↗')
       )
     ),

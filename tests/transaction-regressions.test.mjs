@@ -625,3 +625,25 @@ test('前回と同じ残高を入力し直すと、今日を基準日にして�
   assert.equal(updated.balance, 100000);
   assert.equal(updated.balanceAsOf, today);
 });
+
+test('Google Finance用CSVは銘柄・取引所・数量・平均取得単価・通貨を出し、信用は既定で除く', () => {
+  const csv = appContext().evaluate('googleFinanceCsv');
+  const stocks = [
+    { ticker: '7203', name: 'トヨタ自動車', market: 'JP', tradeType: 'spot', accountType: 'nisa', currency: 'JPY', quantity: 100, avgPrice: 2850 },
+    { ticker: 'aapl', name: 'Apple Inc.', market: 'US', tradeType: 'spot', accountType: 'specific', currency: 'USD', avgCurrency: 'USD', quantity: 10, avgPrice: 175.5 },
+    { ticker: 'NVDA', name: 'NVIDIA', market: 'US', tradeType: 'margin', accountType: 'specific', currency: 'USD', quantity: 5, avgPrice: 120 },
+    { ticker: '0331418A', name: 'eMAXIS Slim 全世界株式', market: 'FUND', tradeType: 'spot', accountType: 'nisa', currency: 'JPY', quantity: 123456, avgPrice: 2.5432 },
+    { ticker: 'BTC-USD', name: 'Bitcoin', market: 'CRYPTO', tradeType: 'spot', currency: 'USD', avgCurrency: 'JPY', quantity: 0.01, avgPrice: 9000000 },
+    { ticker: 'ZERO', name: 'sold', market: 'US', tradeType: 'spot', quantity: 0, avgPrice: 1 },
+  ];
+  const lines = csv(stocks).split('\n');
+  assert.equal(lines[0], '"Symbol","Exchange","Name","Quantity","Average Cost","Currency","Asset Type","Account"');
+  assert.equal(lines.length, 5);
+  assert.equal(lines[1], '"7203","TYO","トヨタ自動車","100","2850","JPY","Stock (Japan)","NISA"');
+  assert.equal(lines[2], '"AAPL","","Apple Inc.","10","175.5","USD","Stock (US)","Taxable"');
+  assert.match(lines[3], /^"0331418A","",".*","123456","2.5432","JPY","Mutual fund/);
+  assert.equal(lines[4], '"BTC","CRYPTO","Bitcoin","0.01","9000000","JPY","Cryptocurrency","Taxable"');
+  const withMargin = csv(stocks, { includeMargin: true }).split('\n');
+  assert.equal(withMargin.length, 6);
+  assert.match(withMargin.find(line => line.startsWith('"NVDA"')), /"Taxable \/ Margin"$/);
+});
