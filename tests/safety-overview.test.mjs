@@ -16,13 +16,15 @@ test('分析のカテゴリ別支出は返済・分類外も数え、合計が�
   const txs=[
     {id:'a',type:'expense',category:'食費',amount:3000,startDate:today},
     {id:'b',type:'expense',category:'返済',amount:10000,startDate:today},
-    {id:'c',type:'expense',category:'カード',amount:20000,startDate:today},
+    {id:'c',type:'expense',category:'住居',amount:20000,startDate:today},
+    {id:'e',type:'expense',category:'カード',amount:7000,startDate:today},
     {id:'d',type:'expense',amount:500,startDate:today}
   ];
   const stats=fn('buildMonthlyStats')(txs,fn('todayD')(),new Set(),true);
   assert.equal(stats.byCategory['食費'],3000);
   assert.equal(stats.byCategory['返済'],10000);
   assert.equal(stats.byCategory['その他'],20500);
+  assert.equal(stats.byCategory['カード'],7000);
   assert.equal(Object.values(stats.byCategory).reduce((a,b)=>a+b,0),stats.expense);
 });
 

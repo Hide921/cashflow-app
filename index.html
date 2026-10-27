@@ -670,7 +670,7 @@ function computeBreakdown(txs, startD, endD, skippedKeys){
 
 // ─── Constants ────────────────────────────────────────
 const COLORS=['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
-const CATS=['給与','家賃','食費','交通費','光熱費','保険','娯楽','その他'];
+const CATS=['給与','家賃','食費','日用品','交通費','光熱費','通信費','保険','医療','税金','サブスク','教育','交際費','娯楽','カード','その他'];
 const FREQS={daily:'毎日',weekly:'毎週',monthly:'毎月',yearly:'毎年'};
 const PERIODS=[
   {label:'過去6ヶ月',months:-6},
@@ -1126,7 +1126,7 @@ function SvgChart({ data, accounts, dark, onDateClick, hiddenAccIds, onToggleAcc
 }
 
 // ─── Account Manager ─────────────────────────────────
-function AccountManager({ accounts, onChange, addToast }){
+function AccountManager({ accounts, onChange, addToast, todayBalances={} }){
   const DEF={name:'',bankName:'',balance:'',color:COLORS[0],includesToday:false};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
@@ -1228,7 +1228,12 @@ function AccountManager({ accounts, onChange, addToast }){
           h('span',{className:'font-semibold text-gray-800 dark:text-gray-100 truncate'},a.name)
         ),
         a.bankName&&h('p',{className:'text-xs text-gray-400 dark:text-gray-500'},a.bankName),
-        h('p',{className:'text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1'},`¥${a.balance.toLocaleString()}`),
+        (()=>{
+          const today=todayBalances[a.id]!==undefined?Math.round(todayBalances[a.id]):Number(a.balance);
+          return h(React.Fragment,null,
+            h('p',{className:`text-2xl font-bold mt-1 tabular-nums ${today<0?'text-rose-600 dark:text-rose-400':'text-gray-900 dark:text-gray-100'}`},`${today<0?'-':''}¥${Math.abs(today).toLocaleString()}`),
+            h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400 tabular-nums'},`今日の見込み・入力 ¥${Number(a.balance).toLocaleString()}${a.balanceAsOf?`（${a.balanceAsOf.slice(5).replace('-','/')}）`:''}`));
+        })(),
         h('div',{className:'flex gap-2 pt-2 border-t border-gray-100 dark:border-gray-700 mt-1'},
           h('button',{onClick:()=>startEdit(a),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-3 py-1.5 text-xs text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 font-semibold'},editId===a.id?'編集中':'編集'),
           h('button',{onClick:()=>confirmDelete(a),className:'rounded-lg px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 font-medium'},'削除')
@@ -2901,7 +2906,7 @@ function TxDetails({ txs, endD, startD, isPast, accounts, skippedKeys, skippedOc
 }
 
 // ─── Add Transaction Modal ────────────────────────────
-function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, editTx }){
+function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, editTx, suggestions=[] }){
   const firstId=accounts[0]?.id||'';
   const secondId=accounts[1]?.id||firstId;
   const [form,setForm]=useState(()=>{
@@ -2915,6 +2920,22 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
   const [err,setErr]=useState('');
   const sf=(k,v)=>setForm(f=>({...f,[k]:v}));
   const isTransfer=form.type==='transfer';
+  // 名前を入力すると、過去に入力した同じ名前の取引を候補に出す（新しい順・最大6件）。
+  const [showSugs,setShowSugs]=useState(false);
+  const sugs=useMemo(()=>{
+    const text=form.label.trim().toLowerCase();
+    if(!text||editTx)return [];
+    const seen=new Set();
+    return [...suggestions].sort((a,b)=>String(b.startDate||'').localeCompare(String(a.startDate||''))).filter(tx=>{
+      if(!tx.label||!tx.label.toLowerCase().includes(text)||seen.has(tx.label))return false;
+      seen.add(tx.label);return true;
+    }).slice(0,6);
+  },[form.label,suggestions,editTx]);
+  function pickSuggestion(tx){
+    setForm(f=>({...f,label:tx.label,type:tx.type,amount:String(tx.amount),category:tx.category||f.category,
+      accountId:tx.accountId||f.accountId,fromAccountId:tx.fromAccountId||f.fromAccountId,toAccountId:tx.toAccountId||f.toAccountId}));
+    setShowSugs(false);
+  }
   useEffect(()=>{const onKey=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);},[onClose]);
   function submit(e){
     e.preventDefault();
@@ -2958,7 +2979,14 @@ function AddTxModal({ date, accounts, dark, onSave, onClose, initAccountId, edit
         ),
         !isTransfer&&h('div',null,
           h('label',{htmlFor:'quick-label',className:lbl},'名前 *'),
-          h('input',{id:'quick-label',autoFocus:true,className:inp,placeholder:'例: 食費、給与、口座振替',value:form.label,onChange:e=>sf('label',e.target.value)})
+          h('div',{className:'relative'},
+            h('input',{id:'quick-label',autoFocus:true,autoComplete:'off',className:inp,placeholder:'例: 食費、給与、口座振替',value:form.label,onChange:e=>{sf('label',e.target.value);setShowSugs(true);},onBlur:()=>setTimeout(()=>setShowSugs(false),150)}),
+            showSugs&&sugs.length>0&&h('div',{className:'absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl'},
+              sugs.map(tx=>h('button',{key:tx.id,type:'button',onMouseDown:()=>pickSuggestion(tx),className:'flex w-full items-center gap-3 border-b last:border-0 border-gray-100 dark:border-gray-700/60 px-3 py-2.5 text-left hover:bg-indigo-50 dark:hover:bg-indigo-900/20'},
+                h('span',{className:'flex-1 truncate text-sm font-medium text-gray-800 dark:text-gray-200'},tx.label),
+                h('span',{className:'text-xs text-gray-400'},tx.category||''),
+                h('span',{className:'text-xs tabular-nums text-gray-500 dark:text-gray-400'},`¥${Number(tx.amount).toLocaleString()}`))))
+          )
         ),
         h('div',null,
           h('label',{htmlFor:'quick-amount',className:lbl},'金額 (円) *'),
@@ -3109,7 +3137,7 @@ function MonthBreakdownCard({ actual, forecast }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onAddTx, onBorrow, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
+function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onLowBalanceChange, onAddTx, onBorrow, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
   const [pIdx,setPIdx]=useState(3);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
@@ -3122,6 +3150,7 @@ function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onAddTx, onBorrow
   const [balanceQueue,setBalanceQueue]=useState([]);
   // 残高不足への対処の確認ダイアログ。
   const [remedy,setRemedy]=useState(null);
+  const [lineDraft,setLineDraft]=useState(null);
   const loanLimits=(loans||[]).map(loanAvailable).filter(value=>value!==null);
   const totalAvailable=loanLimits.length?loanLimits.reduce((sum,value)=>sum+value,0):null;
   function applyRemedy(){
@@ -3290,7 +3319,7 @@ function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onAddTx, onBorrow
   }
 
   return h('div',{className:'space-y-5'},
-    addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
+    addDate&&onAddTx&&h(AddTxModal,{date:addDate,accounts,dark,initAccountId:addAccId,suggestions:txs.filter(tx=>!tx.loanPayment&&!tx.loanPlan&&!tx.salary),onClose:()=>{setAddDate(null);setAddAccId(null);},onSave:tx=>{onAddTx(tx);setAddDate(null);setAddAccId(null);}}),
     editTx&&onUpdTx&&h(AddTxModal,{date:editTx.startDate||todayStr(),accounts,dark,editTx,onClose:()=>setEditTxId(null),onSave:tx=>{onUpdTx(tx);setEditTxId(null);}}),
     remedy&&h('div',{className:'fixed inset-0 z-[310] bg-black/60 flex items-center justify-center px-4',onClick:e=>{if(e.target===e.currentTarget)setRemedy(null);}},
       h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'remedy-title',className:'w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 p-5 shadow-2xl'},
@@ -3339,7 +3368,14 @@ function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onAddTx, onBorrow
         ),
         h('p',{className:'mt-1 text-[11px] text-emerald-800/80 dark:text-emerald-200/80'},
           `予定をすべて引いた後の、各口座の最低残高${lowLine>0?`から注意ライン ¥${lowLine.toLocaleString()} を除いた額`:''}の合計：`,
-          spendable.perAccount.map(item=>`${item.account.name} ¥${item.spendable.toLocaleString()}`).join('・'))
+          spendable.perAccount.map(item=>`${item.account.name} ¥${item.spendable.toLocaleString()}`).join('・')),
+        onLowBalanceChange&&(lineDraft===null
+          ?h('button',{type:'button',onClick:()=>setLineDraft(String(lowLine||'')),className:'mt-1.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200 underline'},lowLine>0?`注意ライン ¥${lowLine.toLocaleString()} を変更`:'口座に残しておきたい額（注意ライン）を設定')
+          :h('form',{className:'mt-2 flex flex-wrap items-center gap-2',onSubmit:e=>{e.preventDefault();const value=Number(lineDraft);if(!Number.isSafeInteger(value)||value<0)return;onLowBalanceChange(value);setLineDraft(null);}},
+            h('label',{htmlFor:'home-low-balance',className:'text-[11px] text-emerald-900 dark:text-emerald-100'},'注意ライン ¥'),
+            h('input',{id:'home-low-balance',type:'number',min:'0',step:'1000',inputMode:'numeric',autoFocus:true,value:lineDraft,onChange:e=>setLineDraft(e.target.value),className:'w-28 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100'}),
+            h('button',{type:'submit',className:'rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white'},'保存'),
+            h('button',{type:'button',onClick:()=>setLineDraft(null),className:'text-xs text-emerald-800 dark:text-emerald-200'},'キャンセル')))
       ),
       unconfirmedBills.length>0&&onUpdTx&&h('div',{className:'mt-3 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2.5'},
         h('p',{className:'text-xs font-semibold text-indigo-800 dark:text-indigo-200'},'引落額を確定してください（14日以内・概算のまま）'),
@@ -3703,8 +3739,10 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
   },0);
   const change=previous.expense?Math.round((current.expense-previous.expense)/previous.expense*100):null;
   // 返済があれば「その他」の前に表示する（予算の対象外）。
-  const shownCats=current.byCategory[REPAYMENT_CAT]||previous.byCategory[REPAYMENT_CAT]
-    ?[...EXPENSE_CATS.filter(c=>c!=='その他'),REPAYMENT_CAT,'その他']:EXPENSE_CATS;
+  // カテゴリが多いので、今月・前月の支出も予算もないものは隠す。
+  const shownCats=(current.byCategory[REPAYMENT_CAT]||previous.byCategory[REPAYMENT_CAT]
+    ?[...EXPENSE_CATS.filter(c=>c!=='その他'),REPAYMENT_CAT,'その他']:EXPENSE_CATS)
+    .filter(c=>c==='その他'||current.byCategory[c]||previous.byCategory[c]||Number(draft[c])>0);
   const maxCategory=Math.max(1,...shownCats.map(c=>current.byCategory[c]||0));
   return h('div',{className:'space-y-5'},
     h('div',{className:'flex items-end justify-between gap-3'},
@@ -3789,12 +3827,16 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
           ))
         ),
         h('section',{className:cardCls+' p-4'},
+          h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'残高の注意ライン'),
+          h('p',{className:'text-xs text-gray-400 mb-3'},'口座に最低限残しておきたい額です。これを下回る日を警告し、「次の給料日まで使えるお金」もこの額を残して計算します。0円ならマイナスになる日だけ警告します。'),
+          h('label',{htmlFor:'low-balance',className:'text-xs text-gray-500'},'注意ライン（円）'),h('input',{id:'low-balance',type:'number',min:'0',step:'1000',value:prefs.lowBalance,onChange:e=>onPrefs({...prefs,lowBalance:Number(e.target.value)||0}),className:inputCls})
+        ),
+        h('section',{className:cardCls+' p-4'},
           h('h3',{className:'text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1'},'通知'),
           h('p',{className:'text-xs text-gray-400 mb-3'},'アプリを開いたとき、残高不足や大きな支払いを通知します。'),
           h('div',{className:'grid grid-cols-2 gap-3'},
             h('div',null,h('label',{htmlFor:'notify-days',className:'text-xs text-gray-500'},'何日前に通知'),h('input',{id:'notify-days',type:'number',min:'1',max:'30',value:prefs.notifyDays,onChange:e=>onPrefs({...prefs,notifyDays:Number(e.target.value)||7}),className:inputCls})),
             h('div',null,h('label',{htmlFor:'large-payment',className:'text-xs text-gray-500'},'大口支払い（円）'),h('input',{id:'large-payment',type:'number',min:'0',value:prefs.largePayment,onChange:e=>onPrefs({...prefs,largePayment:Number(e.target.value)||0}),className:inputCls})),
-            h('div',{className:'col-span-2'},h('label',{htmlFor:'low-balance',className:'text-xs text-gray-500'},'残高注意ライン（円）'),h('input',{id:'low-balance',type:'number',min:'0',value:prefs.lowBalance,onChange:e=>onPrefs({...prefs,lowBalance:Number(e.target.value)||0}),className:inputCls}))
           ),
           h('button',{onClick:enableNotifications,className:`mt-3 w-full rounded-xl py-2.5 text-sm font-semibold ${prefs.notifications?'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300':'bg-indigo-600 text-white'}`},prefs.notifications?'通知は有効です':'通知を有効にする')
         ),
@@ -5068,6 +5110,7 @@ function App({userEmail}={}){
         h('button',{type:'button',onClick:syncAll,className:'ml-3 font-semibold underline'},'再試行')
       ),
       activeView==='home'&&h(Dashboard,{accounts,txs:cashflowTxs,loans,dark,lowBalance:preferences.lowBalance,
+        onLowBalanceChange:value=>{updPreferences({...preferences,lowBalance:value});addToast(`注意ラインを¥${value.toLocaleString()}にしました`);},
         onBorrow:(loanId,deposit)=>{
           const loan=loansRef.current.find(item=>item.id===loanId);
           const result=loan?loanDeposit(loan,{...deposit,additional:true},accountsRef.current):{error:'借入が見つかりません'};
@@ -5091,7 +5134,7 @@ function App({userEmail}={}){
         h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast,salaryMonthly:monthlyRunRate(txs,todayStr().slice(0,7)).salary})
       ),
       activeView==='salary'&&h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast,prefs:preferences,onPrefs:updPreferences}),
-      activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
+      activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast,todayBalances:accounts.length?buildForecast(accounts,cashflowTxs,todayD(),new Set(skippedOccurrences))[0]||{}:{}})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,accounts,txs,onChange:updLoans,onReflectPayment:applyPayment,onUndoPayment:undoPayment,onAddTx:tx=>updTxs(current=>[...current,tx]),addToast})),
       activeView==='analysis'&&h(AnalysisView,{txs:cashflowTxs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
