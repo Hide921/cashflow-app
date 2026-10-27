@@ -682,6 +682,12 @@ const PERIODS=[
   {label:'1年',months:12}
 ];
 const EXPENSE_CATS=CATS.filter(c=>c!=='給与');
+// 分析では、借入の返済は「返済」、決まったカテゴリにない支出（CSV取り込みなど）は「その他」に入れる。
+const REPAYMENT_CAT='返済';
+function analysisCategory(category){
+  if(category===REPAYMENT_CAT)return REPAYMENT_CAT;
+  return EXPENSE_CATS.includes(category)?category:'その他';
+}
 const STALE_BALANCE_DAYS=3;
 const DEFAULT_PREFS={notifications:false,notifyDays:7,largePayment:100000,lowBalance:0,autoLoanPayments:true,autoSalary:true,salaryAutoDismissed:[]};
 
@@ -701,7 +707,7 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false){
     const addAmount=(amount)=>{
       const n=Math.abs(Number(amount)||0);
       if(tx.type==='income') income+=n;
-      else {expense+=n; const cat=tx.category||'その他'; byCategory[cat]=(byCategory[cat]||0)+n;}
+      else {expense+=n; const cat=analysisCategory(tx.category); byCategory[cat]=(byCategory[cat]||0)+n;}
     };
     if(tx.recurring){
       expandRec(tx,start,end,skippedKeys).forEach(e=>addAmount(e.amt));
@@ -712,33 +718,65 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false){
   });
   return {income,expense,net:income-expense,byCategory,start,end};
 }
-function findShortfalls(accounts,forecast){
+// 残高が line（注意ライン、未設定なら0円）を下回る最初の日。shortage はラインまでの不足額。
+function findShortfalls(accounts,forecast,line=0){
   const found=[];
   accounts.forEach(account=>{
-    const first=forecast.find(row=>Number(row[account.id])<0);
+    const first=forecast.find(row=>Number(row[account.id])<line);
     if(!first) return;
-    found.push({account,date:first.date,shortage:Math.abs(Number(first[account.id]))});
+    const balance=Number(first[account.id]);
+    found.push({account,date:first.date,shortage:line-balance,balance});
   });
   return found.sort((a,b)=>a.date.localeCompare(b.date));
 }
 // 残高不足への対応候補。不足日の前営業日（今日より前なら今日）までに、
 // 余裕のある別口座から振り替えるか、空き枠のある借入から借りる（金利の低い順）。
 // 必要額は、最初の不足日から31日間で最も深い不足額。振替は千円単位、借入は1万円単位に切り上げる。
-function shortfallRemedies(shortfall,accounts,forecast,loans,today=todayStr()){
+function shortfallRemedies(shortfall,accounts,forecast,loans,today=todayStr(),line=0){
   const start=forecast.findIndex(row=>row.date===shortfall.date);
   const rows=start<0?[]:forecast.slice(start,start+31);
-  const needed=Math.max(shortfall.shortage,...rows.map(row=>-(Number(row[shortfall.account.id])||0)));
+  const needed=Math.max(shortfall.shortage,...rows.map(row=>line-(Number(row[shortfall.account.id])||0)));
   const before=fmt(prevBizDay(addDays(parseISO(shortfall.date),-1)));
   const date=before<today?today:before;
   const amount=Math.ceil(needed/1000)*1000,borrowAmount=Math.ceil(needed/10000)*10000;
   const transfers=accounts.filter(account=>account.id!==shortfall.account.id).map(account=>{
     const future=forecast.filter(row=>row.date>=date).map(row=>Number(row[account.id])||0);
     return {type:'transfer',from:account,amount,date,spare:future.length?Math.min(...future):0};
-  }).filter(item=>item.spare>=amount).sort((a,b)=>b.spare-a.spare);
+  }).filter(item=>item.spare-amount>=line).sort((a,b)=>b.spare-a.spare);
   const borrows=(loans||[]).map(loan=>({type:'borrow',loan,amount:borrowAmount,date,available:loanAvailable(loan)}))
     .filter(item=>item.available!==null&&item.available>=borrowAmount)
     .sort((a,b)=>(Number(a.loan.interestRate)||0)-(Number(b.loan.interestRate)||0));
   return {needed,date,options:[...transfers,...borrows]};
+}
+// 次の給料日（今日より後の最初の給与入金）までに使えるお金。
+// 口座ごとに、給料日の前日までの最低残高から注意ラインを引いた額（マイナスは0）を合計する。
+function spendableUntilPayday(accounts,txs,forecast,line=0,today=todayStr()){
+  const start=addDays(parseISO(today),1);
+  const salary=balanceEvents(txs,start,addDays(start,62),null)
+    .filter(ev=>ev.amt>0&&ev.tx.type==='income'&&(ev.tx.salary||ev.tx.category==='給与'))
+    .sort((a,b)=>a.date-b.date)[0];
+  if(!salary)return null;
+  const payday=fmt(salary.date);
+  const rows=forecast.filter(row=>row.date>=today&&row.date<payday);
+  if(!rows.length)return null;
+  const perAccount=accounts.map(account=>{
+    const lowest=Math.min(...rows.map(row=>Number(row[account.id])||0));
+    return {account,lowest,spendable:Math.max(0,Math.floor(lowest-line))};
+  });
+  const total=perAccount.reduce((sum,item)=>sum+item.spendable,0);
+  const days=daysBetween(today,payday);
+  return {payday,days,total,perDay:days>0?Math.floor(total/days):total,perAccount};
+}
+// 金額が毎回変わる引落（カードなど）で、近いのに金額が未確定の回。
+// ラベル・カテゴリに「カード」を含むか、過去に金額を確定したことがある定期支出を対象にする。
+function unconfirmedVariableBills(txs,days=14,today=todayStr()){
+  const start=parseISO(today),end=addDays(start,days);
+  const variable=tx=>tx.recurring&&tx.type==='expense'&&!tx.loanPlan&&!tx.loanPayment&&tx.category!==REPAYMENT_CAT&&
+    (/カード/.test(`${tx.label||''}${tx.category||''}`)||Object.keys(tx.overrides||{}).some(date=>date<today));
+  return txs.filter(variable).flatMap(tx=>expandRec(tx,start,end,null)
+    .filter(ev=>tx.overrides?.[fmt(ev.date)]===undefined)
+    .map(ev=>({txId:tx.id,label:tx.label,date:fmt(ev.date),amount:Math.abs(ev.amt)})))
+    .sort((a,b)=>a.date.localeCompare(b.date));
 }
 function downloadBlob(name,content,type){
   const blob=new Blob([content],{type});
@@ -1940,7 +1978,7 @@ function SalaryManager({accounts,txs,onChange,onDelete,addToast,prefs,onPrefs}){
 }
 
 // ─── Transaction Manager ──────────────────────────────
-function TxManager({ accounts, txs, onChange, onDelete, addToast }){
+function TxManager({ accounts, txs, onChange, onDelete, addToast, salaryMonthly=0 }){
   const DEF={label:'',type:'expense',amount:'',category:'その他',accountId:'',fromAccountId:'',toAccountId:'',overrides:{},recurring:false,frequency:'monthly',startDate:todayStr(),endDate:'',adjustBizDay:''};
   const [form,setForm]=useState(DEF);
   const [editId,setEditId]=useState(null);
@@ -2228,7 +2266,7 @@ function TxManager({ accounts, txs, onChange, onDelete, addToast }){
 ),
 h('div',{className:'grid grid-cols-2 lg:grid-cols-4 gap-3'},
   h('div',{className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 mb-1'},'定期取引'),h('p',{className:'text-2xl font-bold text-indigo-600 dark:text-indigo-400'},`${recurringStats.count}件`),h('p',{className:'text-xs text-gray-400 mt-1'},'登録中')),
-  h('div',{className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 mb-1'},'毎月の収入'),h('p',{className:'text-xl font-bold text-emerald-600'},`+¥${Math.round(recurringStats.income).toLocaleString()}`),h('p',{className:'text-xs text-gray-400 mt-1'},'定期分の概算')),
+  h('div',{className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 mb-1'},'毎月の収入'),h('p',{className:'text-xl font-bold text-emerald-600'},`+¥${Math.round(recurringStats.income+salaryMonthly).toLocaleString()}`),h('p',{className:'text-xs text-gray-400 mt-1'},salaryMonthly>0?`定期分の概算（うち月給 ¥${Math.round(salaryMonthly).toLocaleString()}）`:'定期分の概算')),
   h('div',{className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 mb-1'},'毎月の支出'),h('p',{className:'text-xl font-bold text-rose-500'},`-¥${Math.round(recurringStats.expense).toLocaleString()}`),h('p',{className:'text-xs text-gray-400 mt-1'},'定期分の概算')),
   h('div',{className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 mb-1'},'次回の定期取引'),recurringStats.upcoming[0]?h('p',{className:'text-sm font-bold text-gray-800 dark:text-gray-100 truncate'},recurringStats.upcoming[0].tx.label):h('p',{className:'text-sm font-bold text-gray-400'},'予定なし'),h('p',{className:'text-xs text-gray-400 mt-1'},recurringStats.upcoming[0]?fmtDisp(recurringStats.upcoming[0].date):'終了済み'))
 ),
@@ -3071,7 +3109,7 @@ function MonthBreakdownCard({ actual, forecast }){
 }
 
 // ─── Dashboard ───────────────────────────────────────
-function Dashboard({ accounts, txs, loans, dark, onAddTx, onBorrow, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
+function Dashboard({ accounts, txs, loans, dark, lowBalance=0, onAddTx, onBorrow, onUpdAcc, onUpdTx, onNavigate, skippedOccurrences, onSkip, onRestore, onDeleteTx, investmentData }){
   const [pIdx,setPIdx]=useState(3);
   const [addDate,setAddDate]=useState(null);
   const [addAccId,setAddAccId]=useState(null);
@@ -3143,7 +3181,10 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onBorrow, onUpdAcc, on
     return fullData.filter((_,i)=>i%step===0);
   },[fullData,pIdx]);
   const riskData=useMemo(()=>accounts.length?buildForecast(accounts,txs,addMonths(todayD(),12),skippedKeys):[],[accounts,txs,skippedKeys]);
-  const shortfalls=useMemo(()=>findShortfalls(accounts,riskData),[accounts,riskData]);
+  const lowLine=Number(lowBalance)||0;
+  const shortfalls=useMemo(()=>findShortfalls(accounts,riskData,lowLine),[accounts,riskData,lowLine]);
+  const spendable=useMemo(()=>accounts.length?spendableUntilPayday(accounts,txs,riskData,lowLine):null,[accounts,txs,riskData,lowLine]);
+  const unconfirmedBills=useMemo(()=>unconfirmedVariableBills(txs),[txs]);
   const txEventMap=useMemo(()=>{
     if(isPast) return {};
     const map={};
@@ -3254,7 +3295,7 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onBorrow, onUpdAcc, on
     remedy&&h('div',{className:'fixed inset-0 z-[310] bg-black/60 flex items-center justify-center px-4',onClick:e=>{if(e.target===e.currentTarget)setRemedy(null);}},
       h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'remedy-title',className:'w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 p-5 shadow-2xl'},
         h('h3',{id:'remedy-title',className:'text-lg font-semibold text-gray-900 dark:text-white'},'残高不足に対処する'),
-        h('p',{className:'mt-1 text-sm text-gray-600 dark:text-gray-300'},`${fmtDisp(remedy.shortfall.date)}に${remedy.shortfall.account.name}が不足します。その後1か月で最大 ¥${Math.round(remedy.needed).toLocaleString()} 足りません。`),
+        h('p',{className:'mt-1 text-sm text-gray-600 dark:text-gray-300'},`${fmtDisp(remedy.shortfall.date)}に${remedy.shortfall.account.name}が${lowLine>0?`注意ライン ¥${lowLine.toLocaleString()} を下回ります。ラインを保つには`:'不足します。'}その後1か月で最大 ¥${Math.round(remedy.needed).toLocaleString()} 足りません。`),
         remedy.options.length===0
           ?h('p',{className:'mt-4 rounded-lg bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-800 dark:text-amber-200'},'振り替えられる口座も、空き枠のある借入も見つかりません。支払日の変更や、借入の利用限度額の登録（借入タブ）を検討してください。')
           :h('div',{className:'mt-4 space-y-2',role:'radiogroup'},remedy.options.map((option,index)=>h('label',{key:index,className:`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${remedy.choice===index?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/30':'border-gray-200 dark:border-gray-700'}`},
@@ -3291,12 +3332,28 @@ function Dashboard({ accounts, txs, loans, dark, onAddTx, onBorrow, onUpdAcc, on
           upcomingWeek.length>0&&h('ul',{className:'mt-1 space-y-0.5'},upcomingWeek.slice(0,3).map((event,i)=>h('li',{key:i,className:'flex justify-between gap-3 text-xs text-gray-600 dark:text-gray-300'},h('span',{className:'min-w-0 break-words'},`${event.date.slice(5).replace('-','/')} ${event.label}`),h('span',{className:'tabular-nums whitespace-nowrap'},`¥${Number(event.amount).toLocaleString()}`))))
         )
       ),
+      spendable&&h('div',{className:'mt-4 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-2.5'},
+        h('div',{className:'flex flex-wrap items-baseline justify-between gap-2'},
+          h('p',{className:'text-xs font-semibold text-emerald-800 dark:text-emerald-200'},`次の給料日（${fmtDisp(spendable.payday)}・あと${spendable.days}日）まで使えるお金`),
+          h('p',{className:'text-lg font-bold tabular-nums text-emerald-700 dark:text-emerald-300'},`¥${spendable.total.toLocaleString()}`,h('span',{className:'ml-1.5 text-xs font-medium'},`1日 ¥${spendable.perDay.toLocaleString()}`))
+        ),
+        h('p',{className:'mt-1 text-[11px] text-emerald-800/80 dark:text-emerald-200/80'},
+          `予定をすべて引いた後の、各口座の最低残高${lowLine>0?`から注意ライン ¥${lowLine.toLocaleString()} を除いた額`:''}の合計：`,
+          spendable.perAccount.map(item=>`${item.account.name} ¥${item.spendable.toLocaleString()}`).join('・'))
+      ),
+      unconfirmedBills.length>0&&onUpdTx&&h('div',{className:'mt-3 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2.5'},
+        h('p',{className:'text-xs font-semibold text-indigo-800 dark:text-indigo-200'},'引落額を確定してください（14日以内・概算のまま）'),
+        h('ul',{className:'mt-1 space-y-1'},unconfirmedBills.slice(0,5).map(bill=>h('li',{key:`${bill.txId}_${bill.date}`,className:'flex items-center justify-between gap-2 text-sm text-indigo-900 dark:text-indigo-100'},
+          h('span',{className:'min-w-0 truncate'},`${bill.date.slice(5).replace('-','/')} ${bill.label}`),
+          h('span',{className:'flex items-center gap-2'},h('span',{className:'tabular-nums'},`概算 ¥${bill.amount.toLocaleString()}`),
+            h('button',{type:'button',onClick:()=>setOccurrenceTarget({txId:bill.txId,date:bill.date}),className:'rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white'},'金額確定')))))
+      ),
       shortfalls.length>0&&h('div',{role:'alert',className:'mt-4 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/30 px-3 py-2.5'},
-        h('p',{className:'text-xs font-semibold text-rose-700 dark:text-rose-300'},'資金不足の見込み（今後12ヶ月・最初の不足）'),
+        h('p',{className:'text-xs font-semibold text-rose-700 dark:text-rose-300'},lowLine>0?`注意ライン ¥${lowLine.toLocaleString()} を下回る見込み（今後12ヶ月・最初の日）`:'資金不足の見込み（今後12ヶ月・最初の不足）'),
         h('ul',{className:'mt-1 space-y-1'},shortfalls.slice(0,3).map(r=>h('li',{key:r.account.id,className:'flex items-center justify-between gap-3 text-sm text-rose-800 dark:text-rose-200'},
           h('span',{className:'min-w-0'},`${fmtDisp(r.date)} ${r.account.name}`),
-          h('span',{className:'flex items-center gap-2'},h('span',{className:'font-bold tabular-nums'},`-¥${r.shortage.toLocaleString()}`),
-            (onAddTx||onBorrow)&&h('button',{type:'button',onClick:()=>{const plan=shortfallRemedies(r,accounts,riskData,loans);setRemedy({shortfall:r,...plan,choice:plan.options.length?0:-1});},className:'rounded-lg bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white'},'対処する'))))),
+          h('span',{className:'flex items-center gap-2'},h('span',{className:'font-bold tabular-nums'},lowLine>0?`残高 ¥${Math.round(r.balance).toLocaleString()}`:`-¥${r.shortage.toLocaleString()}`),
+            (onAddTx||onBorrow)&&h('button',{type:'button',onClick:()=>{const plan=shortfallRemedies(r,accounts,riskData,loans,todayStr(),lowLine);setRemedy({shortfall:r,...plan,choice:plan.options.length?0:-1});},className:'rounded-lg bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white'},'対処する'))))),
         shortfalls.length>3&&h('p',{className:'mt-1 text-[11px] text-rose-600 dark:text-rose-300'},`ほか ${shortfalls.length-3} 口座`),
         totalAvailable!==null&&h('p',{className:'mt-1.5 text-[11px] text-rose-700 dark:text-rose-300'},`借入の空き枠 合計 ¥${totalAvailable.toLocaleString()}`)
       ),
@@ -3645,7 +3702,10 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
     return s+tx.amount*m;
   },0);
   const change=previous.expense?Math.round((current.expense-previous.expense)/previous.expense*100):null;
-  const maxCategory=Math.max(1,...EXPENSE_CATS.map(c=>current.byCategory[c]||0));
+  // 返済があれば「その他」の前に表示する（予算の対象外）。
+  const shownCats=current.byCategory[REPAYMENT_CAT]||previous.byCategory[REPAYMENT_CAT]
+    ?[...EXPENSE_CATS.filter(c=>c!=='その他'),REPAYMENT_CAT,'その他']:EXPENSE_CATS;
+  const maxCategory=Math.max(1,...shownCats.map(c=>current.byCategory[c]||0));
   return h('div',{className:'space-y-5'},
     h('div',{className:'flex items-end justify-between gap-3'},
       h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'分析・予算'),h('p',{className:'text-sm text-gray-400 dark:text-gray-500 mt-1'},`${todayD().getMonth()+1}月の実績と予算`)),
@@ -3665,7 +3725,7 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
           h('h3',{id:'category-analysis-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'カテゴリ別支出'),
           h('span',{className:'text-xs text-gray-400'},`前月 ¥${previous.expense.toLocaleString()}`)
         ),
-        h('div',{className:'space-y-3'},EXPENSE_CATS.map(cat=>{
+        h('div',{className:'space-y-3'},shownCats.map(cat=>{
           const amount=current.byCategory[cat]||0;
           return h('div',{key:cat},
             h('div',{className:'flex justify-between text-xs mb-1'},h('span',{className:'text-gray-600 dark:text-gray-300'},cat),h('span',{className:'font-semibold text-gray-700 dark:text-gray-200 tabular-nums'},`¥${amount.toLocaleString()}`)),
@@ -5007,7 +5067,7 @@ function App({userEmail}={}){
         '端末の保存領域に問題があります。同期が完了するまでページを閉じず、オンラインで再試行してください。',
         h('button',{type:'button',onClick:syncAll,className:'ml-3 font-semibold underline'},'再試行')
       ),
-      activeView==='home'&&h(Dashboard,{accounts,txs:cashflowTxs,loans,dark,
+      activeView==='home'&&h(Dashboard,{accounts,txs:cashflowTxs,loans,dark,lowBalance:preferences.lowBalance,
         onBorrow:(loanId,deposit)=>{
           const loan=loansRef.current.find(item=>item.id===loanId);
           const result=loan?loanDeposit(loan,{...deposit,additional:true},accountsRef.current):{error:'借入が見つかりません'};
@@ -5028,7 +5088,7 @@ function App({userEmail}={}){
       }),
       activeView==='transactions'&&h('div',{className:'space-y-4'},
         h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'取引'),h('p',{className:'text-sm text-gray-400 mt-1'},'予定・実績・定期取引を管理')),
-        h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast})
+        h(TxManager,{accounts,txs:txs.filter(tx=>!tx.salary),onChange:updTxs,onDelete:deleteTx,addToast,salaryMonthly:monthlyRunRate(txs,todayStr().slice(0,7)).salary})
       ),
       activeView==='salary'&&h(SalaryManager,{accounts,txs,onChange:updTxs,onDelete:deleteTx,addToast,prefs:preferences,onPrefs:updPreferences}),
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast})),
