@@ -103,3 +103,51 @@ test('残高不足には、余裕のある口座からの振替と、空き枠�
   const cheaper=[{...loans[1],balance:0}];
   assert.equal(fn('shortfallRemedies')({account:accounts[0],date:d(3),shortage:23400},[accounts[0]],forecast,[loans[0],...cheaper],today).options.map(item=>item.loan.name).join(),'千葉銀行カードローン,キャッシング');
 });
+
+test('千葉銀行の返済額表: 返済日前日の残高で返済額が決まる',()=>{
+  const loan={paymentTiers:fn('CHIBABANK_CARDLOAN_TIERS')};
+  const pay=balance=>fn('tieredPayment')(loan,balance);
+  assert.equal(pay(50000),2000);
+  assert.equal(pay(100000),2000);
+  assert.equal(pay(100001),4000);
+  assert.equal(pay(500000),10000);
+  assert.equal(pay(500001),15000);
+  assert.equal(pay(1000000),15000);
+  assert.equal(pay(1000001),20000);
+  assert.equal(pay(5000001),60000);
+  assert.equal(pay(8000000),70000);
+  assert.equal(pay(9000000),70000);
+  // 利息は100円未満を切り捨てた残高で計算
+  assert.equal(fn('loanInterest')(100099,14.6,30,100),fn('loanInterest')(100000,14.6,30));
+});
+
+test('残高スライドの返済予定は、残高が減ると返済額も下がり、完済の回で止まる',()=>{
+  const accounts=[{id:'bank',name:'千葉銀',balance:0}];
+  const loan={id:'cb',name:'千葉銀行カードローン',balance:202000,interestRate:14.8,monthlyPayment:6000,paymentTable:'chibabank',
+    paymentTiers:fn('CHIBABANK_CARDLOAN_TIERS'),interestUnit:100,nextPaymentDate:shift(5),repaymentAccountId:'bank',payments:[]};
+  const plan=fn('withLoanRepaymentPlans')([],[loan],accounts).find(tx=>tx.loanPlan);
+  const events=fn('expandRec')(plan,fn('todayD')(),fn('addMonths')(fn('todayD')(),3),new Set());
+  assert.equal(events[0].amt,-6000);
+  assert.equal(events[1].amt,-4000);
+  // 計算で入れた回ごとの額は保存しない
+  const clean=fn('stripLoanScheduleFields')(plan);
+  assert.equal(Object.keys(clean.overrides).length,0);
+  // 自分で確定した回は残す
+  const date=fn('fmt')(events[1].date);
+  const edited=fn('stripLoanScheduleFields')({...plan,overrides:{...plan.overrides,[date]:9000}});
+  assert.equal(edited.overrides[date],9000);
+  // 残高が少なければ残り全額（利息込み）で終わる
+  const small=fn('withLoanRepaymentPlans')([],[{...loan,balance:3000}],accounts).find(tx=>tx.loanPlan);
+  const last=fn('expandRec')(small,fn('todayD')(),fn('addMonths')(fn('todayD')(),6),new Set());
+  assert.equal(last.length,2);
+  assert.equal(last[0].amt,-2000);
+  assert.ok(-last[1].amt>1000&&-last[1].amt<1100);
+});
+
+test('残高スライドの完済見込みは返済額の変化を反映する',()=>{
+  const loan={balance:300000,interestRate:14.8,paymentTiers:fn('CHIBABANK_CARDLOAN_TIERS'),interestUnit:100};
+  const plan=fn('loanPayoffPlan')(loan);
+  const fixed=fn('loanPayoffPlan')({...loan,paymentTiers:[],monthlyPayment:6000});
+  assert.ok(plan.months>fixed.months);
+  assert.ok(plan.totalInterest>fixed.totalInterest);
+});

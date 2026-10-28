@@ -346,7 +346,7 @@ function loanRepaymentStatus(loan,txs,accounts){
     const account=accounts.find(item=>item.id===loan.repaymentAccountId);
     return {needed:true,ready:!!account,message:account?`残高表: ${account.name}から支払日に一括返済`:'残高表に未反映です。「編集」で返済元口座を設定してください。'};
   }
-  if(!(Number(loan.balance)>0)||!(Number(loan.monthlyPayment)>0))return {needed:false,ready:true,message:''};
+  if(!(Number(loan.balance)>0)||!(tieredPayment(loan,Number(loan.balance))>0))return {needed:false,ready:true,message:''};
   if(loan.repaymentTransactionId){
     const tx=txs.find(item=>item.id===loan.repaymentTransactionId&&item.type==='expense'&&item.recurring);
     const ready=!!tx&&accounts.some(account=>account.id===tx.accountId);
@@ -384,7 +384,9 @@ function withLoanRepaymentPlans(txs,loans,accounts){
     const loan=(loans||[]).find(item=>item.repaymentTransactionId===tx.id);
     if(!loan||!tx.recurring)return tx;
     const paidDates=loanCoveredDates(loan,payments);
-    return capLoanSchedule(paidDates.length?{...tx,paidDates}:tx,Number(loan.balance));
+    const base=paidDates.length?{...tx,paidDates}:tx;
+    if(sortedPaymentTiers(loan).length)return slideLoanSchedule({...base,amount:tieredPayment(loan,Number(loan.balance)),adjustBizDay:base.adjustBizDay},loan);
+    return capLoanSchedule(base,Number(loan.balance));
   });
   const plans=(loans||[]).flatMap(loan=>{
     if(loan.repaymentMethod==='lumpSum'){
@@ -393,18 +395,23 @@ function withLoanRepaymentPlans(txs,loans,accounts){
       return lumpSumDues(loan).filter(due=>!covered.has(due.date)).map(due=>({id:`loan-lump:${loan.id}:${due.date}`,loanId:loan.id,loanPlan:true,lumpSum:true,
         label:`返済（${loan.name}・一括）`,type:'expense',category:'返済',amount:due.amount,accountId:loan.repaymentAccountId,recurring:false,startDate:due.date}));
     }
-    const amount=Number(loan.monthlyPayment||0);
+    const slide=sortedPaymentTiers(loan).length>0;
+    const amount=slide?tieredPayment(loan,Number(loan.balance)):Number(loan.monthlyPayment||0);
     if(loan.repaymentTransactionId||!(Number(loan.balance)>0)||!Number.isSafeInteger(amount)||amount<=0||
       !validTxDate(loan.nextPaymentDate)||!accountIds.has(loan.repaymentAccountId))return [];
-    return [capLoanSchedule({id:loanRepaymentId(loan.id),loanId:loan.id,loanPlan:true,label:`返済（${loan.name}）`,type:'expense',category:'返済',
+    const plan={id:loanRepaymentId(loan.id),loanId:loan.id,loanPlan:true,label:`返済（${loan.name}）`,type:'expense',category:'返済',
       amount,accountId:loan.repaymentAccountId,recurring:true,frequency:'monthly',startDate:loan.nextPaymentDate,
-      endDate:null,adjustBizDay:'',paidDates:loanCoveredDates(loan,payments),overrides:loan.repaymentOverrides||{},dateMoves:loan.repaymentDateMoves||{}},Number(loan.balance))];
+      endDate:null,adjustBizDay:loan.adjustBizDay||'',paidDates:loanCoveredDates(loan,payments),overrides:loan.repaymentOverrides||{},dateMoves:loan.repaymentDateMoves||{}};
+    return [slide?slideLoanSchedule(plan,loan):capLoanSchedule(plan,Number(loan.balance))];
   });
   return [...scheduledTxs,...plans,...payments];
 }
 // 予定表示用の付加情報を外し、保存できる取引に戻す。
 function stripLoanScheduleFields(tx){
-  const {paidDates,untilDate,loanCap,...clean}=tx;
+  const {paidDates,untilDate,loanCap,slideComputed,...clean}=tx;
+  if(slideComputed&&clean.overrides){
+    clean.overrides=Object.fromEntries(Object.entries(clean.overrides).filter(([date,value])=>slideComputed[date]!==value));
+  }
   if(loanCap&&clean.overrides&&clean.overrides[loanCap.date]===loanCap.amount){
     const overrides={...clean.overrides};
     if(loanCap.prev===undefined)delete overrides[loanCap.date];else overrides[loanCap.date]=loanCap.prev;
@@ -414,8 +421,9 @@ function stripLoanScheduleFields(tx){
 }
 // ─── 利息・限度額・キャッシング ─────────────────────────
 // 日割り利息（円未満切り捨て）。カードローン・キャッシングの一般的な計算方法。
-function loanInterest(balance,ratePct,days){
-  const b=Number(balance)||0,r=Number(ratePct)||0;
+// unit は付利単位（千葉銀行は100円未満を切り捨てて計算）。
+function loanInterest(balance,ratePct,days,unit=1){
+  const b=Math.floor((Number(balance)||0)/unit)*unit,r=Number(ratePct)||0;
   if(!(b>0)||!(r>0)||!(days>0))return 0;
   return Math.floor(b*r/100*days/365);
 }
@@ -451,7 +459,7 @@ function lumpSumDues(loan){
 function splitLoanPayment(loan,amount,date){
   const last=[...(loan.payments||[])].map(item=>item.paidAt).filter(value=>validTxDate(value)&&value<date).sort().at(-1);
   const days=last?daysBetween(last,date):30;
-  const interest=Math.min(Number(amount),loanInterest(loan.balance,loan.interestRate,days));
+  const interest=Math.min(Number(amount),loanInterest(loan.balance,loan.interestRate,days,loan.interestUnit||1));
   const principal=Math.min(Number(amount)-interest,Number(loan.balance)||0);
   return {interest,principal:Math.max(0,principal)};
 }
@@ -467,14 +475,55 @@ function settleLumpSum(loan,principal,paymentId){
   }
   return (loan.borrowings||[]).map(item=>settle.has(item.id)?{...item,settled:true,settledBy:paymentId}:item);
 }
+// 千葉銀行カードローンの約定返済額（約定返済日前日の最終借入残高ごと）。
+// クイックパワー＜アドバンス＞・マイワレット・プレミアクラスの商品概要（千葉銀行公式サイト、2025年12月16日現在ほか）で共通。
+const CHIBABANK_CARDLOAN_TIERS=[
+  [100000,2000],[200000,4000],[300000,6000],[400000,8000],[500000,10000],[1000000,15000],
+  [1500000,20000],[2000000,25000],[2500000,30000],[3000000,35000],[3500000,40000],[4000000,45000],
+  [4500000,50000],[5000000,55000],[6000000,60000],[7000000,65000],[8000000,70000]
+].map(([upTo,amount])=>({upTo,amount}));
+const LOAN_PAYMENT_TABLES={chibabank:{label:'千葉銀行カードローンの返済額表（残高スライド）',tiers:CHIBABANK_CARDLOAN_TIERS,interestUnit:100}};
+// 残高スライド方式: 返済額をその時点の借入残高で決める。
+// paymentTiers は {upTo, amount} の一覧。upTo が null の行は「それより上すべて」。未設定なら月間返済額（固定）。
+function sortedPaymentTiers(loan){
+  return (loan.paymentTiers||[]).filter(tier=>Number(tier.amount)>0)
+    .sort((a,b)=>(a.upTo==null?Infinity:Number(a.upTo))-(b.upTo==null?Infinity:Number(b.upTo)));
+}
+function tieredPayment(loan,balance){
+  const tiers=sortedPaymentTiers(loan);
+  if(!tiers.length)return Number(loan.monthlyPayment)||0;
+  const tier=tiers.find(item=>item.upTo==null||Number(balance)<=Number(item.upTo))||tiers.at(-1);
+  return Number(tier.amount);
+}
+const SLIDE_HORIZON_MONTHS=120;
+// 残高スライドの返済予定。今日以降の各回で、見込み残高から返済額を決め、日割り利息を引いた元金で残高を減らす。
+// 自分で確定した回（overrides）はその額を使う。完済する回で予定を止める。
+function slideLoanSchedule(tx,loan){
+  let balance=Number(loan.balance)||0;
+  if(!(balance>0)||!sortedPaymentTiers(loan).length)return tx;
+  const today=todayD(),userOverrides=tx.overrides||{},computed={},overrides={...userOverrides};
+  const lastPaid=[...(loan.payments||[])].map(item=>item.paidAt).filter(value=>validTxDate(value)&&value<=fmt(today)).sort().at(-1);
+  let prev=lastPaid||fmt(addDays(today,-30));
+  for(const event of expandRec({...tx,overrides:{}},today,addMonths(today,SLIDE_HORIZON_MONTHS),null)){
+    const ds=fmt(event.date);
+    const interest=loanInterest(balance,loan.interestRate,Math.max(1,daysBetween(prev,ds)),loan.interestUnit||1);
+    const planned=userOverrides[ds]!==undefined?Number(userOverrides[ds]):tieredPayment(loan,balance);
+    const due=Math.min(planned,balance+interest);
+    if(userOverrides[ds]===undefined||due!==Number(userOverrides[ds])){overrides[ds]=due;computed[ds]=due;}
+    balance-=Math.max(0,due-interest);
+    prev=ds;
+    if(balance<=0)return {...tx,overrides,slideComputed:computed,untilDate:ds};
+  }
+  return {...tx,overrides,slideComputed:computed};
+}
 // 毎月返済の完済見込み。返済額が利息以下なら完済できない。
 function loanPayoffPlan(loan,maxMonths=600){
-  const payment=Number(loan.monthlyPayment)||0;
   let balance=Number(loan.balance)||0,totalInterest=0,months=0;
   if(!(balance>0))return {months:0,totalInterest:0};
-  if(!(payment>0))return {error:'月間返済額が未設定です'};
+  if(!(tieredPayment(loan,balance)>0))return {error:'月間返済額が未設定です'};
   while(balance>0&&months<maxMonths){
-    const interest=loanInterest(balance,loan.interestRate,30);
+    const payment=tieredPayment(loan,balance);
+    const interest=loanInterest(balance,loan.interestRate,30,loan.interestUnit||1);
     if(payment<=interest)return {error:'返済額が利息以下のため、このままでは残高が減りません'};
     totalInterest+=interest;
     balance-=Math.min(balance,payment-interest);
@@ -848,6 +897,13 @@ function validateBackup(data){
     if(loan.payments!==undefined)list(loan.payments,'返済履歴').forEach(item=>{amount(item.amount,'返済履歴');date(item.paidAt,'返済履歴');date(item.coversDate,'返済対象日',true);optionalText(item,['note','accountId'],'返済履歴');});
     if(loan.borrowings!==undefined)list(loan.borrowings,'借入履歴').forEach(item=>{amount(item.amount,'借入履歴');date(item.date,'借入履歴');date(item.due,'借入の返済日',true);optionalText(item,['accountId','transactionId','settledBy'],'借入履歴');});
     if(loan.creditLimit!==undefined)amount(loan.creditLimit,'利用限度額');
+    if(loan.paymentTiers!==undefined){
+      if(!Array.isArray(loan.paymentTiers))fail('借入の返済額表が不正です');
+      loan.paymentTiers.forEach(tier=>{if(!isDataObject(tier))fail('借入の返済額表が不正です');amount(tier.amount,'借入の返済額表');if(tier.upTo!==null&&tier.upTo!==undefined)amount(tier.upTo,'借入の返済額表');});
+    }
+    optionalText(loan,['paymentTable'],'借入');
+    if(loan.interestUnit!==undefined)amount(loan.interestUnit,'借入の付利単位');
+    if(loan.adjustBizDay!==undefined&&!['','next','prev'].includes(loan.adjustBizDay))fail('借入の返済日の扱いが不正です');
     if(loan.repaymentMethod!==undefined&&!['monthly','lumpSum'].includes(loan.repaymentMethod))fail('借入の返済方法が不正です');
     for(const field of ['closingDay','paymentDay'])if(loan[field]!==undefined&&(!Number.isInteger(loan[field])||loan[field]<1||loan[field]>31))fail('借入の締め日・支払日が不正です');
     if(loan.payments!==undefined)loan.payments.forEach(item=>{for(const field of ['principal','interest'])if(item[field]!==undefined)amount(item[field],'返済履歴');});
@@ -3874,7 +3930,7 @@ function loanDueInfo(date){
 }
 
 function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoPayment,onAddTx,addToast}){
-  const blank={name:'',lender:'',loanType:'card',originalAmount:'',balance:'',interestRate:'',monthlyPayment:'',nextPaymentDate:'',repaymentAccountId:'',repaymentTransactionId:'',notes:'',color:LOAN_COLORS[0],deposit:true,depositAccountId:'',depositDate:todayStr(),creditLimit:'',repaymentMethod:'monthly',closingDay:'15',paymentDay:'10'};
+  const blank={name:'',lender:'',loanType:'card',originalAmount:'',balance:'',interestRate:'',monthlyPayment:'',nextPaymentDate:'',repaymentAccountId:'',repaymentTransactionId:'',notes:'',color:LOAN_COLORS[0],deposit:true,depositAccountId:'',depositDate:todayStr(),creditLimit:'',repaymentMethod:'monthly',closingDay:'15',paymentDay:'10',paymentTable:'',adjustBizDay:''};
   const [form,setForm]=useState(blank);
   const [payment,setPayment]=useState({loanId:'',amount:'',paidAt:todayStr(),note:'',accountId:'',coversSchedule:true});
   const [editId,setEditId]=useState(null);
@@ -3898,9 +3954,9 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
   const totalBalance=loans.reduce((sum,loan)=>sum+Number(loan.balance||0),0);
   const availableList=loans.map(loanAvailable).filter(value=>value!==null);
   const totalAvailable=availableList.length?availableList.reduce((sum,value)=>sum+value,0):null;
-  const totalMonthly=loans.reduce((sum,loan)=>sum+Number(loan.monthlyPayment||0),0);
+  const totalMonthly=loans.reduce((sum,loan)=>sum+(Number(loan.balance)>0&&loan.repaymentMethod!=='lumpSum'?tieredPayment(loan,Number(loan.balance)):0),0);
   const totalPaid=loans.reduce((sum,loan)=>sum+(loan.payments||[]).reduce((s,item)=>s+Number(item.amount||0),0),0);
-  const hasMonthlyPayment=loans.some(loan=>Number(loan.monthlyPayment||0)>0);
+  const hasMonthlyPayment=loans.some(loan=>tieredPayment(loan,Number(loan.balance))>0);
   const paymentLoan=loans.find(loan=>loan.id===payment.loanId);
   const coverCandidate=paymentLoan?nextLoanOccurrence(paymentLoan,loans,txs,accounts,payment.paidAt):'';
   const paymentRows=loans.flatMap(loan=>(loan.payments||[]).map(item=>({...item,loanName:loan.name,loanId:loan.id}))).sort((a,b)=>String(b.paidAt).localeCompare(String(a.paidAt)));
@@ -3909,7 +3965,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
     setEditId(null);setErr('');
     setShowAddForm(true);
     const presets={
-      card:{name:'千葉銀行カードローン',lender:'千葉銀行',loanType:'card',repaymentMethod:'monthly',color:LOAN_COLORS[0]},
+      card:{name:'千葉銀行カードローン',lender:'千葉銀行',loanType:'card',repaymentMethod:'monthly',paymentTable:'chibabank',adjustBizDay:'next',color:LOAN_COLORS[0]},
       cashing:{name:'三井住友カード キャッシング',lender:'三井住友カード',loanType:'cashing',repaymentMethod:'lumpSum',interestRate:'18',closingDay:'15',paymentDay:'10',color:LOAN_COLORS[2]},
       personal:{name:'個人からの借入',lender:'',loanType:'personal',repaymentMethod:'monthly',color:LOAN_COLORS[1]}
     };
@@ -3925,6 +3981,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
     if(original<balance){setErr('借入総額は現在残高以上で入力してください');return;}
     if(!Number.isFinite(Number(form.interestRate||0))||Number(form.interestRate||0)<0||Number(form.monthlyPayment||0)<0){setErr('金利・返済額は0以上で入力してください');return;}
     if(!Number.isSafeInteger(Number(form.monthlyPayment||0))){setErr('月間返済額は整数の円で入力してください');return;}
+    const table=form.repaymentMethod!=='lumpSum'?LOAN_PAYMENT_TABLES[form.paymentTable]:null;
     if(form.nextPaymentDate&&!validTxDate(form.nextPaymentDate)){setErr('有効な次回返済日を入力してください');return;}
     if(form.repaymentAccountId&&!accounts.some(account=>account.id===form.repaymentAccountId)){setErr('返済元口座を選び直してください');return;}
     if(form.repaymentTransactionId&&!repaymentCandidates.some(tx=>tx.id===form.repaymentTransactionId)){setErr('登録済みの返済取引を選び直してください');return;}
@@ -3935,7 +3992,8 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
     const closingDay=Number(form.closingDay),paymentDay=Number(form.paymentDay);
     if(lumpSum&&(!Number.isInteger(closingDay)||closingDay<1||closingDay>31||!Number.isInteger(paymentDay)||paymentDay<1||paymentDay>31)){setErr('締め日・支払日は1〜31日で入力してください（月末は31）');return;}
     if(lumpSum&&!editId&&balance>0&&!validTxDate(form.nextPaymentDate)){setErr('今の残高を返す次回の支払日を入力してください');return;}
-    const item={...form,name:form.name.trim(),lender:form.lender.trim(),originalAmount:original,balance,interestRate:Number(form.interestRate||0),monthlyPayment:lumpSum?0:Number(form.monthlyPayment||0),nextPaymentDate:form.nextPaymentDate||'',notes:form.notes.trim(),
+    const item={...form,name:form.name.trim(),lender:form.lender.trim(),originalAmount:original,balance,interestRate:Number(form.interestRate||0),monthlyPayment:lumpSum?0:table?tieredPayment({paymentTiers:table.tiers},balance):Number(form.monthlyPayment||0),
+      paymentTable:table?form.paymentTable:'',paymentTiers:table?table.tiers:[],interestUnit:table?table.interestUnit:1,adjustBizDay:['next','prev'].includes(form.adjustBizDay)?form.adjustBizDay:'',nextPaymentDate:form.nextPaymentDate||'',notes:form.notes.trim(),
       creditLimit,repaymentMethod:lumpSum?'lumpSum':'monthly',...(lumpSum?{closingDay,paymentDay,repaymentTransactionId:''}:{})};
     if(editId){
       const {deposit,depositAccountId,depositDate,...fields}=item;
@@ -3963,7 +4021,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
   }
   function edit(loan){
     setShowAddForm(true);
-    setEditId(loan.id);setErr('');setForm({name:loan.name||'',lender:loan.lender||'',loanType:loan.loanType||'other',originalAmount:String(loan.originalAmount||''),balance:String(loan.balance||0),interestRate:String(loan.interestRate||''),monthlyPayment:String(loan.monthlyPayment||''),nextPaymentDate:loan.nextPaymentDate||'',repaymentAccountId:loan.repaymentAccountId||'',repaymentTransactionId:loan.repaymentTransactionId||'',notes:loan.notes||'',color:loan.color||LOAN_COLORS[0],creditLimit:loan.creditLimit?String(loan.creditLimit):'',repaymentMethod:loan.repaymentMethod||'monthly',closingDay:String(loan.closingDay||15),paymentDay:String(loan.paymentDay||10)});
+    setEditId(loan.id);setErr('');setForm({name:loan.name||'',lender:loan.lender||'',loanType:loan.loanType||'other',originalAmount:String(loan.originalAmount||''),balance:String(loan.balance||0),interestRate:String(loan.interestRate||''),monthlyPayment:String(loan.monthlyPayment||''),nextPaymentDate:loan.nextPaymentDate||'',repaymentAccountId:loan.repaymentAccountId||'',repaymentTransactionId:loan.repaymentTransactionId||'',notes:loan.notes||'',color:loan.color||LOAN_COLORS[0],creditLimit:loan.creditLimit?String(loan.creditLimit):'',repaymentMethod:loan.repaymentMethod||'monthly',closingDay:String(loan.closingDay||15),paymentDay:String(loan.paymentDay||10),paymentTable:loan.paymentTable||'',adjustBizDay:loan.adjustBizDay||''});
     requestAnimationFrame(()=>document.getElementById('loan-editor')?.scrollIntoView({behavior:'smooth',block:'start'}));
   }
   function addPayment(e){
@@ -4037,7 +4095,19 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
         h('div',null,h('label',{className:labelCls},'借入総額（円）'),h('input',{type:'number',min:'0',className:inputCls,placeholder:'例: 500000',value:form.originalAmount,onChange:e=>sf('originalAmount',e.target.value)})),
         h('div',null,h('label',{className:labelCls},'現在残高（円） *'),h('input',{type:'number',min:'0',className:inputCls,placeholder:'例: 300000',value:form.balance,onChange:e=>sf('balance',e.target.value)})),
         h('div',null,h('label',{className:labelCls},'金利（年率 %）'),h('input',{type:'number',min:'0',step:'0.01',className:inputCls,placeholder:'例: 14.8',value:form.interestRate,onChange:e=>sf('interestRate',e.target.value)})),
-        form.repaymentMethod!=='lumpSum'&&h('div',null,h('label',{className:labelCls},'月間返済額（円）'),h('input',{type:'number',min:'0',className:inputCls,placeholder:'例: 10000',value:form.monthlyPayment,onChange:e=>sf('monthlyPayment',e.target.value)})),
+        form.repaymentMethod!=='lumpSum'&&h('div',null,h('label',{htmlFor:'loan-payment-table',className:labelCls},'返済額の決め方'),h('select',{id:'loan-payment-table',className:selectCls,value:form.paymentTable||'',onChange:e=>sf('paymentTable',e.target.value)},
+          h('option',{value:''},'毎月同じ額'),Object.entries(LOAN_PAYMENT_TABLES).map(([key,item])=>h('option',{key,value:key},item.label)))),
+        form.repaymentMethod!=='lumpSum'&&!form.paymentTable&&h('div',null,h('label',{className:labelCls},'月間返済額（円）'),h('input',{type:'number',min:'0',className:inputCls,placeholder:'例: 10000',value:form.monthlyPayment,onChange:e=>sf('monthlyPayment',e.target.value)})),
+        form.repaymentMethod!=='lumpSum'&&form.paymentTable&&LOAN_PAYMENT_TABLES[form.paymentTable]&&h('div',{className:'sm:col-span-2 rounded-xl bg-gray-50 dark:bg-gray-900/40 p-3 text-xs text-gray-600 dark:text-gray-300'},
+          h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},`今の残高なら毎月 ${loanYen(tieredPayment({paymentTiers:LOAN_PAYMENT_TABLES[form.paymentTable].tiers},Number(form.balance)||0))}`),
+          h('p',{className:'mt-1'},'返済日前日の借入残高で返済額が決まり、残高が減ると返済額も下がります。利息は100円未満を切り捨てた残高の日割りで、返済日に元金へ組み入れます（千葉銀行公式サイトの商品概要より）。'),
+          h('details',{className:'mt-1'},h('summary',{className:'cursor-pointer text-indigo-600 dark:text-indigo-400'},'返済額の表を見る'),
+            h('table',{className:'mt-1 w-full tabular-nums'},h('tbody',null,LOAN_PAYMENT_TABLES[form.paymentTable].tiers.map((tier,index,list)=>h('tr',{key:tier.upTo},
+              h('td',{className:'py-0.5'},`${index?`${(list[index-1].upTo/10000).toLocaleString()}万円超`:''}${(tier.upTo/10000).toLocaleString()}万円以下`),
+              h('td',{className:'py-0.5 text-right'},loanYen(tier.amount))))))
+          )),
+        form.repaymentMethod!=='lumpSum'&&h('div',null,h('label',{htmlFor:'loan-bizday',className:labelCls},'返済日が土日祝のとき'),h('select',{id:'loan-bizday',className:selectCls,value:form.adjustBizDay||'',onChange:e=>sf('adjustBizDay',e.target.value)},
+          h('option',{value:''},'そのまま'),h('option',{value:'next'},'翌営業日（千葉銀行など）'),h('option',{value:'prev'},'前営業日'))),
         h('div',null,h('label',{className:labelCls},form.repaymentMethod==='lumpSum'?'今の残高を返す支払日':'次回返済日'),h('input',{type:'date',className:inputCls,value:form.nextPaymentDate,onChange:e=>sf('nextPaymentDate',e.target.value)})),
         h('div',{className:'sm:col-span-2 rounded-xl border border-gray-200 dark:border-gray-600 p-3 space-y-3'},
           h('div',null,h('label',{htmlFor:'loan-repayment-account',className:labelCls},'返済元口座（残高表に反映）'),h('select',{id:'loan-repayment-account',className:selectCls,disabled:!!form.repaymentTransactionId,value:form.repaymentAccountId,onChange:e=>sf('repaymentAccountId',e.target.value)},h('option',{value:''},'未設定（残高表に反映しない）'),accounts.map(account=>h('option',{key:account.id,value:account.id},account.name)))),
@@ -4061,7 +4131,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
        const paid=(loan.payments||[]).reduce((sum,item)=>sum+Number(item.amount||0),0),progress=Number(loan.originalAmount)>0?Math.min(100,Math.round(paid/Number(loan.originalAmount)*100)):0,nextDue=loan.repaymentMethod==='lumpSum'?(lumpSumDues(loan)[0]?.date||''):(nextLoanOccurrence(loan,loans,txs,accounts,todayStr(),0)||loan.nextPaymentDate),due=loanDueInfo(nextDue),repaymentStatus=loanRepaymentStatus(loan,txs,accounts);
       return h('section',{key:loan.id,className:cardCls+' p-5'},
          h('div',{className:'flex items-start justify-between gap-3 flex-wrap'},h('div',{className:'flex items-start gap-2'},h('span',{className:'w-3 h-3 rounded-full mt-1.5',style:{backgroundColor:loan.color||LOAN_COLORS[0]}}),h('div',null,h('h3',{className:'font-semibold text-gray-800 dark:text-gray-100'},loan.name),h('p',{className:'text-xs text-gray-400'},`${loan.lender||'借入先未設定'} ・ ${LOAN_TYPES[loan.loanType]||LOAN_TYPES.other}`))),h('div',{className:'flex gap-1.5 text-xs flex-wrap'},onAddTx&&h('button',{onClick:()=>depositForm?.loanId===loan.id?setDepositForm(null):openDeposit(loan),className:'rounded-lg bg-sky-50 dark:bg-sky-900/20 px-2.5 py-1.5 text-sky-700 dark:text-sky-300 font-semibold'},'口座へ入金・追加借入'),h('button',{onClick:()=>startQuickPayment(loan),className:'rounded-lg bg-emerald-50 dark:bg-emerald-900/20 px-2.5 py-1.5 text-emerald-700 dark:text-emerald-300 font-semibold'},'返済する'),h('button',{onClick:()=>edit(loan),className:'rounded-lg border border-indigo-200 dark:border-indigo-800 px-2.5 py-1.5 text-indigo-700 dark:text-indigo-300 font-semibold'},'編集'),h('button',{onClick:()=>removeLoan(loan),className:'rounded-lg px-2.5 py-1.5 text-red-600 dark:text-red-400'},'削除'))),
-         h('div',{className:'mt-4 flex items-end justify-between'},h('div',null,h('p',{className:'text-xs text-gray-400'},'現在残高'),h('p',{className:'text-2xl font-bold text-orange-600'},loanYen(loan.balance))),h('div',{className:'text-right text-xs text-gray-500 dark:text-gray-400'},loan.interestRate?`年 ${loan.interestRate}%`:'金利未設定',h('br'),loan.repaymentMethod==='lumpSum'?`${loan.closingDay===31?'月末':loan.closingDay+'日'}締め・翌月${loan.paymentDay}日に一括`:Number(loan.monthlyPayment||0)>0?`月 ${loanYen(loan.monthlyPayment)}`:'月返済 未設定')),
+         h('div',{className:'mt-4 flex items-end justify-between'},h('div',null,h('p',{className:'text-xs text-gray-400'},'現在残高'),h('p',{className:'text-2xl font-bold text-orange-600'},loanYen(loan.balance))),h('div',{className:'text-right text-xs text-gray-500 dark:text-gray-400'},loan.interestRate?`年 ${loan.interestRate}%`:'金利未設定',h('br'),loan.repaymentMethod==='lumpSum'?`${loan.closingDay===31?'月末':loan.closingDay+'日'}締め・翌月${loan.paymentDay}日に一括`:sortedPaymentTiers(loan).length?`月 ${loanYen(tieredPayment(loan,Number(loan.balance)))}（残高スライド）`:Number(loan.monthlyPayment||0)>0?`月 ${loanYen(loan.monthlyPayment)}`:'月返済 未設定')),
         Number(loan.originalAmount)>0&&h('div',{className:'mt-3'},h('div',{className:'flex justify-between text-xs text-gray-400 mb-1'},h('span',null,'返済進捗'),h('span',null,`${progress}%`)),h('div',{className:'h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden'},h('div',{className:'h-full bg-emerald-500 rounded-full',style:{width:`${progress}%`}}))),
          loanAvailable(loan)!==null&&h('div',{className:'mt-3'},
            h('div',{className:'flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1'},h('span',null,`利用限度額 ${loanYen(loan.creditLimit)}`),h('span',{className:'font-semibold text-sky-700 dark:text-sky-300'},`空き枠 ${loanYen(loanAvailable(loan))}`)),
