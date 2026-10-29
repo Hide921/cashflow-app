@@ -2058,7 +2058,7 @@ function resolveStockConflict(choice) {
     portfolioStorage.removeItem(STOCKS_PENDING_KEY);
     _lastSynced.sp_stocks = canonicalStocks(row.value);
     render(); renderPieChart(); renderLineChart();
-    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
+    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries, watchlist });
   } else if (choice !== 'local') return;
   portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, row.updated_at);
   setStockSyncConflict(null);
@@ -2157,7 +2157,7 @@ async function _doSave(force = false) {
     portfolioStorage.setItem(STOCKS_SYNCED_AT_KEY, stocksRow.updated_at);
     _lastSynced.sp_stocks = canonicalStocks(stocksRow.value);
     render(); renderPieChart();
-    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
+    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries, watchlist });
   }
   transactionDeletions = mergeTransactionDeletions(transactionDeletions, deletionsRow?.value);
   transactions = mergeTransactions(transactions, txRow?.value, transactionDeletions);
@@ -2748,7 +2748,7 @@ function save(skipSync = false) {
     JSON.stringify(watchlistBudgetJPY) !== _lastSynced.sp_watchlist_budget;
   if (userDataChanged) {
     portfolioStorage.setItem(LOCAL_UPDATED_AT_KEY, new Date().toISOString());
-    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
+    notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries, watchlist });
   }
   document.getElementById('lastUpdated').textContent =
     '最終更新: ' + new Date().toLocaleTimeString('ja-JP');
@@ -2762,7 +2762,7 @@ function savePriceState() {
   portfolioStorage.setItem(PORTFOLIO_LOG_KEY, JSON.stringify(portfolioLog));
   document.getElementById('lastUpdated').textContent =
     '最終更新: ' + new Date().toLocaleTimeString('ja-JP');
-  notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries });
+  notifyCashflow('portfolio-changed', { stocks, log: portfolioLog, collateral: collateralEntries, watchlist });
 }
 
 // ── API 接続テスト ─────────────────────────────────────────────────

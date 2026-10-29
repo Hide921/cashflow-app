@@ -101,7 +101,7 @@ const _sb = supabase.createClient(
 
 // ─── Storage ──────────────────────────────────────────
 const DATA_KEYS=['accounts','transactions','budgets','skipped','preferences','loans'];
-const INVESTMENT_KEYS=['sp_stocks','sp_portfolio_log','sp_collateral'];
+const INVESTMENT_KEYS=['sp_stocks','sp_portfolio_log','sp_collateral','sp_watchlist'];
 const INVESTMENT_API='https://stock-portfolio-1-2rnh.onrender.com';
 // 価格サーバー（Render無料プラン）は放置するとスリープし、起動に最大1分ほどかかる。
 // アプリを開いた時点で起こし始め、投資タブを開くまでに起動を進めておく。
@@ -237,7 +237,8 @@ async function loadInvestmentData(){
   return withPendingInvestmentStocks({
     stocks:Array.isArray(values[0])?values[0]:[],
     log:Array.isArray(values[1])?values[1]:[],
-    collateral:Array.isArray(values[2])?values[2]:[]
+    collateral:Array.isArray(values[2])?values[2]:[],
+    watchlist:Array.isArray(values[3])?values[3]:[]
   });
 }
 function withPendingInvestmentStocks(data){
@@ -4347,8 +4348,9 @@ function downloadGoogleFinanceCsv(stocks,options){
   downloadBlob(`google_finance_portfolio_${todayStr()}.csv`,'﻿'+googleFinanceCsv(stocks,options),'text/csv');
 }
 const EMPTY_INVESTMENT_FORM={market:'JP',tradeType:'spot',accountType:'specific',ticker:'',name:'',sector:'',quantity:'',avgPrice:'',avgCurrency:'',note:''};
-function InvestmentView({data,onReload,onStocksChange}){
+function InvestmentView({data,onReload,onStocksChange,onOpenFull}){
   const stocks=data?.stocks||[];
+  const watchlist=data?.watchlist||[];
   const collateral=data?.collateral||[];
   const log=data?.log||[];
   const [quotes,setQuotes]=useState({});
@@ -4364,13 +4366,13 @@ function InvestmentView({data,onReload,onStocksChange}){
   const [form,setForm]=useState(EMPTY_INVESTMENT_FORM);
   const [formError,setFormError]=useState('');
   const [deleteTarget,setDeleteTarget]=useState(null);
-  const signature=useMemo(()=>stocks.map(s=>`${s.id}:${investmentTicker(s)}`).join('|'),[stocks]);
+  const signature=useMemo(()=>[...stocks,...watchlist].map(s=>`${s.id}:${investmentTicker(s)}`).join('|'),[stocks,watchlist]);
 
   async function refreshPrices(){
-    if(!stocks.length){setQuotes({});setPriceCheckedAt(null);return;}
+    if(!stocks.length&&!watchlist.length){setQuotes({});setPriceCheckedAt(null);return;}
     setPriceLoading(true);setPriceError('');
     try{
-      const merged=await fetchInvestmentQuotes([...stocks.map(investmentTicker),'USDJPY=X']);
+      const merged=await fetchInvestmentQuotes([...stocks.map(investmentTicker),...watchlist.map(investmentTicker),'USDJPY=X']);
       setQuotes(merged);
       setPriceCheckedAt(new Date().toISOString());
       const rate=Number(merged['USDJPY=X']?.price);
@@ -4425,6 +4427,19 @@ function InvestmentView({data,onReload,onStocksChange}){
   const sortedRows=[...rows].sort((a,b)=>(b.value||0)-(a.value||0));
   const marketLabel={JP:'日本株',US:'米国株',FUND:'投資信託',CRYPTO:'暗号資産'};
   const formatPrice=row=>row.price?(row.currency==='USD'?`$${row.price.toLocaleString('en-US',{maximumFractionDigits:4})}`:`¥${row.price.toLocaleString('ja-JP',{maximumFractionDigits:4})}`):'—';
+  // 気になる銘柄: 現在価格・メモした日からの値動き・予定額で買える目安（手数料を除く）
+  const watchRows=watchlist.map(item=>{
+    const quote=quotes[investmentTicker(item)];
+    const divisor=item.market==='FUND'?10000:1;
+    const price=Number(quote?.price)>0?Number(quote.price)/divisor:Number(item.currentPrice)||0;
+    const currency=quote?.currency||item.currency||(item.market==='US'||item.market==='CRYPTO'?'USD':'JPY');
+    const addedPrice=Number(item.addedPrice)||0;
+    const since=price>0&&addedPrice>0?(price-addedPrice)/addedPrice*100:null;
+    const priceYen=currency==='USD'?(fxInfo.rate?price*fxInfo.rate:0):price;
+    const amount=Number(item.purchaseAmountJPY)||0;
+    const buyable=amount>0&&priceYen>0?(item.market==='CRYPTO'?Math.floor(amount/priceYen*1e6)/1e6:Math.floor(amount/priceYen)):null;
+    return {...item,price,currency,since,purchaseAmountJPY:amount,buyable};
+  });
   const chartPoints=useMemo(()=>{
     const items=[...log].filter(item=>Number.isFinite(Number(item.total??item.value))).sort((a,b)=>String(a.date).localeCompare(String(b.date))).slice(-60);
     if(items.length<2)return '';
@@ -4517,7 +4532,24 @@ function InvestmentView({data,onReload,onStocksChange}){
             )))
           ))
         )
-      )
+      ),
+    h('section',{className:cardCls+' p-5','aria-labelledby':'summary-watchlist-title'},
+      h('div',{className:'flex flex-wrap items-center justify-between gap-2 mb-3'},
+        h('div',null,h('h3',{id:'summary-watchlist-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'⭐ 気になる銘柄'),h('p',{className:'text-xs text-gray-400 mt-1'},watchlist.length?`${watchlist.length}件・メモした日からの値動き`:'まだありません')),
+        onOpenFull&&h('button',{type:'button',onClick:onOpenFull,className:'rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300'},watchlist.length?'完全管理で追加・編集':'完全管理でメモを追加')
+      ),
+      watchlist.length===0
+        ?h('p',{className:'text-sm text-gray-500 dark:text-gray-400'},'完全管理の「⭐ 気になる銘柄」で「+ メモを追加」から登録すると、ここにも表示されます。')
+        :h('div',{className:'grid gap-3 sm:grid-cols-2 xl:grid-cols-3'},watchRows.map(item=>h('article',{key:item.id,className:'rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40 p-3'},
+          h('div',{className:'flex items-start justify-between gap-2'},
+            h('div',{className:'min-w-0'},h('p',{className:'font-semibold text-gray-800 dark:text-gray-100'},item.ticker,h('span',{className:'ml-1.5 text-[11px] font-normal text-gray-400'},marketLabel[item.market]||item.market)),h('p',{className:'text-xs text-gray-500 dark:text-gray-400 truncate'},item.name)),
+            h('div',{className:'text-right shrink-0'},h('p',{className:'font-semibold tabular-nums text-gray-800 dark:text-gray-100'},item.price>0?formatPrice({price:item.price,currency:item.currency}):'—'),item.since!==null&&h('p',{className:`text-xs tabular-nums ${item.since>=0?'text-emerald-600 dark:text-emerald-400':'text-rose-500'}`},`${item.since>=0?'+':''}${item.since.toFixed(1)}%`))
+          ),
+          item.addedAt&&h('p',{className:'mt-1 text-[11px] text-gray-400 tabular-nums'},`${item.addedAt.slice(5).replace('-','/')} にメモ${item.addedPrice>0?`（${formatPrice({price:item.addedPrice,currency:item.currency})}）`:''}`),
+          item.note&&h('p',{className:'mt-2 text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words line-clamp-4'},item.note),
+          item.buyable!==null&&h('p',{className:'mt-2 text-xs text-gray-500 dark:text-gray-400 tabular-nums'},`予定 ¥${Math.round(item.purchaseAmountJPY).toLocaleString()} → ${item.buyable.toLocaleString('ja-JP',{maximumFractionDigits:item.market==='CRYPTO'?6:0})}${item.market==='FUND'?'口':item.market==='CRYPTO'?'':'株'}買える目安`)
+        )))
+    )
   );
 }
 
@@ -4564,7 +4596,7 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
   useEffect(()=>{
     const receive=e=>{
       if(e.origin!==window.location.origin||e.source!==frameRef.current?.contentWindow||e.data?.source!=='cashflow-investment'||e.data?.type!=='portfolio-changed')return;
-      onEmbeddedChange&&onEmbeddedChange({stocks:e.data.stocks,log:e.data.log,collateral:e.data.collateral});
+      onEmbeddedChange&&onEmbeddedChange({stocks:e.data.stocks,log:e.data.log,collateral:e.data.collateral,watchlist:e.data.watchlist});
     };
     window.addEventListener('message',receive);
     return()=>window.removeEventListener('message',receive);
@@ -4593,7 +4625,7 @@ function InvestmentHub({data,onReload,onStocksChange,onEmbeddedChange}){
       )
     ),
     mode==='summary'
-      ?h(InvestmentView,{data,onReload,onStocksChange})
+      ?h(InvestmentView,{data,onReload,onStocksChange,onOpenFull:()=>changeMode('full')})
       :mode==='buy'
       ?h('div',{className:'max-w-3xl'},h(BuyCalculator,{fxRate:null,onAddToWatchlist:addToWatchlist}))
       :h('section',{className:'rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden shadow-sm'},
@@ -5065,7 +5097,7 @@ function App({userEmail}={}){
   }
   function applyEmbeddedInvestmentData(next){
     if(!next||!Array.isArray(next.stocks))return;
-    const merged={stocks:next.stocks,log:Array.isArray(next.log)?next.log:investmentData.log||[],collateral:Array.isArray(next.collateral)?next.collateral:investmentData.collateral||[]};
+    const merged={stocks:next.stocks,log:Array.isArray(next.log)?next.log:investmentData.log||[],collateral:Array.isArray(next.collateral)?next.collateral:investmentData.collateral||[],watchlist:Array.isArray(next.watchlist)?next.watchlist:investmentData.watchlist||[]};
     if(!Object.prototype.hasOwnProperty.call(readPending(),'sp_stocks'))writeStocksBase(next.stocks);
     setInvestmentData(current=>({...current,...withPendingInvestmentStocks(merged),loading:false,error:''}));
     writeLocalCache('investmentData',merged);

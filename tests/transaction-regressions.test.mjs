@@ -668,3 +668,25 @@ test('Google Finance用CSVは選択肢で信用の扱いを選び、既定の「
   assert.equal(lines.length, 2);
   assert.ok(!lines.some(line => line.includes('NVDA')));
 });
+
+test('概要に気になる銘柄（メモ・メモ時からの値動き・買える目安）を表示する', () => {
+  const app = appContext();
+  app.context.localStorage.setItem('usdjpy_rate', '150');
+  const data = { stocks: [], log: [], collateral: [], watchlist: [
+    { id: 'w1', ticker: 'TSM', name: 'Taiwan Semiconductor', market: 'US', currency: 'USD', currentPrice: 210, addedAt: '2026-10-29', addedPrice: 200, purchaseAmountJPY: 100000, note: 'AI需要で決算が強い\n押し目で検討' },
+    { id: 'w2', ticker: '7203', name: 'トヨタ自動車', market: 'JP', currency: 'JPY', currentPrice: 3000, purchaseAmountJPY: 0, note: '' },
+  ] };
+  let opened = false;
+  const tree = app.evaluate('InvestmentView')({ data, onReload: () => {}, onStocksChange: () => {}, onOpenFull: () => { opened = true; } });
+  const section = findElement(tree, node => node.type === 'section' && node.props?.['aria-labelledby'] === 'summary-watchlist-title');
+  assert.ok(section);
+  const text = JSON.stringify(section);
+  assert.match(text, /TSM/);
+  assert.match(text, /\+5\.0%/);
+  assert.match(text, /10\/29 にメモ/);
+  assert.match(text, /押し目で検討/);
+  assert.match(text, /3株買える目安/);
+  assert.match(text, /トヨタ自動車/);
+  findElement(section, node => node.type === 'button' && String(node.props.children).includes('完全管理で追加・編集')).props.onClick();
+  assert.equal(opened, true);
+});
