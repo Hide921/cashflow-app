@@ -159,3 +159,35 @@ test('投信の平均取得価格は1万口あたりで入力し、円/口で保
   assert.equal(context.toInput('JP', 2500), 2500);
   assert.equal(context.toInput('FUND', ''), '');
 });
+
+test('気になる銘柄はメモした日と価格を残し、その後の値動きを出す', () => {
+  const grab = name => {
+    const start = html.indexOf(`function ${name}(`);
+    const end = html.slice(start).search(/\r?\n}\r?\n/);
+    return html.slice(start, start + end) + '\n}\n';
+  };
+  const context = {
+    uid: () => 'id', getYahooTicker: t => t, getCurrency: m => (m === 'US' ? 'USD' : 'JPY'), detectMarketFromTicker: () => 'JP',
+    save: () => { context.saved = (context.saved || 0) + 1; }, watchlist: [],
+  };
+  runInNewContext(['migrateWatchlistItem', 'captureWatchlistAddedPrices', 'watchlistChangeSinceAdded'].map(grab).join('\n'), context);
+  const noted = context.migrateWatchlistItem({ ticker: 'nvda', market: 'US', name: 'NVIDIA', purchaseAmountJPY: '', addedAt: '2026-10-29' });
+  assert.equal(noted.purchaseAmountJPY, 0);
+  assert.equal(noted.addedAt, '2026-10-29');
+  assert.equal(noted.addedPrice, null);
+  const legacy = context.migrateWatchlistItem({ ticker: '7203', market: 'JP', name: 'トヨタ', purchaseAmountJPY: 100000 });
+  assert.equal(legacy.addedAt, null);
+  // 最初に価格が取れたときだけ「メモ時の価格」を記録し、以後は変えない
+  noted.currentPrice = 100;
+  context.watchlist = [noted, legacy];
+  runInNewContext('captureWatchlistAddedPrices()', context);
+  assert.equal(noted.addedPrice, 100);
+  assert.equal(legacy.addedPrice, null);
+  assert.equal(context.saved, 1);
+  noted.currentPrice = 110;
+  runInNewContext('captureWatchlistAddedPrices()', context);
+  assert.equal(noted.addedPrice, 100);
+  assert.equal(context.saved, 1);
+  assert.equal(Math.round(context.watchlistChangeSinceAdded(noted) * 10) / 10, 10);
+  assert.equal(context.watchlistChangeSinceAdded(legacy), null);
+});
