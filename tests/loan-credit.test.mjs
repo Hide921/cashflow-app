@@ -151,3 +151,25 @@ test('残高スライドの完済見込みは返済額の変化を反映する',
   assert.ok(plan.months>fixed.months);
   assert.ok(plan.totalInterest>fixed.totalInterest);
 });
+
+test('千葉銀行カードローンは、返済額の決め方を選んでいなくても銀行の表を使う',()=>{
+  const accounts=[{id:'bank',name:'千葉銀',balance:0}];
+  const old={id:'old',name:'カードローン',lender:'千葉銀行',loanType:'card',balance:320000,interestRate:14.8,monthlyPayment:10000,nextPaymentDate:shift(3),repaymentAccountId:'bank',payments:[]};
+  assert.equal(fn('loanPaymentTable')(old),'chibabank');
+  assert.equal(fn('tieredPayment')(old,320000),8000);
+  assert.equal(fn('loanInterestUnit')(old),100);
+  const plan=fn('withLoanRepaymentPlans')([],[old],accounts).find(tx=>tx.loanPlan);
+  assert.equal(plan.adjustBizDay,'next');
+  // 「毎月同じ額」を選んだら固定のまま
+  const fixed={...old,paymentTable:'fixed'};
+  assert.equal(fn('loanPaymentTable')(fixed),null);
+  assert.equal(fn('tieredPayment')(fixed,320000),10000);
+  // ほかの銀行やキャッシングは自動で表を使わない
+  assert.equal(fn('loanPaymentTable')({...old,lender:'三井住友銀行',name:'カードローン'}),null);
+  assert.equal(fn('loanPaymentTable')({...old,loanType:'cashing'}),null);
+  // 次に下がる回が分かる
+  const step=fn('loanNextStepDown')({...old,balance:302000},[],accounts);
+  assert.equal(step.current,8000);
+  assert.equal(step.amount,6000);
+  assert.ok(step.date>step.firstDate);
+});
