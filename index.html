@@ -359,7 +359,8 @@ function loanRepaymentStatus(loan,txs,accounts){
 }
 // 返済記録が消し込む定期返済の日付。coversDate未設定の古い記録は返済日と同じ日の予定を消し込む。
 function loanCoveredDates(loan,payments){
-  const records=[...(loan.payments||[]),...payments.filter(item=>item.loanId===loan.id&&!(loan.payments||[]).some(p=>p.id===item.paymentId))];
+  const records=[...(loan.payments||[]),...payments.filter(item=>item.loanId===loan.id&&!(loan.payments||[]).some(p=>p.id===item.paymentId)),
+    ...(loan.scheduledPayments||[]).filter(item=>item.coversDate)];
   return records.map(item=>item.coversDate!==undefined?item.coversDate:item.paidAt).filter(Boolean);
 }
 // 借入残高を超えて返済予定を出さない。最終回は残額に合わせる（利息は考慮しない）。
@@ -405,7 +406,10 @@ function withLoanRepaymentPlans(txs,loans,accounts){
       endDate:null,adjustBizDay:loan.adjustBizDay||(isChibabankCardLoan(loan)?'next':''),paidDates:loanCoveredDates(loan,payments),overrides:loan.repaymentOverrides||{},dateMoves:loan.repaymentDateMoves||{}};
     return [slide?slideLoanSchedule(plan,loan):capLoanSchedule(plan,Number(loan.balance))];
   });
-  return [...scheduledTxs,...plans,...payments];
+  const planned=(loans||[]).flatMap(loan=>(loan.scheduledPayments||[]).filter(item=>accountIds.has(item.accountId)).map(item=>({
+    id:`loan-scheduled:${loan.id}:${item.id}`,loanId:loan.id,loanPlan:true,scheduledPayment:true,label:`返済（${loan.name}）`,type:'expense',category:'返済',
+    amount:item.amount,accountId:item.accountId,recurring:false,startDate:item.date})));
+  return [...scheduledTxs,...plans,...planned,...payments];
 }
 // 予定表示用の付加情報を外し、保存できる取引に戻す。
 function stripLoanScheduleFields(tx){
@@ -541,7 +545,7 @@ function slideLoanSchedule(tx,loan){
 // 残高スライドで、次に返済額が下がる回（返済予定から求める）。
 function loanNextStepDown(loan,txs,accounts){
   if(!sortedPaymentTiers(loan).length||!(Number(loan.balance)>0))return null;
-  const plan=withLoanRepaymentPlans(txs||[],[loan],accounts||[]).find(item=>item.loanPlan?item.loanId===loan.id:(!item.loanPayment&&item.id===loan.repaymentTransactionId));
+  const plan=withLoanRepaymentPlans(txs||[],[loan],accounts||[]).find(item=>item.loanPlan?item.loanId===loan.id&&!item.scheduledPayment:(!item.loanPayment&&item.id===loan.repaymentTransactionId));
   if(!plan)return null;
   const today=todayD(),events=expandRec(plan,today,addMonths(today,SLIDE_HORIZON_MONTHS),null);
   if(!events.length)return null;
@@ -584,7 +588,7 @@ function loanDeposit(loan,{amount,date,accountId,additional},accounts){
 // 指定日の前後で、まだ消し込まれていない最初の定期返済日。
 function nextLoanOccurrence(loan,loans,txs,accounts,fromDate,backDays=7){
   if(!validTxDate(fromDate))return '';
-  const tx=withLoanRepaymentPlans(txs,loans,accounts).find(item=>item.loanPlan?item.loanId===loan.id:(!item.loanPayment&&item.id===loan.repaymentTransactionId));
+  const tx=withLoanRepaymentPlans(txs,loans,accounts).find(item=>item.loanPlan?item.loanId===loan.id&&!item.scheduledPayment:(!item.loanPayment&&item.id===loan.repaymentTransactionId));
   if(!tx)return '';
   const d=parseISO(fromDate),event=expandRec(tx,addDays(d,-backDays),addDays(d,45),null)[0];
   return event?fmt(event.date):'';
@@ -963,6 +967,7 @@ function validateBackup(data){
     for(const field of ['originalAmount','monthlyPayment','interestRate'])if(loan[field]!==undefined)amount(loan[field],'借入');
     optionalText(loan,['lender','notes','loanType','repaymentAccountId','repaymentTransactionId','color'],'借入');date(loan.nextPaymentDate,'次回返済日',true);schedule(loan,'借入');
     if(loan.payments!==undefined)list(loan.payments,'返済履歴').forEach(item=>{amount(item.amount,'返済履歴');date(item.paidAt,'返済履歴');date(item.coversDate,'返済対象日',true);optionalText(item,['note','accountId'],'返済履歴');});
+    if(loan.scheduledPayments!==undefined)list(loan.scheduledPayments,'返済予定').forEach(item=>{amount(item.amount,'返済予定');date(item.date,'返済予定');date(item.coversDate,'返済対象日',true);optionalText(item,['note','accountId'],'返済予定');});
     if(loan.borrowings!==undefined)list(loan.borrowings,'借入履歴').forEach(item=>{amount(item.amount,'借入履歴');date(item.date,'借入履歴');date(item.due,'借入の返済日',true);optionalText(item,['accountId','transactionId','settledBy'],'借入履歴');});
     if(loan.creditLimit!==undefined)amount(loan.creditLimit,'利用限度額');
     if(loan.paymentTiers!==undefined){
@@ -1561,6 +1566,30 @@ const AUTO_LOAN_LOOKBACK_DAYS=31;
 // 返済日を過ぎた定期返済を返済履歴に記録し、借入残高を減らす。
 // 口座残高は、入力した残高にまだ含まれていない回（残高の入力日以降）だけ差し引く。
 // 近い日付に手動の返済記録がある回は二重計上を避けるため記録しない。
+// 日付が過ぎた返済予定を返済履歴に記録する。支払口座は、入力済みの残高にまだ入っていなければ差し引く。
+function settleScheduledPayments(loans,accounts,today=todayStr()){
+  let nextLoans=loans,nextAccounts=accounts;
+  const records=[];
+  for(const loan of loans){
+    for(const item of (loan.scheduledPayments||[]).filter(entry=>validTxDate(entry.date)&&entry.date<today)){
+      const live=nextLoans.find(entry=>entry.id===loan.id);
+      const balance=Math.max(0,Number(live.balance)||0);
+      const split=splitLoanPayment(live,Number(item.amount),item.date);
+      const principal=Math.min(split.principal,balance);
+      const payment={id:`scheduled-${item.id}`,amount:principal+split.interest,principal,interest:split.interest,paidAt:item.date,note:item.note||'返済予定から記録',coversDate:item.coversDate||''};
+      nextLoans=nextLoans.map(entry=>entry.id!==loan.id?entry:{...entry,balance:balance-principal,
+        payments:payment.amount>0?[...(entry.payments||[]),payment]:entry.payments||[],
+        scheduledPayments:(entry.scheduledPayments||[]).filter(other=>other.id!==item.id),
+        ...(entry.repaymentMethod==='lumpSum'?{borrowings:settleLumpSum(entry,principal,payment.id)}:{})});
+      if(!(payment.amount>0))continue;
+      const account=nextAccounts.find(entry=>entry.id===item.accountId);
+      const reflected=!!account&&!eventIncludedInBalance({date:parseISO(item.date),tx:{}},balanceAnchor(account));
+      if(reflected)nextAccounts=reflectLoanPayment(nextAccounts,live,payment,account.id);
+      records.push({loanName:loan.name,date:item.date,amount:payment.amount,reflected});
+    }
+  }
+  return {loans:nextLoans,accounts:nextAccounts,records};
+}
 function autoLoanPayments(loans,txs,accounts,today=todayStr()){
   let nextLoans=loans,nextAccounts=accounts;
   const records=[];
@@ -1586,7 +1615,7 @@ function autoLoanPayments(loans,txs,accounts,today=todayStr()){
       }
       continue;
     }
-    const schedule=withLoanRepaymentPlans(txs,nextLoans,nextAccounts).find(item=>item.loanPlan?item.loanId===loan.id:(!item.loanPayment&&item.recurring&&item.id===loan.repaymentTransactionId));
+    const schedule=withLoanRepaymentPlans(txs,nextLoans,nextAccounts).find(item=>item.loanPlan?item.loanId===loan.id&&!item.scheduledPayment:(!item.loanPayment&&item.recurring&&item.id===loan.repaymentTransactionId));
     if(!schedule)continue;
     for(const event of expandRec(schedule,addDays(todayDate,-AUTO_LOAN_LOOKBACK_DAYS),addDays(todayDate,-1),null)){
       const date=fmt(event.date),id=`auto-${date}`;
@@ -4125,6 +4154,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
   const hasMonthlyPayment=loans.some(loan=>tieredPayment(loan,Number(loan.balance))>0);
   const paymentLoan=loans.find(loan=>loan.id===payment.loanId);
   const coverCandidate=paymentLoan?nextLoanOccurrence(paymentLoan,loans,txs,accounts,payment.paidAt):'';
+  const scheduledRows=loans.flatMap(loan=>(loan.scheduledPayments||[]).map(item=>({...item,loan}))).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
   const paymentRows=loans.flatMap(loan=>(loan.payments||[]).map(item=>({...item,loanName:loan.name,loanId:loan.id}))).sort((a,b)=>String(b.paidAt).localeCompare(String(a.paidAt)));
 
   function preset(type){
@@ -4196,16 +4226,32 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
     const loan=loans.find(item=>item.id===payment.loanId),amount=Number(payment.amount);
     if(!loan){setPaymentErr('借入を選択してください');return;}
     if(!Number.isSafeInteger(amount)||amount<=0){setPaymentErr('返済額を整数の円で入力してください');return;}
-    if(!validTxDate(payment.paidAt)||payment.paidAt>todayStr()){setPaymentErr('今日までの有効な返済日を入力してください');return;}
-    if(onReflectPayment&&!accounts.some(account=>account.id===paymentAccountId)){setPaymentErr('支払口座を選択してください');return;}
+    if(!validTxDate(payment.paidAt)){setPaymentErr('有効な返済日を入力してください');return;}
+    const future=payment.paidAt>todayStr();
+    if(future&&payment.paidAt>fmt(addMonths(todayD(),12))){setPaymentErr('返済予定は1年先までの日付で登録してください');return;}
+    if((onReflectPayment||future)&&!accounts.some(account=>account.id===paymentAccountId)){setPaymentErr('支払口座を選択してください');return;}
     // 金利があれば、日割り利息を先に払った残りで元金を減らす。
     const split=splitLoanPayment(loan,amount,payment.paidAt);
     if(amount>split.interest+Number(loan.balance||0)){setPaymentErr('返済額が残高と利息の合計を超えています');return;}
+    // 明日以降の返済は予定として残高表に入れ、日付が過ぎたら返済履歴に記録する。
+    if(future){
+      const scheduled={id:genId(),amount,date:payment.paidAt,accountId:paymentAccountId,note:payment.note.trim(),coversDate:payment.coversSchedule&&coverCandidate?coverCandidate:''};
+      onChange(items=>items.map(current=>current.id===loan.id?{...current,scheduledPayments:[...(current.scheduledPayments||[]),scheduled]}:current));
+      setPayment({loanId:loan.id,amount:'',paidAt:todayStr(),note:'',accountId:paymentAccountId,coversSchedule:true});setPaymentErr('');
+      addToast(`${fmtDisp(scheduled.date)} の返済予定を登録しました。日付が過ぎると返済履歴に記録します`);
+      return;
+    }
     const item={id:genId(),amount,principal:split.principal,interest:split.interest,paidAt:payment.paidAt,note:payment.note.trim(),coversDate:payment.coversSchedule&&coverCandidate?coverCandidate:''};
     onChange(items=>items.map(current=>current.id===loan.id?{...current,balance:Number(current.balance)-split.principal,payments:[...(current.payments||[]),item],
       ...(current.repaymentMethod==='lumpSum'?{borrowings:settleLumpSum(current,split.principal,item.id)}:{})}:current));
     if(onReflectPayment)onReflectPayment(loan.id,item.id,paymentAccountId);
     setPayment({loanId:loan.id,amount:'',paidAt:todayStr(),note:'',accountId:paymentAccountId,coversSchedule:true});setPaymentErr('');addToast('返済を記録しました');
+  }
+  function removeScheduledPayment(loan,id){
+    const item=(loan.scheduledPayments||[]).find(entry=>entry.id===id);
+    if(!item||!window.confirm(`${fmtDisp(item.date)} の返済予定（${loanYen(item.amount)}）を取り消しますか？`))return;
+    onChange(items=>items.map(current=>current.id===loan.id?{...current,scheduledPayments:(current.scheduledPayments||[]).filter(entry=>entry.id!==id)}:current));
+    addToast('返済予定を取り消しました');
   }
   function removePayment(loan,paymentId){
     const item=(loan.payments||[]).find(paymentItem=>paymentItem.id===paymentId);
@@ -4340,12 +4386,21 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
          (loan.payments||[]).length>0&&h('p',{className:'text-xs text-gray-400 mt-3'},`返済履歴 ${loan.payments.length}件`)
       );
     })),
+    scheduledRows.length>0&&h('section',{className:cardCls+' p-5'},
+      h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100'},'返済予定'),
+      h('p',{className:'text-xs text-gray-400 mt-1'},'残高表に予定として入っています。日付が過ぎると返済履歴に記録し、借入残高を減らします。'),
+      h('ul',{className:'mt-3 divide-y divide-gray-100 dark:divide-gray-700'},scheduledRows.map(item=>h('li',{key:item.id,className:'flex flex-wrap items-center justify-between gap-2 py-2 text-sm'},
+        h('span',{className:'text-gray-700 dark:text-gray-200'},`${fmtDisp(item.date)} ${item.loan.name}`,h('span',{className:'ml-2 text-xs text-gray-400'},`${accounts.find(account=>account.id===item.accountId)?.name||'口座未設定'}から${item.note?`・${item.note}`:''}`)),
+        h('span',{className:'flex items-center gap-3'},h('span',{className:'font-semibold tabular-nums text-gray-800 dark:text-gray-100'},loanYen(item.amount)),
+          h('button',{type:'button',onClick:()=>removeScheduledPayment(item.loan,item.id),className:'text-xs text-red-500 hover:underline'},'取消'))
+      )))
+    ),
     paymentRows.length>0&&h('section',{className:cardCls+' overflow-hidden'},
       h('div',{className:'px-5 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between'},h('div',null,h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100'},'返済履歴'),h('p',{className:'text-xs text-gray-400 mt-1'},'新しい返済から順に表示')),h('span',{className:'text-xs text-gray-400'},`${paymentRows.length}件`)),
       h('div',{className:'overflow-x-auto'},h('table',{className:'w-full text-sm'},h('thead',{className:'bg-gray-50 dark:bg-gray-700/50 text-gray-500 text-xs'},h('tr',null,h('th',{className:'text-left px-5 py-3'},'日付'),h('th',{className:'text-left px-5 py-3'},'借入'),h('th',{className:'text-right px-5 py-3'},'返済額'),h('th',{className:'text-left px-5 py-3'},'メモ'),h('th',{className:'px-5 py-3'}))),h('tbody',{className:'divide-y divide-gray-100 dark:divide-gray-700'},paymentRows.map(item=>{const loan=loans.find(current=>current.id===item.loanId);return h('tr',{key:item.id},h('td',{className:'px-5 py-3 text-gray-500 whitespace-nowrap'},fmtDisp(item.paidAt)),h('td',{className:'px-5 py-3 font-medium text-gray-700 dark:text-gray-200'},item.loanName),h('td',{className:'px-5 py-3 text-right font-semibold text-emerald-600 whitespace-nowrap'},loanYen(item.amount)),h('td',{className:'px-5 py-3 text-gray-500'},item.note||'—',onReflectPayment&&h('div',{className:'mt-2 flex flex-wrap items-center gap-2'},reflectedPayment(loanPaymentId(item.loanId,item.id))?h('span',{className:'text-xs text-emerald-600'},'残高表に反映済み'):h(React.Fragment,null,h('select',{className:selectCls+' text-xs',value:historyAccounts[item.id]||loan?.repaymentAccountId||defaultPaymentAccount,onChange:e=>setHistoryAccounts(current=>({...current,[item.id]:e.target.value})), 'aria-label':`${item.loanName} ${item.paidAt}の支払口座`},h('option',{value:''},'支払口座を選択'),accounts.map(account=>h('option',{key:account.id,value:account.id},account.name))),h('button',{type:'button',className:'text-xs text-indigo-600 font-semibold whitespace-nowrap',onClick:()=>{const accountId=historyAccounts[item.id]||loan?.repaymentAccountId||defaultPaymentAccount;const account=accounts.find(entry=>entry.id===accountId);if(!account){addToast('支払口座を選択してください','error');return;}setReflectTarget({loanId:item.loanId,paymentId:item.id,accountId,accountName:account.name,amount:item.amount});}},'残高表へ反映')))),h('td',{className:'px-5 py-3 text-right'},loan&&h('button',{onClick:()=>removePayment(loan,item.id),className:'text-xs text-red-500 hover:underline'},'削除')))})))
     )),
     h('section',{className:cardCls+' p-5'},
-      h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-1'},'返済を記録'),h('p',{className:'text-xs text-gray-400 mb-4'},'記録した金額を借入残高と支払口座の残高から差し引きます。支払前の口座残高で記録してください。'),
+      h('h2',{className:'text-base font-semibold text-gray-800 dark:text-gray-100 mb-1'},'返済を記録'),h('p',{className:'text-xs text-gray-400 mb-4'},'記録した金額を借入残高と支払口座の残高から差し引きます。支払前の口座残高で記録してください。明日以降の日付にすると返済予定として残高表に入り、その日が過ぎると自動で記録します。'),
       h('form',{id:'loan-repayment-form',onSubmit:addPayment,className:'grid grid-cols-1 sm:grid-cols-4 gap-3'},
         h('select',{className:selectCls,value:payment.loanId,onChange:e=>setPayment(current=>({...current,loanId:e.target.value}))},h('option',{value:''},'借入を選択'),loans.map(loan=>h('option',{key:loan.id,value:loan.id},`${loan.name}（残高 ${loanYen(loan.balance)}）`))),
         h('input',{type:'number',min:'1',className:inputCls,placeholder:'返済額（円）',value:payment.amount,onChange:e=>setPayment(current=>({...current,amount:e.target.value}))}),
@@ -4353,7 +4408,7 @@ function LoanManager({loans,accounts=[],txs=[],onChange,onReflectPayment,onUndoP
         h('input',{className:inputCls,placeholder:'メモ（任意）',value:payment.note,onChange:e=>setPayment(current=>({...current,note:e.target.value}))}),
         h('div',{className:'sm:col-span-4'},h('label',{htmlFor:'loan-payment-account',className:labelCls},'支払口座'),h('select',{id:'loan-payment-account',className:selectCls,value:paymentAccountId,onChange:e=>setPayment(current=>({...current,accountId:e.target.value}))},h('option',{value:''},'支払口座を選択'),accounts.map(account=>h('option',{key:account.id,value:account.id},account.name)))),
         coverCandidate&&h('label',{className:'sm:col-span-4 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300'},h('input',{type:'checkbox',checked:payment.coversSchedule,onChange:e=>setPayment(current=>({...current,coversSchedule:e.target.checked}))}),`${fmtDisp(coverCandidate)} の定期返済分として記録する（残高表の予定を消し込み）`),
-        h('div',{className:'sm:col-span-4 flex items-center gap-3'},h('button',{type:'submit',disabled:!loans.length,className:'bg-emerald-600 text-white px-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40'},'返済を記録'),paymentErr&&h('p',{className:'text-red-500 text-sm'},paymentErr))
+        h('div',{className:'sm:col-span-4 flex items-center gap-3'},h('button',{type:'submit',disabled:!loans.length,className:'bg-emerald-600 text-white px-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40'},payment.paidAt>todayStr()?'返済予定を登録':'返済を記録'),paymentErr&&h('p',{className:'text-red-500 text-sm'},paymentErr))
       )
     )
   );
@@ -5211,6 +5266,14 @@ function App({userEmail}={}){
   function updCashflowTx(updated){
     if(updated.loanPayment){addToast('返済履歴は借入タブで管理してください','error');return;}
     const clean=stripLoanScheduleFields(updated);
+    // 返済予定（借入タブで登録した明日以降の返済）は、その予定の金額・日付を直す。
+    if(updated.scheduledPayment){
+      const id=String(updated.id).split(':').pop(),amount=Number(clean.amount);
+      if(!Number.isSafeInteger(amount)||amount<=0||!validTxDate(clean.startDate)){addToast('金額と日付を確認してください','error');return;}
+      updLoans(current=>current.map(loan=>loan.id!==updated.loanId?loan:{...loan,scheduledPayments:(loan.scheduledPayments||[]).map(item=>item.id===id?{...item,amount,date:clean.startDate}:item)}));
+      addToast('返済予定を更新しました');
+      return;
+    }
     if(updated.loanPlan){
       updLoans(current=>current.map(loan=>loan.id===updated.loanId?{...loan,repaymentOverrides:clean.overrides||{},repaymentDateMoves:clean.dateMoves||{}}:loan));
     }else updTxs(current=>current.map(tx=>tx.id===updated.id?clean:tx));
@@ -5224,6 +5287,12 @@ function App({userEmail}={}){
     if(loading||loadFailedRef.current||autoRanRef.current)return;
     autoRanRef.current=true;
     const today=todayStr(),messages=[];
+    const settled=settleScheduledPayments(loansRef.current,accountsRef.current,today);
+    if(settled.records.length){
+      updLoans(settled.loans);
+      if(settled.accounts!==accountsRef.current)updAcc(settled.accounts);
+      messages.push(`返済予定を記録: ${settled.records.map(item=>`${item.loanName} ${item.date.slice(5).replace('-','/')} ¥${item.amount.toLocaleString()}`).join('、')}`);
+    }
     if(preferences.autoLoanPayments!==false){
       const result=autoLoanPayments(loansRef.current,txsRef.current,accountsRef.current,today);
       if(result.records.length){
@@ -5291,6 +5360,12 @@ function App({userEmail}={}){
     addToast('予定を予測に戻しました');
   }
   function deleteTx(id){
+    if(String(id).startsWith('loan-scheduled:')){
+      const [,loanId,scheduledId]=String(id).split(':');
+      updLoans(current=>current.map(loan=>loan.id!==loanId?loan:{...loan,scheduledPayments:(loan.scheduledPayments||[]).filter(item=>item.id!==scheduledId)}));
+      addToast('返済予定を取り消しました');
+      return;
+    }
     if(accountsRef.current.some(account=>(account.loanRepayments||[]).some(item=>item.id===id))){setActiveView('loans');addToast('返済履歴から削除してください');return;}
     const loan=loansRef.current.find(item=>loanRepaymentId(item.id)===id);
     const estimate=txsRef.current.find(tx=>tx.id===id&&tx.salary?.estimated);

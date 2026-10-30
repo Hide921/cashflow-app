@@ -173,3 +173,28 @@ test('千葉銀行カードローンは、返済額の決め方を選んでい�
   assert.equal(step.amount,6000);
   assert.ok(step.date>step.firstDate);
 });
+
+test('明日以降の返済は予定として残高表に入り、日付が過ぎたら返済履歴と口座に記録する',()=>{
+  const accounts=[{id:'sbi',name:'SBI',balance:200000,balanceAsOf:shift(-3)}];
+  const loan={id:'p',name:'個人からの借入',loanType:'personal',balance:55000,interestRate:0,
+    scheduledPayments:[{id:'s1',amount:55000,date:shift(-1),accountId:'sbi',note:''}]};
+  const plans=fn('withLoanRepaymentPlans')([],[loan],accounts);
+  const planned=plans.find(tx=>tx.scheduledPayment);
+  assert.equal(planned.startDate,shift(-1));
+  assert.equal(planned.amount,55000);
+  assert.equal(planned.accountId,'sbi');
+  // 予定の日付が来るまでは記録しない。定期返済の自動記録とも混ざらない。
+  assert.equal(fn('settleScheduledPayments')([loan],accounts,shift(-1)).records.length,0);
+  assert.equal(fn('autoLoanPayments')([loan],[],accounts,today).records.length,0);
+  const settled=fn('settleScheduledPayments')([loan],accounts,today);
+  assert.equal(settled.records.length,1);
+  assert.equal(settled.loans[0].balance,0);
+  assert.equal(settled.loans[0].scheduledPayments.length,0);
+  assert.equal(settled.loans[0].payments[0].paidAt,shift(-1));
+  assert.equal(settled.accounts[0].balance,145000);
+  // 返済日より後に入力した残高には反映済みとみなし、口座からは引かない。
+  const later=[{id:'sbi',name:'SBI',balance:145000,balanceAsOf:today}];
+  const again=fn('settleScheduledPayments')([loan],later,today);
+  assert.equal(again.records[0].reflected,false);
+  assert.equal(again.accounts[0].balance,145000);
+});
