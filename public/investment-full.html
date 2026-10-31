@@ -717,6 +717,7 @@
           <button onclick="openRebalanceModal(); closeToolbarMore()">⚖️ リバランス</button>
           <button onclick="openImportModal(); closeToolbarMore()">📋 インポート</button>
           <button onclick="exportCSV(); closeToolbarMore()">📤 エクスポート</button>
+          <button onclick="closeToolbarMore(); fillSectors({ overwrite: true, notify: true })" title="全銘柄のセクターを自動取得した値で更新します（手入力のセクターも置き換えます）">🏷️ セクターを自動取得</button>
         </div>
       </details>
     </div>
@@ -2350,6 +2351,7 @@ async function sbLoad(silent = false) {
     else if (!stockSyncConflict && _hasUnsyncedChanges()) scheduleSyncSave();
     if (loaded && ((firstLoad && !previousTickers) || previousTickers !== portfolioTickerSignature())) requestPortfolioPrices();
     if (loaded && firstLoad) openWatchlistFromParams();
+    if (loaded && firstLoad) setTimeout(() => fillSectors(), 3000);
     setTimeout(localizeJapaneseNames, 0);
   }
 }
@@ -3962,9 +3964,63 @@ function onTickerInput() {
   // 市場別の最低文字数: US/CRYPTO は1文字〜、JP は4桁、FUND は8桁
   const minLen = (market === 'US' || market === 'CRYPTO') ? 1 : market === 'FUND' ? 8 : 4;
   if (raw.length >= minLen) {
-    _nameFetchTimer = setTimeout(() => autoFetchName(raw, market), 600);
+    _nameFetchTimer = setTimeout(() => { autoFetchName(raw, market); autoFetchSector(raw, market); }, 600);
   }
 }
+// ── セクター自動取得 ──────────────────────────────────────────────
+// 価格サーバーの /api/sector が、日本株は東証の業種、投信はカテゴリー、米国株は Nasdaq の
+// セクター（半導体は「半導体」）、ETF は名称から推定した分類を返す。
+async function fetchSector(yahooTicker) {
+  if (!API_BASE) throw new Error('価格サーバー未設定');
+  await wakeRender();
+  const res = await fetch(`${API_BASE}/api/sector?ticker=${encodeURIComponent(yahooTicker)}`,
+    { signal: AbortSignal.timeout(20000), cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return String(data.sector || '').trim();
+}
+async function autoFetchSector(ticker, market) {
+  const sectorEl = document.getElementById('fSector');
+  if (sectorEl.value.trim()) return;   // 手入力済みなら上書きしない
+  try {
+    const sector = await fetchSector(getYahooTicker(ticker, market));
+    if (sector && !sectorEl.value.trim() && document.getElementById('fTicker').value.trim().toUpperCase() === ticker) {
+      sectorEl.value = sector;
+      saveStockFormDraftNow();
+    }
+  } catch (e) {}
+}
+// 保有銘柄のセクターを取得して反映する。overwrite=false なら空欄の銘柄だけ埋める。
+let _fillingSectors = false;
+async function fillSectors({ overwrite = false, notify = false } = {}) {
+  if (_fillingSectors || LOCAL_ONLY_MODE && !API_BASE) return;
+  const tickers = [...new Set(stocks
+    .filter(s => s.yahooTicker && (overwrite || !String(s.sector || '').trim()))
+    .map(s => s.yahooTicker))];
+  if (!tickers.length) { if (notify) toast('更新するセクターはありません', 'success'); return; }
+  _fillingSectors = true;
+  if (notify) toast(`${tickers.length}銘柄のセクターを取得しています…`, 'success');
+  try {
+    const found = new Map();
+    for (let i = 0; i < tickers.length; i += 4) {
+      const batch = await Promise.allSettled(tickers.slice(i, i + 4).map(async t => [t, await fetchSector(t)]));
+      batch.forEach(r => { if (r.status === 'fulfilled' && r.value[1]) found.set(r.value[0], r.value[1]); });
+    }
+    let changed = 0;
+    stocks = stocks.map(s => {
+      const sector = found.get(s.yahooTicker);
+      if (!sector || s.sector === sector || (!overwrite && String(s.sector || '').trim())) return s;
+      changed++;
+      return { ...s, sector };
+    });
+    if (changed) { save(); render(); }
+    const missing = tickers.length - found.size;
+    if (notify) toast(`セクターを${changed}件反映しました${missing ? `（取得できなかった銘柄 ${missing}件）` : ''}`, missing ? 'error' : 'success');
+  } finally {
+    _fillingSectors = false;
+  }
+}
+
 async function autoFetchName(ticker, market) {
   const nameEl = document.getElementById('fName');
   if (nameEl.value) return;   // 手動入力済みなら上書きしない

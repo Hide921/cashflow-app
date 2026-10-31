@@ -191,3 +191,29 @@ test('気になる銘柄はメモした日と価格を残し、その後の値�
   assert.equal(Math.round(context.watchlistChangeSinceAdded(noted) * 10) / 10, 10);
   assert.equal(context.watchlistChangeSinceAdded(legacy), null);
 });
+
+test('セクター自動取得は空欄だけ埋め、一括更新では手入力も置き換える', async () => {
+  const grab = name => {
+    const start = html.indexOf(`async function ${name}(`) >= 0 ? html.indexOf(`async function ${name}(`) : html.indexOf(`function ${name}(`);
+    const end = html.slice(start).search(/\r?\n}\r?\n/);
+    return html.slice(start, start + end) + '\n}\n';
+  };
+  const sectors = { '7203.T': '輸送用機器', NVDA: '半導体', 'FAIL.T': '' };
+  const context = {
+    LOCAL_ONLY_MODE: false, API_BASE: 'https://example.test', toasts: [], saves: 0,
+    stocks: [
+      { id: 'a', yahooTicker: '7203.T', sector: '' },
+      { id: 'b', yahooTicker: 'NVDA', sector: '手入力' },
+      { id: 'c', yahooTicker: 'FAIL.T', sector: '' },
+    ],
+    fetchSector: async t => sectors[t] || '', toast: (m, t) => context.toasts.push([m, t]), save: () => { context.saves++; }, render: () => {},
+    Promise, Map, Set, String,
+  };
+  runInNewContext('let _fillingSectors = false;\n' + grab('fillSectors'), context);
+  await context.fillSectors();
+  assert.deepEqual(context.stocks.map(s => s.sector), ['輸送用機器', '手入力', '']);
+  assert.equal(context.saves, 1);
+  await context.fillSectors({ overwrite: true, notify: true });
+  assert.deepEqual(context.stocks.map(s => s.sector), ['輸送用機器', '半導体', '']);
+  assert.match(context.toasts.at(-1)[0], /セクターを1件反映しました（取得できなかった銘柄 1件）/);
+});
