@@ -270,6 +270,7 @@
     .price-issue-row button { padding: 5px 10px; font-size: 11px; }
 
     /* ── 気になる銘柄（買いたい候補） ── */
+    .pie-group-btns { margin-left: auto; margin-right: 8px; }
     .watch-added { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
     .watchlist-section { margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     .watchlist-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
@@ -598,7 +599,11 @@
   <div class="charts-section">
     <div class="chart-card pie-card" onclick="openPieModal()" title="クリックで全銘柄を拡大表示" role="button" tabindex="0" aria-haspopup="dialog" aria-controls="pieOverlay">
       <div class="chart-header">
-        <span class="chart-title">銘柄別配分</span>
+        <span class="chart-title" id="pieTitle">銘柄別配分</span>
+        <span class="period-btns pie-group-btns" onclick="event.stopPropagation()">
+          <button class="period-btn active" data-group="stock" onclick="setPieGroup('stock')">銘柄別</button>
+          <button class="period-btn" data-group="sector" onclick="setPieGroup('sector')">セクター別</button>
+        </span>
         <span class="expand-hint">⤢ 拡大</span>
       </div>
       <div style="height:180px">
@@ -998,8 +1003,12 @@
 
 <div class="overlay" id="pieOverlay" onclick="closePieModal(event)">
   <div class="modal pie-modal">
-    <h2>銘柄別配分 — <span id="pieModalCount">0</span>銘柄</h2>
+    <h2><span id="pieModalTitle">銘柄別配分</span> — <span id="pieModalCount">0</span><span id="pieModalUnit">銘柄</span></h2>
     <div class="pie-filters">
+      <div class="period-btns pie-group-btns">
+        <button class="period-btn active" data-group="stock" onclick="setPieGroup('stock')">銘柄別</button>
+        <button class="period-btn" data-group="sector" onclick="setPieGroup('sector')">セクター別</button>
+      </div>
       <div class="period-btns" id="pieTradeFilter">
         <button class="period-btn active" data-trade=""       onclick="setPieFilter('trade','')">現物+信用</button>
         <button class="period-btn"        data-trade="spot"   onclick="setPieFilter('trade','spot')">現物のみ</button>
@@ -3324,25 +3333,35 @@ function renderLineChart() {
 }
 
 // ── 円グラフ ──────────────────────────────────────────────────────
-function aggregateAllocation(items) {
+// groupBy='sector' のときはセクターごとに合計する（空欄は「未分類」）。
+function aggregateAllocation(items, groupBy = 'stock') {
   const groups = new Map();
   items.forEach(s => {
     const value = toJPY((Number(s.currentPrice) || 0) * (Number(s.quantity) || 0), s.currency);
     if (!(value > 0)) return;
+    if (groupBy === 'sector') {
+      const sector = String(s.sector || '').trim() || '未分類';
+      const current = groups.get(sector) || { ticker: sector, name: '', value: 0, tickers: new Set() };
+      current.value += value;
+      current.tickers.add(`${s.market}:${s.ticker}`);
+      groups.set(sector, current);
+      return;
+    }
     const key = `${s.market}:${s.ticker}`;
     const current = groups.get(key) || { ticker: s.ticker, name: s.name, value: 0 };
     current.value += value;
     if (!current.name && s.name) current.name = s.name;
     groups.set(key, current);
   });
-  return [...groups.values()].sort((a, b) => b.value - a.value);
+  return [...groups.values()].map(g => g.tickers ? { ticker: g.ticker, name: `${g.tickers.size}銘柄`, value: g.value } : g)
+    .sort((a, b) => b.value - a.value);
 }
 
-function topAllocation(data, limit = 10) {
+function topAllocation(data, limit = 10, unit = '銘柄') {
   if (data.length <= limit) return data;
   const top = data.slice(0, limit);
   const otherValue = data.slice(limit).reduce((sum, item) => sum + item.value, 0);
-  return [...top, { ticker: 'その他', name: `${data.length - limit}銘柄`, value: otherValue }];
+  return [...top, { ticker: 'その他', name: `${data.length - limit}${unit}`, value: otherValue }];
 }
 
 function updateDoughnutChart(chart, canvasId, data, cutout, hoverOffset) {
@@ -3380,7 +3399,8 @@ function updateDoughnutChart(chart, canvasId, data, cutout, hoverOffset) {
 
 function renderPieChart() {
   if (typeof Chart === 'undefined') return;   // CDN(defer) 未ロード時は no-op（ロード後に再描画される）
-  const data = topAllocation(aggregateAllocation(stocks));
+  syncPieGroupButtons();
+  const data = topAllocation(aggregateAllocation(stocks, pieGroupBy), 10, pieGroupBy === 'sector' ? 'セクター' : '銘柄');
   const total = data.reduce((sum, item) => sum + item.value, 0);
   if (!data.length || !total) {
     document.getElementById('pieLegend').innerHTML = '<div class="pie-empty">価格取得後に配分を表示します</div>';
@@ -3398,6 +3418,22 @@ function renderPieChart() {
 }
 
 let pieFilterMarket = '';
+const PIE_GROUP_KEY = 'pie_group_v1';
+let pieGroupBy = localStorage.getItem(PIE_GROUP_KEY) === 'sector' ? 'sector' : 'stock';
+function setPieGroup(group) {
+  pieGroupBy = group === 'sector' ? 'sector' : 'stock';
+  try { localStorage.setItem(PIE_GROUP_KEY, pieGroupBy); } catch (e) {}
+  syncPieGroupButtons();
+  renderPieChart();
+  if (document.getElementById('pieOverlay').classList.contains('open')) renderPieModal();
+}
+function syncPieGroupButtons() {
+  const sector = pieGroupBy === 'sector';
+  document.querySelectorAll('.pie-group-btns .period-btn').forEach(b => b.classList.toggle('active', b.dataset.group === pieGroupBy));
+  document.getElementById('pieTitle').textContent = sector ? 'セクター別配分' : '銘柄別配分';
+  document.getElementById('pieModalTitle').textContent = sector ? 'セクター別配分' : '銘柄別配分';
+  document.getElementById('pieModalUnit').textContent = sector ? 'セクター' : '銘柄';
+}
 let pieFilterTrade  = '';
 
 function openPieModal() {
@@ -3427,7 +3463,7 @@ function renderPieModal() {
   const data = aggregateAllocation(stocks.filter(s =>
     (!pieFilterMarket || s.market === pieFilterMarket) &&
     (!pieFilterTrade || s.tradeType === pieFilterTrade)
-  ));
+  ), pieGroupBy);
   const total  = data.reduce((s, d) => s + d.value, 0) || 1;
   const colors = data.map((_, i) => COLORS[i % COLORS.length]);
 

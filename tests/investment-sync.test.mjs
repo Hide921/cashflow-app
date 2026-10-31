@@ -217,3 +217,22 @@ test('セクター自動取得は空欄だけ埋め、一括更新では手入�
   assert.deepEqual(context.stocks.map(s => s.sector), ['輸送用機器', '半導体', '']);
   assert.match(context.toasts.at(-1)[0], /セクターを1件反映しました（取得できなかった銘柄 1件）/);
 });
+
+test('配分グラフはセクター別に合計でき、空欄は未分類にまとめる', () => {
+  const start = html.indexOf('function aggregateAllocation(');
+  const end = html.slice(start).search(/\r?\n}\r?\n/);
+  const context = { toJPY: (v, cur) => (cur === 'USD' ? v * 150 : v), Map, Set };
+  runInNewContext(html.slice(start, start + end) + '\n}\n', context);
+  const stocks = [
+    { market: 'US', ticker: 'NVDA', currency: 'USD', currentPrice: 100, quantity: 10, sector: '半導体' },
+    { market: 'US', ticker: 'MU', currency: 'USD', currentPrice: 100, quantity: 5, sector: '半導体' },
+    { market: 'US', ticker: 'NVDA', currency: 'USD', currentPrice: 100, quantity: 2, sector: '半導体' },
+    { market: 'JP', ticker: '7203', currency: 'JPY', currentPrice: 3000, quantity: 100, sector: '輸送用機器' },
+    { market: 'JP', ticker: '9999', currency: 'JPY', currentPrice: 1000, quantity: 10, sector: '' },
+  ];
+  const bySector = context.aggregateAllocation(stocks, 'sector');
+  assert.equal(JSON.stringify(bySector.map(d => [d.ticker, d.name, d.value])), JSON.stringify([
+    ['半導体', '2銘柄', 255000], ['輸送用機器', '1銘柄', 300000], ['未分類', '1銘柄', 10000],
+  ].sort((a, b) => b[2] - a[2])));
+  assert.equal(context.aggregateAllocation(stocks).length, 4);
+});
