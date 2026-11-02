@@ -99,7 +99,9 @@ test('登録済み返済取引を選ぶと同じ支出予定を二重に追加�
   const txs=fn('withLoanRepaymentPlans')([existing],[linked],accounts);
   assert.equal(txs.length,1);
   assert.equal(txs[0].id,'existing');
-  assert.equal(txs[0].untilDate,'2029-04-01');
+  // 今日以降の30回目（残高30万円÷月1万円）で終わる。実行日によって日付が変わるので計算して比べる。
+  const occurrences=fn('expandRec')(existing,fn('todayD')(),fn('addMonths')(fn('todayD')(),40),null);
+  assert.equal(txs[0].untilDate,fn('fmt')(occurrences[29].date));
   assert.equal(fn('loanRepaymentStatus')(linked,[existing],accounts).ready,true);
   assert.equal(fn('loanRepaymentStatus')(linked,[],accounts).ready,false);
 });

@@ -100,7 +100,7 @@ const _sb = supabase.createClient(
 );
 
 // ─── Storage ──────────────────────────────────────────
-const DATA_KEYS=['accounts','transactions','budgets','skipped','preferences','loans'];
+const DATA_KEYS=['accounts','transactions','budgets','skipped','preferences','loans','cardStatements'];
 const INVESTMENT_KEYS=['sp_stocks','sp_portfolio_log','sp_collateral','sp_watchlist'];
 const INVESTMENT_API='https://stock-portfolio-1-2rnh.onrender.com';
 // 価格サーバー（Render無料プラン）は放置するとスリープし、起動に最大1分ほどかかる。
@@ -775,16 +775,17 @@ const CATEGORY_ALIASES={'住居':'家賃','住居費':'家賃','通信':'通信�
 // 取引名からカテゴリを推定する（上から順に判定）。分からなければ空文字。
 const CATEGORY_RULES=[
   ['給与',/給与|給料|賞与|ボーナス/],
-  ['税金',/税|国民年金|国保|国民健康保険/],
+  ['税金',/税|eltax|国民年金|国保|国民健康保険/i],
   ['家賃',/家賃|賃料|管理費|共益費/],
-  ['光熱費',/電気|でんき|電力|ガス|水道/],
-  ['サブスク',/サブスク|netflix|ネトフリ|spotify|apple\s*music|icloud|youtube|disney|hulu|u-?next|dazn|amazon\s*prime|プライム会員|chatgpt|claude|adobe|microsoft\s*365|nintendo\s*switch\s*online/i],
+  ['光熱費',/電気|でんき|電力|ガス(?!ト)|水道|エルピオ/],
+  ['交通費',/航空|\bjal\b|\bana\b|新幹線|transit|モバイルsuica/i],
+  ['サブスク',/サブスク|wsj|日経電子版|netflix|ネトフリ|spotify|apple\s*music|icloud|youtube|disney|hulu|u-?next|dazn|amazon\s*prime|プライム会員|chatgpt|claude|adobe|microsoft\s*365|nintendo\s*switch\s*online/i],
   ['通信費',/スマホ|携帯|通信|ドコモ|docomo|ahamo|povo|ソフトバンク|softbank|ワイモバ|y!mobile|楽天モバイル|uq|\bau\b|インターネット|光回線|ネット代|プロバイダ|wi-?fi|wimax/i],
   ['保険',/保険|共済/],
-  ['日用品',/日用品|ドラッグストア|ダイソー|セリア|100均|ニトリ|無印/],
+  ['日用品',/日用品|ドラッグストア|スギ薬局|マツモトキヨシ|マツキヨ|ウエルシア|ツルハ|ココカラ|サンドラッグ|ダイソー|セリア|100均|ニトリ|無印/],
   ['医療',/病院|医院|クリニック|歯科|薬局|処方|診療|整骨/],
   ['交通費',/交通|電車|バス|タクシー|suica|pasmo|icoca|定期券|ガソリン|高速|etc|駐車|jr/i],
-  ['食費',/食費|スーパー|コンビニ|ランチ|外食|食材|ウーバー|uber\s*eats|出前館|弁当|カフェ|飲食|食料/i],
+  ['食費',/食費|スーパー|コンビニ|セブン|ファミリーマート|ファミマ|ローソン|ミニストップ|マイバスケ|まいばすけっと|イオンフード|食品|マクドナルド|スターバックス|ドトール|すき家|吉野家|松屋|ガスト|サイゼリヤ|バーミヤン|日高屋|ほっともっと|はま寿司|寿司|すし|ラーメン|タンメン|焼肉|ベロ.?チェ|タリーズ|コメダ|パン|ベーカリー|フル.?ツ|ジハンキ|自販機|[べベ]ンディング|吉池|レストラン|ランチ|外食|食材|ウーバー|uber\s*eats|出前館|弁当|カフェ|飲食|食料/i],
   ['教育',/学費|授業料|塾|教材|習い事|保育|幼稚園|学校|給食/],
   ['交際費',/交際|飲み会|プレゼント|お祝い|祝儀|香典|会費/],
   ['娯楽',/娯楽|映画|ゲーム|旅行|ホテル|レジャー|ライブ|チケット|カラオケ/],
@@ -819,10 +820,24 @@ function monthBounds(base){
     end:sod(new Date(d.getFullYear(),d.getMonth()+1,0))
   };
 }
-function buildMonthlyStats(txs,base,skippedKeys,throughToday=false){
+function buildMonthlyStats(txs,base,skippedKeys,throughToday=false,cardData=EMPTY_CARD_DATA){
   const {start,end:rawEnd}=monthBounds(base);
   const end=throughToday&&base.getMonth()===todayD().getMonth()&&base.getFullYear()===todayD().getFullYear()?todayD():rawEnd;
   const byCategory={}; let income=0,expense=0;
+  // カード明細: 支払月の引き落としが集計期間に入っていれば、その引き落としを明細の内訳に置き換える。
+  const month=fmt(start).slice(0,7),replaced=new Set();
+  (cardData?.statements||[]).filter(statement=>statement.payMonth===month).forEach(statement=>{
+    const tx=statement.txId?txs.find(item=>item.id===statement.txId):null;
+    const date=tx?cardPaymentOccurrence(tx,month):'';
+    if(tx?date&&date>fmt(end):fmt(rawEnd)>fmt(end))return;
+    if(tx&&date)replaced.add(`${tx.id}_${date}`);
+    (statement.items||[]).forEach(item=>{
+      const cat=cardCategory(item.store,cardData.stores);
+      if(cat===CARD_SKIP_CAT)return;
+      const n=Number(item.amount)||0;
+      expense+=n;byCategory[cat]=(byCategory[cat]||0)+n;
+    });
+  });
   txs.forEach(tx=>{
     if(tx.type==='transfer') return;
     const addAmount=(amount)=>{
@@ -831,13 +846,13 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false){
       else {expense+=n; const cat=analysisCategory(tx.category,tx.label); byCategory[cat]=(byCategory[cat]||0)+n;}
     };
     if(tx.recurring){
-      expandRec(tx,start,end,skippedKeys).forEach(e=>addAmount(e.amt));
+      expandRec(tx,start,end,skippedKeys).forEach(e=>{if(!replaced.has(`${tx.id}_${fmt(e.date)}`))addAmount(e.amt);});
     } else if(tx.startDate){
       const d=sod(parseISO(tx.startDate)),ds=fmt(d);
       if(!isBefore(d,start)&&!isAfter(d,end)&&(!skippedKeys||!skippedKeys.has(`${tx.id}_${ds}`))) addAmount(tx.amount);
     }
   });
-  return {income,expense,net:income-expense,byCategory,start,end};
+  return {income,expense,net:income-expense,byCategory,start,end,cardMonths:replaced.size};
 }
 // 残高が line（注意ライン、未設定なら0円）を下回る最初の日。shortage はラインまでの不足額。
 function findShortfalls(accounts,forecast,line=0){
@@ -989,7 +1004,17 @@ function validateBackup(data){
   for(const field of ['notifications','autoLoanPayments','autoSalary'])if(preferences[field]!==undefined&&typeof preferences[field]!=='boolean')fail('設定の形式が不正です');
   for(const field of ['notifyDays','largePayment','lowBalance'])if(preferences[field]!==undefined)amount(preferences[field],'通知設定');
   if(preferences.salaryAutoDismissed!==undefined&&(!Array.isArray(preferences.salaryAutoDismissed)||preferences.salaryAutoDismissed.some(value=>typeof value!=='string')))fail('給与予定の設定が不正です');
-  return {accounts,transactions,loans,budgets,skipped,preferences:{...DEFAULT_PREFS,...preferences}};
+  let cardStatements;
+  if(data.cardStatements!==undefined){
+    cardStatements=data.cardStatements;
+    if(!isDataObject(cardStatements)||!Array.isArray(cardStatements.statements)||!isDataObject(cardStatements.stores||{}))fail('カード明細の形式が不正です');
+    cardStatements.statements.forEach(statement=>{
+      if(!isDataObject(statement)||!/^\d{4}-\d{2}$/.test(statement.payMonth||'')||!Array.isArray(statement.items))fail('カード明細の形式が不正です');
+      statement.items.forEach(item=>{if(!isDataObject(item)||!Number.isSafeInteger(Number(item.amount))||!validTxDate(item.date)||typeof item.store!=='string')fail('カード明細の行が不正です');});
+    });
+    cardStatements={statements:cardStatements.statements,stores:cardStatements.stores||{}};
+  }
+  return {accounts,transactions,loans,budgets,skipped,preferences:{...DEFAULT_PREFS,...preferences},...(cardStatements?{cardStatements}:{})};
 }
 function readRecoveryBackup(){
   try{const data=JSON.parse(localGet(LS_BEFORE_RESTORE)||'null');return isDataObject(data)&&Array.isArray(data.accounts)&&Array.isArray(data.transactions)?data:null;}catch{return null;}
@@ -1018,6 +1043,68 @@ function parseCsvRows(text){
   return rows.filter(r=>r.some(v=>String(v).trim()));
 }
 // YYYY-MM-DD / YYYY/M/D を受け付け、無効なら null。
+// ─── カード明細（VPASS の CSV） ─────────────────────────
+// 分析で数えない明細（証券口座への積立など）。
+const CARD_SKIP_CAT='集計しない';
+const EMPTY_CARD_DATA={statements:[],stores:{}};
+// 店名の表記ゆれをそろえる（全角→半角、末尾の「/iD」や支店名を外す）。
+function cardStoreKey(name){
+  return String(name||'').normalize('NFKC').replace(/[\/]\s*(id|nfc|quicpay)\s*$/i,'').replace(/\s+/g,' ').trim().replace(/\s+\S+店$/,'').trim();
+}
+function cardCategory(store,stores={}){
+  const key=cardStoreKey(store);
+  if(stores[key])return stores[key];
+  if(/証券|投信|積立|nisa/i.test(String(store||'').normalize('NFKC')))return CARD_SKIP_CAT;
+  const found=guessCategory(store);
+  return found&&found!=='給与'?found:'その他';
+}
+// VPASS の明細 CSV（カード番号の行・明細の行・小計の行が混ざる形式）を読む。
+// 支払金額が空の行はボーナス払いなど今回の請求に入らない分として bonus に分ける。
+function parseVpassCsv(text){
+  const rows=parseCsvRows(text);
+  const items=[],bonus=[];let card='',total=null;
+  const number=value=>{const n=Number(String(value??'').normalize('NFKC').replace(/[,\s円]/g,''));return String(value??'').trim()!==''&&Number.isFinite(n)?Math.round(n):null;};
+  rows.forEach(row=>{
+    const cell=index=>String(row[index]??'').trim();
+    if(!cell(0)){
+      if(/\*{2,}/.test(cell(1))){card=cell(2).normalize('NFKC');return;}
+      if(!cell(1)&&number(cell(5))!==null)total=number(cell(5));
+      return;
+    }
+    const date=csvDate(cell(0)),amount=number(cell(2));
+    if(!date||amount===null)return;
+    const store=cell(1).normalize('NFKC').replace(/\s+/g,' ').trim(),paid=number(cell(5));
+    if(paid===null){
+      const m=cell(6).normalize('NFKC').match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+      bonus.push({date,store,amount,payDate:m?`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`:''});
+      return;
+    }
+    items.push({date,store,amount:paid,card});
+  });
+  if(!items.length)throw new Error('VPASSの明細の行が見つかりません。ご利用明細のCSVを選んでください');
+  const sum=items.reduce((total,item)=>total+item.amount,0);
+  return {items,bonus,total:total??sum,sum,cards:[...new Set(items.map(item=>item.card).filter(Boolean))]};
+}
+// ファイル名（例: 202610.csv）か、最後の利用日の翌月を支払月とみなす。
+function vpassPayMonth(fileName,items){
+  const m=String(fileName||'').match(/(20\d{2})(0[1-9]|1[0-2])/);
+  if(m)return `${m[1]}-${m[2]}`;
+  const last=items.map(item=>item.date).sort().at(-1);
+  return last?fmt(addMonths(parseISO(`${last.slice(0,7)}-01`),1)).slice(0,7):'';
+}
+// カードの引き落としの定期取引を名前から探す。
+function guessCardPaymentTx(txs){
+  const candidates=txs.filter(tx=>tx.recurring&&tx.type==='expense'&&!tx.loanPlan&&!tx.loanPayment);
+  return candidates.find(tx=>/三井住友|smbc|vpass|プラチナ|olive/i.test(String(`${tx.label||''}`).normalize('NFKC')))
+    ||(candidates.filter(tx=>/カード/.test(`${tx.label||''}${tx.category||''}`)).length===1?candidates.find(tx=>/カード/.test(`${tx.label||''}${tx.category||''}`)):null)||null;
+}
+// 支払月にある、その定期取引の回の日付。
+function cardPaymentOccurrence(tx,payMonth){
+  if(!tx||!/^\d{4}-\d{2}$/.test(payMonth||''))return '';
+  const start=parseISO(`${payMonth}-01`);
+  const event=expandRec(tx,start,sod(new Date(start.getFullYear(),start.getMonth()+1,0)),null)[0];
+  return event?fmt(event.date):'';
+}
 function csvDate(value){
   const m=String(value||'').trim().match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
   if(!m)return null;
@@ -3978,11 +4065,119 @@ function UpcomingPayments({txs,accounts,skippedKeys,onSkip,onDeleteTx,onUpdTx}){
 }
 
 // ─── Analysis / budgets ──────────────────────────────
-function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
+// VPASS の明細を店ごとにまとめ、カテゴリを確認・修正して保存する。直したカテゴリは店ごとに覚える。
+function CardImportDialog({parsed,fileName,txs,cardData,onSave,onClose}){
+  const candidates=txs.filter(tx=>tx.recurring&&tx.type==='expense'&&!tx.loanPlan&&!tx.loanPayment);
+  const [payMonth,setPayMonth]=useState(()=>vpassPayMonth(fileName,parsed.items));
+  const [txId,setTxId]=useState(()=>guessCardPaymentTx(txs)?.id||'');
+  const [confirmAmount,setConfirmAmount]=useState(true);
+  const [stores,setStores]=useState({});
+  useEffect(()=>{const onKey=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);},[onClose]);
+  const allStores={...(cardData.stores||{}),...stores};
+  const groups=useMemo(()=>{
+    const map=new Map();
+    parsed.items.forEach(item=>{
+      const key=cardStoreKey(item.store);
+      const group=map.get(key)||{key,name:key||item.store,count:0,amount:0};
+      group.count++;group.amount+=item.amount;map.set(key,group);
+    });
+    return [...map.values()].sort((a,b)=>b.amount-a.amount);
+  },[parsed]);
+  const byCategory={};
+  groups.forEach(group=>{const cat=cardCategory(group.name,allStores);byCategory[cat]=(byCategory[cat]||0)+group.amount;});
+  const tx=candidates.find(item=>item.id===txId);
+  const occurrence=cardPaymentOccurrence(tx,payMonth);
+  const existing=(cardData.statements||[]).find(statement=>statement.payMonth===payMonth);
+  const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(payMonth);
+  function save(){
+    if(!validMonth)return;
+    onSave({
+      statement:{id:existing?.id||genId(),payMonth,txId,total:parsed.total,cards:parsed.cards,importedAt:new Date().toISOString(),
+        items:parsed.items.map(item=>({date:item.date,store:item.store,amount:item.amount})),bonus:parsed.bonus},
+      stores,confirm:confirmAmount&&tx&&occurrence?{txId:tx.id,date:occurrence,amount:parsed.total}:null
+    });
+  }
+  const yen=value=>`${value<0?'−':''}¥${Math.abs(Math.round(value)).toLocaleString()}`;
+  const catOptions=[...EXPENSE_CATS,CARD_SKIP_CAT];
+  return h('div',{className:'fixed inset-0 z-[310] bg-black/60 flex items-end sm:items-center justify-center sm:px-4',onClick:e=>{if(e.target===e.currentTarget)onClose();}},
+    h('div',{role:'dialog','aria-modal':'true','aria-labelledby':'card-import-title',className:'flex max-h-[92vh] w-full max-w-2xl flex-col rounded-t-2xl sm:rounded-2xl bg-white dark:bg-gray-900 shadow-2xl'},
+      h('div',{className:'border-b border-gray-100 dark:border-gray-800 px-5 pt-5 pb-3'},
+        h('h3',{id:'card-import-title',className:'text-lg font-semibold text-gray-900 dark:text-white'},'カード明細を取り込む'),
+        h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300'},`${parsed.cards.join('・')||'カード'}　明細 ${parsed.items.length}件・請求額 ${yen(parsed.total)}`),
+        parsed.sum!==parsed.total&&h('p',{className:'mt-1 text-xs text-amber-700 dark:text-amber-300'},`明細の合計 ${yen(parsed.sum)} が請求額と一致しません。明細だけを取り込みます`)
+      ),
+      h('div',{className:'flex-1 overflow-y-auto px-5 py-3 space-y-4'},
+        h('div',{className:'grid grid-cols-1 sm:grid-cols-2 gap-3'},
+          h('label',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},'支払月',
+            h('input',{type:'month',value:payMonth,onChange:e=>setPayMonth(e.target.value),className:'mt-1 block w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100'})),
+          h('label',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},'このカードの引き落とし（定期取引）',
+            h('select',{value:txId,onChange:e=>setTxId(e.target.value),className:'mt-1 block w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100'},
+              h('option',{value:''},'登録していない'),candidates.map(item=>h('option',{key:item.id,value:item.id},`${item.label}（¥${Number(item.amount).toLocaleString()}）`))))
+        ),
+        h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400'},tx?`分析では、${payMonth.replace('-','年')}月の「${tx.label}」の引き落としの代わりに、この明細をカテゴリ別に数えます。`:'引き落としの定期取引を選ぶと、分析で引き落としと明細を二重に数えません。'),
+        tx&&occurrence&&h('label',{className:'flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200'},h('input',{type:'checkbox',className:'mt-1',checked:confirmAmount,onChange:e=>setConfirmAmount(e.target.checked)}),
+          `${fmtDisp(occurrence)} の引き落とし額を ${yen(parsed.total)} に確定する（残高表に反映）`),
+        tx&&!occurrence&&validMonth&&h('p',{className:'text-xs text-amber-700 dark:text-amber-300'},'この支払月に引き落としの予定がありません'),
+        parsed.bonus.length>0&&h('p',{className:'rounded-lg bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-300'},
+          `ボーナス払いなど今回の請求に入らない分: ${parsed.bonus.map(item=>`${item.store} ${yen(item.amount)}${item.payDate?`（${fmtDisp(item.payDate)}払い）`:''}`).join('、')}。その月の引き落としに入るので、予定の金額を確認してください。`),
+        existing&&h('p',{className:'text-xs text-amber-700 dark:text-amber-300'},`${payMonth} の明細は取り込み済みです。保存すると置き換えます`),
+        h('div',null,
+          h('p',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},'カテゴリ別'),
+          h('div',{className:'mt-1 flex flex-wrap gap-1.5'},Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat,amount])=>h('span',{key:cat,className:`rounded-full px-2 py-0.5 text-xs tabular-nums ${cat===CARD_SKIP_CAT?'bg-gray-100 dark:bg-gray-800 text-gray-400':'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'}`},`${cat} ${yen(amount)}`)))
+        ),
+        h('div',null,
+          h('p',{className:'text-xs font-semibold text-gray-700 dark:text-gray-200'},`お店ごとのカテゴリ（${groups.length}件）`),
+          h('p',{className:'text-[11px] text-gray-500 dark:text-gray-400'},'直したカテゴリは覚えて、次の取り込みから使います。積立などは「集計しない」にしてください'),
+          h('ul',{className:'mt-2 divide-y divide-gray-100 dark:divide-gray-800'},groups.map(group=>h('li',{key:group.key,className:'flex items-center gap-2 py-1.5'},
+            h('span',{className:'min-w-0 flex-1 truncate text-sm text-gray-800 dark:text-gray-100'},group.name,group.count>1&&h('span',{className:'ml-1 text-[11px] text-gray-400'},`×${group.count}`)),
+            h('span',{className:'shrink-0 text-xs tabular-nums text-gray-600 dark:text-gray-300'},yen(group.amount)),
+            h('select',{value:cardCategory(group.name,allStores),'aria-label':`${group.name}のカテゴリ`,onChange:e=>{const value=e.target.value;setStores(current=>({...current,[group.key]:value}));},
+              className:'shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs text-gray-900 dark:text-gray-100'},
+              catOptions.map(cat=>h('option',{key:cat,value:cat},cat)))
+          )))
+        )
+      ),
+      h('div',{className:'flex justify-end gap-2 border-t border-gray-100 dark:border-gray-800 px-5 py-3'},
+        h('button',{type:'button',onClick:onClose,className:'rounded-xl px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300'},'キャンセル'),
+        h('button',{type:'button',onClick:save,disabled:!validMonth,className:'rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40'},'取り込む')
+      )
+    )
+  );
+}
+// Shift_JIS（VPASS）と UTF-8 のどちらの CSV も読む。
+function decodeCsvBytes(buffer){
+  try{return new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{return new TextDecoder('shift_jis').decode(buffer);}
+}
+function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences,cardData=EMPTY_CARD_DATA,onCardDataChange,onConfirmCardAmount}){
   const skippedKeys=useMemo(()=>new Set(skippedOccurrences||[]),[skippedOccurrences]);
-  const current=useMemo(()=>buildMonthlyStats(txs,todayD(),skippedKeys,true),[txs,skippedKeys]);
-  const prevBase=addMonths(todayD(),-1);
-  const previous=useMemo(()=>buildMonthlyStats(txs,prevBase,skippedKeys,false),[txs,skippedKeys]);
+  // 表示する月（0 は今月）。カード明細を取り込んだ過去の月も見られるようにする。
+  const [monthOffset,setMonthOffset]=useState(0);
+  const base=useMemo(()=>{const t=todayD();return sod(new Date(t.getFullYear(),t.getMonth()+monthOffset,1));},[monthOffset]);
+  const current=useMemo(()=>buildMonthlyStats(txs,base,skippedKeys,true,cardData),[txs,skippedKeys,base,cardData]);
+  const prevBase=addMonths(base,-1);
+  const previous=useMemo(()=>buildMonthlyStats(txs,prevBase,skippedKeys,false,cardData),[txs,skippedKeys,base,cardData]);
+  const monthLabel=`${base.getMonth()+1}月`;
+  const [cardImport,setCardImport]=useState(null);
+  const [cardError,setCardError]=useState('');
+  function readCardCsv(file){
+    if(!file)return;
+    setCardError('');
+    file.arrayBuffer().then(buffer=>{
+      try{setCardImport({parsed:parseVpassCsv(decodeCsvBytes(buffer)),fileName:file.name});}
+      catch(error){setCardError(error.message);}
+    }).catch(()=>setCardError('ファイルを読み込めませんでした'));
+  }
+  function saveCardImport({statement,stores,confirm}){
+    onCardDataChange({stores:{...(cardData.stores||{}),...stores},statements:[...(cardData.statements||[]).filter(item=>item.payMonth!==statement.payMonth),statement].sort((a,b)=>a.payMonth.localeCompare(b.payMonth))});
+    if(confirm&&onConfirmCardAmount)onConfirmCardAmount(confirm);
+    setCardImport(null);
+    const t=todayD(),[year,month]=statement.payMonth.split('-').map(Number);
+    setMonthOffset((year-t.getFullYear())*12+month-1-t.getMonth());
+  }
+  function removeStatement(statement){
+    if(!window.confirm(`${statement.payMonth.replace('-','年')}月払いのカード明細を削除しますか？（残高表の確定額はそのままです）`))return;
+    onCardDataChange({...cardData,statements:(cardData.statements||[]).filter(item=>item.id!==statement.id)});
+  }
   const [draft,setDraft]=useState(budgets||{});
   useEffect(()=>setDraft(budgets||{}),[budgets]);
   const totalBudget=EXPENSE_CATS.reduce((s,c)=>s+(Number(draft[c])||0),0);
@@ -3996,13 +4191,20 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
   const maxCategory=Math.max(1,...shownCats.map(c=>current.byCategory[c]||0));
   return h('div',{className:'space-y-5'},
     h('div',{className:'flex items-end justify-between gap-3'},
-      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'分析・予算'),h('p',{className:'text-sm text-gray-400 dark:text-gray-500 mt-1'},`${todayD().getMonth()+1}月の実績と予算`)),
-      h('span',{className:'text-xs text-gray-400 dark:text-gray-500'},`集計 ${fmtDisp(fmt(current.start))}〜${fmtDisp(fmt(current.end))}`)
+      h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'分析・予算'),h('p',{className:'text-sm text-gray-400 dark:text-gray-500 mt-1'},`${base.getFullYear()!==todayD().getFullYear()?`${base.getFullYear()}年`:''}${monthLabel}の実績と予算`)),
+      h('div',{className:'flex flex-col items-end gap-1'},
+        h('div',{className:'flex items-center gap-1'},
+          h('button',{type:'button',onClick:()=>setMonthOffset(value=>value-1),'aria-label':'前の月',className:'rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 text-sm text-gray-600 dark:text-gray-300'},'‹'),
+          monthOffset!==0&&h('button',{type:'button',onClick:()=>setMonthOffset(0),className:'rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300'},'今月'),
+          h('button',{type:'button',onClick:()=>setMonthOffset(value=>value+1),disabled:monthOffset>=0,'aria-label':'次の月',className:'rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-1 text-sm text-gray-600 dark:text-gray-300 disabled:opacity-30'},'›')
+        ),
+        h('span',{className:'text-xs text-gray-400 dark:text-gray-500'},`集計 ${fmtDisp(fmt(current.start))}〜${fmtDisp(fmt(current.end))}`)
+      )
     ),
     h('div',{className:'grid grid-cols-2 lg:grid-cols-4 gap-3'},
       [
-        ['今月の支出',`¥${current.expense.toLocaleString()}`,'text-rose-500'],
-        ['今月の収支',`${current.net>=0?'+':'-'}¥${Math.abs(current.net).toLocaleString()}`,current.net>=0?'text-emerald-600':'text-rose-500'],
+        [`${monthLabel}の支出`,`¥${current.expense.toLocaleString()}`,'text-rose-500'],
+        [`${monthLabel}の収支`,`${current.net>=0?'+':'-'}¥${Math.abs(current.net).toLocaleString()}`,current.net>=0?'text-emerald-600':'text-rose-500'],
         ['前月比',change===null?'—':`${change>=0?'+':''}${change}%`,change!==null&&change>0?'text-rose-500':'text-emerald-600'],
         ['固定費見込',`¥${Math.round(fixedMonthly).toLocaleString()}`,'text-indigo-600 dark:text-indigo-400']
       ].map(([label,value,color])=>h('div',{key:label,className:cardCls+' p-4'},h('p',{className:'text-xs text-gray-400 dark:text-gray-500 mb-2'},label),h('p',{className:`text-xl sm:text-2xl font-bold tabular-nums ${color}`},value)))
@@ -4013,7 +4215,8 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
           h('h3',{id:'category-analysis-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'カテゴリ別支出'),
           h('span',{className:'text-xs text-gray-400'},`前月 ¥${previous.expense.toLocaleString()}`)
         ),
-        shownCats.length===0&&h('p',{className:'text-sm text-gray-400'},'今月・前月の支出はまだありません'),
+        current.cardMonths>0&&h('p',{className:'-mt-2 mb-3 text-[11px] text-gray-500 dark:text-gray-400'},'カードの引き落としは、取り込んだ明細の内訳で数えています'),
+        shownCats.length===0&&h('p',{className:'text-sm text-gray-400'},'この月・前月の支出はまだありません'),
         h('div',{className:'space-y-3'},shownCats.map(cat=>{
           const amount=current.byCategory[cat]||0;
           return h('div',{key:cat},
@@ -4039,11 +4242,32 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences}){
           );
         }))
       )
-    )
+    ),
+    onCardDataChange&&h('section',{className:cardCls+' p-5','aria-labelledby':'card-statement-title'},
+      h('div',{className:'flex flex-wrap items-start justify-between gap-3'},
+        h('div',null,
+          h('h3',{id:'card-statement-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'カード明細の取り込み'),
+          h('p',{className:'text-xs text-gray-400 mt-0.5'},'VPASSの「ご利用明細」からダウンロードしたCSVを読み、お店ごとにカテゴリへ振り分けます')
+        ),
+        h('label',{className:'cursor-pointer rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white'},'CSVを選ぶ',
+          h('input',{type:'file',accept:'.csv,text/csv',className:'sr-only',onChange:e=>{readCardCsv(e.target.files?.[0]);e.target.value='';}}))
+      ),
+      cardError&&h('p',{role:'alert',className:'mt-2 text-sm text-rose-600'},cardError),
+      (cardData.statements||[]).length>0&&h('ul',{className:'mt-3 divide-y divide-gray-100 dark:divide-gray-700'},[...cardData.statements].reverse().map(statement=>{
+        const tx=txs.find(item=>item.id===statement.txId);
+        return h('li',{key:statement.id,className:'flex flex-wrap items-center justify-between gap-2 py-2 text-sm'},
+          h('button',{type:'button',onClick:()=>{const t=todayD(),[year,month]=statement.payMonth.split('-').map(Number);setMonthOffset((year-t.getFullYear())*12+month-1-t.getMonth());},className:'text-left text-gray-700 dark:text-gray-200 hover:underline'},
+            `${statement.payMonth.replace('-','年')}月払い`,h('span',{className:'ml-2 text-xs text-gray-400'},`${(statement.items||[]).length}件${tx?`・${tx.label}`:''}`)),
+          h('span',{className:'flex items-center gap-3'},h('span',{className:'font-semibold tabular-nums text-gray-800 dark:text-gray-100'},`¥${Number(statement.total||0).toLocaleString()}`),
+            h('button',{type:'button',onClick:()=>removeStatement(statement),className:'text-xs text-red-500 hover:underline'},'削除'))
+        );
+      }))
+    ),
+    cardImport&&h(CardImportDialog,{...cardImport,txs,cardData,onSave:saveCardImport,onClose:()=>setCardImport(null)})
   );
 }
 
-function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,loans,budgets,skipped,prefs,onPrefs,onRestore,onCsvImport,userEmail}){
+function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,loans,budgets,cardData,skipped,prefs,onPrefs,onRestore,onCsvImport,userEmail}){
   const [message,setMessage]=useState('');
   const dialogRef=useModalDialog(true,onClose);
   function readFile(file,handler){
@@ -4100,7 +4324,7 @@ function PreferencesModal({onClose,dark,setDark,syncStatus,onRetry,accounts,txs,
           h('p',{className:'text-xs text-gray-500 dark:text-gray-400 mb-3'},'口座・取引・給与・借入・予算・設定を保存できます。投資の明細は投資画面から書き出してください。復元前の内容は端末に控えを残します。'),
           readRecoveryBackup()&&h('button',{type:'button',onClick:()=>downloadFullBackup(readRecoveryBackup()),className:'mb-3 text-sm font-semibold text-indigo-700 dark:text-indigo-300 underline'},'前回の復元前データをダウンロード'),
           h('div',{className:'grid grid-cols-1 sm:grid-cols-3 gap-2'},
-            h('button',{onClick:()=>downloadFullBackup({accounts,transactions:txs,loans,budgets,skipped,preferences:prefs}),className:'border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300'},'JSONバックアップ'),
+            h('button',{onClick:()=>downloadFullBackup({accounts,transactions:txs,loans,budgets,skipped,preferences:prefs,cardStatements:cardData}),className:'border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300'},'JSONバックアップ'),
             h('label',{className:'text-center border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer'},'JSONを復元',h('input',{type:'file',accept:'.json,application/json',className:'sr-only',onChange:e=>readFile(e.target.files?.[0],text=>onRestore(JSON.parse(text)))})),
             h('label',{className:'text-center border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer'},'取引CSVを追加',h('input',{type:'file',accept:'.csv,text/csv',className:'sr-only',onChange:e=>readFile(e.target.files?.[0],text=>onCsvImport(text))}))
           )
@@ -5037,6 +5261,7 @@ function App({userEmail}={}){
   const [syncStatus,setSyncStatus]=useState({state:'saving',message:'データを読み込んでいます'});
   const [localSaveFailed,setLocalSaveFailed]=useState(false);
   const [toasts,setToasts]=useState([]);
+  const [cardData,setCardData]=useState(EMPTY_CARD_DATA);
   const saveQueues=useRef({});
   const saveQueuesBusy=useRef({});
   const volatilePending=useRef({});
@@ -5073,10 +5298,11 @@ function App({userEmail}={}){
         const t=pendingOr('transactions',data.transactions??cache.transactions??[]);
         const l=pendingOr('loans',data.loans??cache.loans??[]);
         const b=pendingOr('budgets',data.budgets??cache.budgets??{});
+        const c=pendingOr('cardStatements',data.cardStatements??cache.cardStatements??EMPTY_CARD_DATA);
         const s=pendingOr('skipped',data.skipped??cache.skipped??legacySkipped);
         const p={...DEFAULT_PREFS,...pendingOr('preferences',data.preferences??cache.preferences??{})};
-        accountsRef.current=a;txsRef.current=t;loansRef.current=l;setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setSkippedOccurrences(s);setPreferences(p);
-        DATA_KEYS.forEach(k=>cacheLocally(k,k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p}[k],Object.prototype.hasOwnProperty.call(pending,k)?pending[k]:null));
+        accountsRef.current=a;txsRef.current=t;loansRef.current=l;setAccounts(a);setTxs(t);setLoans(l);setBudgets(b);setCardData(c);setSkippedOccurrences(s);setPreferences(p);
+        DATA_KEYS.forEach(k=>cacheLocally(k,k,{accounts:a,transactions:t,loans:l,budgets:b,skipped:s,preferences:p,cardStatements:c}[k],Object.prototype.hasOwnProperty.call(pending,k)?pending[k]:null));
         try{
           const investments=await loadInvestmentData();
           if(!alive)return;
@@ -5093,7 +5319,7 @@ function App({userEmail}={}){
         Object.assign(remoteStamps,readStoredStamps());
         const cachedAccounts=pendingOr('accounts',cache.accounts||[]);
         const cachedTxs=pendingOr('transactions',cache.transactions||[]),cachedLoans=pendingOr('loans',cache.loans||[]);
-        accountsRef.current=cachedAccounts;txsRef.current=cachedTxs;loansRef.current=cachedLoans;setAccounts(cachedAccounts);setTxs(cachedTxs);setLoans(cachedLoans);setBudgets(pendingOr('budgets',cache.budgets||{}));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
+        accountsRef.current=cachedAccounts;txsRef.current=cachedTxs;loansRef.current=cachedLoans;setAccounts(cachedAccounts);setTxs(cachedTxs);setLoans(cachedLoans);setBudgets(pendingOr('budgets',cache.budgets||{}));setCardData(pendingOr('cardStatements',cache.cardStatements||EMPTY_CARD_DATA));setSkippedOccurrences(pendingOr('skipped',cache.skipped||[]));setPreferences({...DEFAULT_PREFS,...pendingOr('preferences',cache.preferences||{})});
         const saved=withPendingInvestmentStocks(cache.investmentData||{stocks:[],log:[],collateral:[]});
         setInvestmentData({...saved,loading:false,error:'投資データは前回の保存内容を表示しています'});
         setSyncStatus({state:navigator.onLine?'error':'offline',message:`ローカルデータを表示中: ${e.message}`});
@@ -5279,6 +5505,7 @@ function App({userEmail}={}){
     }else updTxs(current=>current.map(tx=>tx.id===updated.id?clean:tx));
     addToast('取引を更新しました');
   }
+  function updCardData(next){setCardData(next);persist('cardStatements',next);addToast('カード明細を保存しました');}
   function updBudgets(next){setBudgets(next);persist('budgets',next);addToast('予算を保存しました');}
   function updPreferences(next){setPreferences(next);persist('preferences',next);}
   // クラウドから読み込めたときだけ、過ぎた返済の記録と仮の月給の作成を1回行う。
@@ -5383,11 +5610,12 @@ function App({userEmail}={}){
     let next;
     try{next=validateBackup(data);}catch(error){addToast(error.message,'error');return;}
     if(!window.confirm(`口座${next.accounts.length}件・取引${next.transactions.length}件・借入${next.loans.length}件で現在のデータを置き換えますか？復元前の控えを端末に保存します。`))return;
-    try{stageBackupRestore(next,{accounts:accountsRef.current,transactions:txsRef.current,loans:loansRef.current,budgets,skipped:skippedOccurrences,preferences});}catch(error){addToast(error.message,'error');return;}
+    try{stageBackupRestore(next,{accounts:accountsRef.current,transactions:txsRef.current,loans:loansRef.current,budgets,skipped:skippedOccurrences,preferences,cardStatements:cardData});}catch(error){addToast(error.message,'error');return;}
     data=next;
     const nextLoans=next.loans,nextBudgets=next.budgets,nextSkipped=next.skipped,nextPrefs=next.preferences;
     accountsRef.current=data.accounts;txsRef.current=data.transactions;loansRef.current=nextLoans;setAccounts(data.accounts);setTxs(data.transactions);setLoans(nextLoans);setBudgets(nextBudgets);setSkippedOccurrences(nextSkipped);setPreferences(nextPrefs);
     persist('accounts',data.accounts);persist('transactions',data.transactions);persist('loans',nextLoans);persist('budgets',nextBudgets);persist('skipped',nextSkipped);persist('preferences',nextPrefs);
+    if(next.cardStatements){setCardData(next.cardStatements);persist('cardStatements',next.cardStatements);}
     addToast('バックアップを復元しました');setShowSettings(false);
   }
   function importCsv(text){
@@ -5491,9 +5719,10 @@ function App({userEmail}={}){
       activeView==='accounts'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'口座'),h('p',{className:'text-sm text-gray-400 mt-1'},'残高と表示色を管理')),h(AccountManager,{accounts,onChange:updAcc,addToast,todayBalances:accounts.length?buildForecast(accounts,cashflowTxs,todayD(),new Set(skippedOccurrences))[0]||{}:{}})),
       activeView==='investments'&&h(InvestmentHub,{data:investmentData,onReload:reloadInvestments,onStocksChange:updateInvestmentStocks,onEmbeddedChange:applyEmbeddedInvestmentData}),
       activeView==='loans'&&h('div',{className:'space-y-4'},h('div',null,h('h2',{className:'text-xl font-bold text-gray-900 dark:text-gray-100'},'借入'),h('p',{className:'text-sm text-gray-400 mt-1'},'カードローンや個人間の借入残高・返済を管理')),h(LoanManager,{loans,accounts,txs,onChange:updLoans,onReflectPayment:applyPayment,onUndoPayment:undoPayment,onAddTx:tx=>updTxs(current=>[...current,tx]),addToast})),
-      activeView==='analysis'&&h(AnalysisView,{txs:cashflowTxs,budgets,onBudgetChange:updBudgets,skippedOccurrences})
+      activeView==='analysis'&&h(AnalysisView,{txs:cashflowTxs,budgets,onBudgetChange:updBudgets,skippedOccurrences,cardData,onCardDataChange:updCardData,
+        onConfirmCardAmount:({txId,date,amount})=>updTxs(current=>current.map(tx=>tx.id===txId?setOccurrenceAmount(tx,date,amount):tx))})
     ),
-    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,loans,budgets,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv,userEmail}),
+    showSettings&&h(PreferencesModal,{onClose:()=>setShowSettings(false),dark,setDark,syncStatus,onRetry:syncAll,accounts,txs,loans,budgets,cardData,skipped:skippedOccurrences,prefs:preferences,onPrefs:updPreferences,onRestore:restoreBackup,onCsvImport:importCsv,userEmail}),
     h(Toast,{toasts})
   );
 }

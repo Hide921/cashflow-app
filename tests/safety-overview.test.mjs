@@ -131,3 +131,60 @@ test('残高の入力は金額のほか、今の残高からの増減や足し�
   assert.equal(value('abc'),null);
   assert.equal(value('--5'),null);
 });
+
+const vpassSample=[
+  ',1234-56**-****-****,サンプルカード,,,,',
+  '2026/9/1,セブン−イレブン,300,1,1,300,',
+  '2026/9/2,スギ薬局　サンプル店,500,1,1,500,',
+  '2026/9/3,ＳＢＩ証券投信積立サービス（クレジット）,10000,1,1,10000,',
+  '2026/9/4,東京ガス,4000,1,1,4000,',
+  '2026/9/5,VISATRANSIT3CASHBACK (JAPAN ),-100,1,1,-100,-100.00　JPY',
+  ',6900-11**-****-****,ＡｐｐｌｅＰａｙ／ｉＤ,,,,',
+  '2026/9/6,セブン−イレブン／ｉＤ,200,1,1,200,',
+  '2026/9/7,サンプル家電,50000,ボ,,,２０２７年　１月２６日お支払い',
+  ',,,,,,50000　0',
+  ',,,,,14900,'
+].join('\r\n');
+
+test('VPASSの明細CSVを読み、ボーナス払いを分けて請求額を取り出す',()=>{
+  const parsed=fn('parseVpassCsv')(vpassSample);
+  assert.equal(parsed.items.length,6);
+  assert.equal(parsed.total,14900);
+  assert.equal(parsed.sum,14900);
+  assert.equal(parsed.bonus.length,1);
+  assert.equal(parsed.bonus[0].payDate,'2027-01-26');
+  assert.equal(parsed.cards.join('|'),'サンプルカード|ApplePay/iD');
+  assert.equal(fn('vpassPayMonth')('202610 (1).csv',parsed.items),'2026-10');
+  assert.equal(fn('vpassPayMonth')('meisai.csv',parsed.items),'2026-10');
+  const cat=store=>fn('cardCategory')(store,{});
+  assert.equal(cat('セブン−イレブン／ｉＤ'),'食費');
+  assert.equal(cat('スギ薬局　サンプル店'),'日用品');
+  assert.equal(cat('ＳＢＩ証券投信積立サービス（クレジット）'),'集計しない');
+  assert.equal(cat('東京ガス'),'光熱費');
+  assert.equal(cat('ガスト'),'食費');
+  assert.equal(fn('cardStoreKey')('スギ薬局　日本橋店'),'スギ薬局');
+  assert.equal(fn('cardCategory')('スギ薬局　別の店',{'スギ薬局':'医療'}),'医療');
+  assert.throws(()=>fn('parseVpassCsv')('a,b,c\r\n1,2,3'));
+});
+
+test('明細を取り込んだ月は、カードの引き落としを明細のカテゴリ別に置き換えて数える',()=>{
+  const base=fn('todayD')();
+  const month=fn('fmt')(new Date(base.getFullYear(),base.getMonth()-1,1)).slice(0,7);
+  const card={id:'card',type:'expense',category:'カード',label:'三井住友カード',amount:14900,recurring:true,frequency:'monthly',startDate:`${month}-01`};
+  const rent={id:'rent',type:'expense',category:'家賃',label:'家賃',amount:80000,recurring:true,frequency:'monthly',startDate:`${month}-01`};
+  const prevBase=new Date(base.getFullYear(),base.getMonth()-1,1);
+  const parsed=fn('parseVpassCsv')(vpassSample);
+  const cardData={stores:{},statements:[{id:'s',payMonth:month,txId:'card',total:14900,items:parsed.items}]};
+  const before=fn('buildMonthlyStats')([card,rent],prevBase,new Set(),false);
+  assert.equal(before.byCategory['カード'],14900);
+  const after=fn('buildMonthlyStats')([card,rent],prevBase,new Set(),false,cardData);
+  assert.equal(after.byCategory['カード'],undefined);
+  assert.equal(after.byCategory['食費'],500);
+  assert.equal(after.byCategory['日用品'],500);
+  assert.equal(after.byCategory['光熱費'],4000);
+  assert.equal(after.byCategory['交通費'],-100);
+  assert.equal(after.byCategory['家賃'],80000);
+  assert.equal(after.expense,80000+4900);
+  assert.equal(after.cardMonths,1);
+  assert.equal(fn('guessCardPaymentTx')([rent,card]).id,'card');
+});
