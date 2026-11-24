@@ -188,3 +188,43 @@ test('明細を取り込んだ月は、カードの引き落としを明細の�
   assert.equal(after.cardMonths,1);
   assert.equal(fn('guessCardPaymentTx')([rent,card]).id,'card');
 });
+
+test('店名の判定は、ほかの語の一部（ジャパン・セブン銀行・やすし）を食費にしない',()=>{
+  const cat=store=>fn('cardCategory')(store,{});
+  assert.equal(cat('トポロジージャパン'),'その他');
+  assert.equal(cat('ジャパンネット銀行'),'その他');
+  assert.equal(cat('セブン銀行ATM手数料'),'その他');
+  assert.equal(cat('やすし商店'),'その他');
+  assert.equal(cat('セブン−イレブン 新富町店'),'食費');
+  assert.equal(cat('塩パン屋 パン・メゾン'),'食費');
+  assert.equal(cat('はま寿司'),'食費');
+});
+
+test('今月の明細は引き落とし日の前でも数え、同じ月の別カードの明細は置き換えない',()=>{
+  const base=fn('todayD')();
+  const month=fn('fmt')(base).slice(0,7);
+  const later=fn('fmt')(fn('addDays')(base,1));
+  const card={id:'card',type:'expense',category:'カード',label:'三井住友カード',amount:9000,recurring:true,frequency:'monthly',startDate:later};
+  const cardData={stores:{},statements:[{id:'s',payMonth:month,txId:'card',total:800,items:[{date:'2026-01-05',store:'セブン−イレブン',amount:800}]}]};
+  const stats=fn('buildMonthlyStats')([card],base,new Set(),true,cardData);
+  // 引き落とし日が月末を越える日は、翌月の回になるので対象外。
+  if(later.slice(0,7)===month){
+    assert.equal(stats.byCategory['食費'],800);
+    assert.equal(stats.byCategory['カード'],undefined);
+    assert.equal(stats.pendingDebits.join(),later);
+  }
+  assert.equal(stats.cardMonths,1);
+  const same=fn('sameCardStatement');
+  assert.equal(same({payMonth:'2026-10',txId:'a'},{payMonth:'2026-10',txId:'a'}),true);
+  assert.equal(same({payMonth:'2026-10',txId:'a'},{payMonth:'2026-10',txId:'b'}),false);
+  assert.equal(same({payMonth:'2026-10'},{payMonth:'2026-10',txId:''}),true);
+});
+
+test('バックアップのカード明細は、店ごとのカテゴリや請求額も確かめる',()=>{
+  const backup=cardStatements=>({accounts:[],transactions:[],cardStatements});
+  const statement={id:'s',payMonth:'2026-10',txId:'card',total:800,items:[{date:'2026-09-01',store:'A',amount:800}]};
+  assert.equal(fn('validateBackup')(backup({statements:[statement],stores:{A:'食費',B:'集計しない'}})).cardStatements.statements.length,1);
+  assert.throws(()=>fn('validateBackup')(backup({statements:[statement],stores:{A:123}})));
+  assert.throws(()=>fn('validateBackup')(backup({statements:[{...statement,total:'abc'}],stores:{}})));
+  assert.throws(()=>fn('validateBackup')(backup({statements:[{...statement,bonus:'x'}],stores:{}})));
+});

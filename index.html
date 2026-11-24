@@ -785,7 +785,7 @@ const CATEGORY_RULES=[
   ['日用品',/日用品|ドラッグストア|スギ薬局|マツモトキヨシ|マツキヨ|ウエルシア|ツルハ|ココカラ|サンドラッグ|ダイソー|セリア|100均|ニトリ|無印/],
   ['医療',/病院|医院|クリニック|歯科|薬局|処方|診療|整骨/],
   ['交通費',/交通|電車|バス|タクシー|suica|pasmo|icoca|定期券|ガソリン|高速|etc|駐車|jr/i],
-  ['食費',/食費|スーパー|コンビニ|セブン|ファミリーマート|ファミマ|ローソン|ミニストップ|マイバスケ|まいばすけっと|イオンフード|食品|マクドナルド|スターバックス|ドトール|すき家|吉野家|松屋|ガスト|サイゼリヤ|バーミヤン|日高屋|ほっともっと|はま寿司|寿司|すし|ラーメン|タンメン|焼肉|ベロ.?チェ|タリーズ|コメダ|パン|ベーカリー|フル.?ツ|ジハンキ|自販機|[べベ]ンディング|吉池|レストラン|ランチ|外食|食材|ウーバー|uber\s*eats|出前館|弁当|カフェ|飲食|食料/i],
+  ['食費',/食費|スーパー|コンビニ|セブン.?イレブン|ファミリーマート|ファミマ|ローソン|ミニストップ|マイバスケ|まいばすけっと|イオンフード|食品|マクドナルド|スターバックス|ドトール|すき家|吉野家|松屋|ガスト|サイゼリヤ|バーミヤン|日高屋|ほっともっと|はま寿司|寿司|鮨|スシロー|ラーメン|タンメン|焼肉|ベロ.?チェ|タリーズ|コメダ|パン屋|塩パン|パン・|ベーカリー|ブーランジェリー|フル.?ツ|ジハンキ|自販機|[べベ]ンディング|吉池|レストラン|ランチ|外食|食材|ウーバー|uber\s*eats|出前館|弁当|カフェ|飲食|食料/i],
   ['教育',/学費|授業料|塾|教材|習い事|保育|幼稚園|学校|給食/],
   ['交際費',/交際|飲み会|プレゼント|お祝い|祝儀|香典|会費/],
   ['娯楽',/娯楽|映画|ゲーム|旅行|ホテル|レジャー|ライブ|チケット|カラオケ/],
@@ -825,12 +825,14 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false,cardData=EMPT
   const end=throughToday&&base.getMonth()===todayD().getMonth()&&base.getFullYear()===todayD().getFullYear()?todayD():rawEnd;
   const byCategory={}; let income=0,expense=0;
   // カード明細: 支払月の引き落としが集計期間に入っていれば、その引き落としを明細の内訳に置き換える。
-  const month=fmt(start).slice(0,7),replaced=new Set();
+  const month=fmt(start).slice(0,7),replaced=new Set(),pendingDebits=[];let statementCount=0;
   (cardData?.statements||[]).filter(statement=>statement.payMonth===month).forEach(statement=>{
     const tx=statement.txId?txs.find(item=>item.id===statement.txId):null;
     const date=tx?cardPaymentOccurrence(tx,month):'';
-    if(tx?date&&date>fmt(end):fmt(rawEnd)>fmt(end))return;
+    // 引き落とし日がまだ先でも、明細は支払月に数える（その引き落としは集計期間外なので二重にならない）。
     if(tx&&date)replaced.add(`${tx.id}_${date}`);
+    statementCount++;
+    if(date&&date>fmt(end))pendingDebits.push(date);
     (statement.items||[]).forEach(item=>{
       const cat=cardCategory(item.store,cardData.stores);
       if(cat===CARD_SKIP_CAT)return;
@@ -852,7 +854,7 @@ function buildMonthlyStats(txs,base,skippedKeys,throughToday=false,cardData=EMPT
       if(!isBefore(d,start)&&!isAfter(d,end)&&(!skippedKeys||!skippedKeys.has(`${tx.id}_${ds}`))) addAmount(tx.amount);
     }
   });
-  return {income,expense,net:income-expense,byCategory,start,end,cardMonths:replaced.size};
+  return {income,expense,net:income-expense,byCategory,start,end,cardMonths:statementCount,pendingDebits};
 }
 // 残高が line（注意ライン、未設定なら0円）を下回る最初の日。shortage はラインまでの不足額。
 function findShortfalls(accounts,forecast,line=0){
@@ -1011,7 +1013,11 @@ function validateBackup(data){
     cardStatements.statements.forEach(statement=>{
       if(!isDataObject(statement)||!/^\d{4}-\d{2}$/.test(statement.payMonth||'')||!Array.isArray(statement.items))fail('カード明細の形式が不正です');
       statement.items.forEach(item=>{if(!isDataObject(item)||!Number.isSafeInteger(Number(item.amount))||!validTxDate(item.date)||typeof item.store!=='string')fail('カード明細の行が不正です');});
+      if(statement.total!==undefined&&!Number.isSafeInteger(Number(statement.total)))fail('カード明細の請求額が不正です');
+      if(statement.txId!==undefined&&typeof statement.txId!=='string')fail('カード明細の引き落としが不正です');
+      if(statement.bonus!==undefined&&(!Array.isArray(statement.bonus)||statement.bonus.some(item=>!isDataObject(item)||!Number.isSafeInteger(Number(item.amount)))))fail('カード明細のボーナス払いが不正です');
     });
+    Object.values(cardStatements.stores||{}).forEach(value=>{if(![...EXPENSE_CATS,CARD_SKIP_CAT].includes(value))fail('カード明細のカテゴリが不正です');});
     cardStatements={statements:cardStatements.statements,stores:cardStatements.stores||{}};
   }
   return {accounts,transactions,loans,budgets,skipped,preferences:{...DEFAULT_PREFS,...preferences},...(cardStatements?{cardStatements}:{})};
@@ -1099,6 +1105,10 @@ function guessCardPaymentTx(txs){
     ||(candidates.filter(tx=>/カード/.test(`${tx.label||''}${tx.category||''}`)).length===1?candidates.find(tx=>/カード/.test(`${tx.label||''}${tx.category||''}`)):null)||null;
 }
 // 支払月にある、その定期取引の回の日付。
+// 同じ明細か（支払月と引き落としの定期取引が同じ）。別のカードの同じ月の明細は置き換えない。
+function sameCardStatement(a,b){
+  return a.payMonth===b.payMonth&&(a.txId||'')===(b.txId||'');
+}
 function cardPaymentOccurrence(tx,payMonth){
   if(!tx||!/^\d{4}-\d{2}$/.test(payMonth||''))return '';
   const start=parseISO(`${payMonth}-01`);
@@ -4070,10 +4080,12 @@ function CardImportDialog({parsed,fileName,txs,cardData,onSave,onClose}){
   const candidates=txs.filter(tx=>tx.recurring&&tx.type==='expense'&&!tx.loanPlan&&!tx.loanPayment);
   const [payMonth,setPayMonth]=useState(()=>vpassPayMonth(fileName,parsed.items));
   const [txId,setTxId]=useState(()=>guessCardPaymentTx(txs)?.id||'');
-  const [confirmAmount,setConfirmAmount]=useState(true);
+  // 明細の合計が請求額と合わないCSVでは、どちらが正しいか分からないので確定を既定でしない。
+  const [confirmAmount,setConfirmAmount]=useState(parsed.sum===parsed.total);
   const [stores,setStores]=useState({});
   useEffect(()=>{const onKey=e=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);},[onClose]);
   const allStores={...(cardData.stores||{}),...stores};
+  const categoryOf=group=>allStores[group.key]||cardCategory(group.name,allStores);
   const groups=useMemo(()=>{
     const map=new Map();
     parsed.items.forEach(item=>{
@@ -4084,10 +4096,10 @@ function CardImportDialog({parsed,fileName,txs,cardData,onSave,onClose}){
     return [...map.values()].sort((a,b)=>b.amount-a.amount);
   },[parsed]);
   const byCategory={};
-  groups.forEach(group=>{const cat=cardCategory(group.name,allStores);byCategory[cat]=(byCategory[cat]||0)+group.amount;});
+  groups.forEach(group=>{const cat=categoryOf(group);byCategory[cat]=(byCategory[cat]||0)+group.amount;});
   const tx=candidates.find(item=>item.id===txId);
   const occurrence=cardPaymentOccurrence(tx,payMonth);
-  const existing=(cardData.statements||[]).find(statement=>statement.payMonth===payMonth);
+  const existing=(cardData.statements||[]).find(statement=>sameCardStatement(statement,{payMonth,txId}));
   const validMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(payMonth);
   function save(){
     if(!validMonth)return;
@@ -4104,7 +4116,7 @@ function CardImportDialog({parsed,fileName,txs,cardData,onSave,onClose}){
       h('div',{className:'border-b border-gray-100 dark:border-gray-800 px-5 pt-5 pb-3'},
         h('h3',{id:'card-import-title',className:'text-lg font-semibold text-gray-900 dark:text-white'},'カード明細を取り込む'),
         h('p',{className:'mt-1 text-xs text-gray-600 dark:text-gray-300'},`${parsed.cards.join('・')||'カード'}　明細 ${parsed.items.length}件・請求額 ${yen(parsed.total)}`),
-        parsed.sum!==parsed.total&&h('p',{className:'mt-1 text-xs text-amber-700 dark:text-amber-300'},`明細の合計 ${yen(parsed.sum)} が請求額と一致しません。明細だけを取り込みます`)
+        parsed.sum!==parsed.total&&h('p',{className:'mt-1 text-xs text-amber-700 dark:text-amber-300'},`明細の合計 ${yen(parsed.sum)} がCSVの請求額と一致しません。明細は取り込みますが、引き落とし額の確定は確認してから選んでください`)
       ),
       h('div',{className:'flex-1 overflow-y-auto px-5 py-3 space-y-4'},
         h('div',{className:'grid grid-cols-1 sm:grid-cols-2 gap-3'},
@@ -4131,7 +4143,7 @@ function CardImportDialog({parsed,fileName,txs,cardData,onSave,onClose}){
           h('ul',{className:'mt-2 divide-y divide-gray-100 dark:divide-gray-800'},groups.map(group=>h('li',{key:group.key,className:'flex items-center gap-2 py-1.5'},
             h('span',{className:'min-w-0 flex-1 truncate text-sm text-gray-800 dark:text-gray-100'},group.name,group.count>1&&h('span',{className:'ml-1 text-[11px] text-gray-400'},`×${group.count}`)),
             h('span',{className:'shrink-0 text-xs tabular-nums text-gray-600 dark:text-gray-300'},yen(group.amount)),
-            h('select',{value:cardCategory(group.name,allStores),'aria-label':`${group.name}のカテゴリ`,onChange:e=>{const value=e.target.value;setStores(current=>({...current,[group.key]:value}));},
+            h('select',{value:categoryOf(group),'aria-label':`${group.name}のカテゴリ`,onChange:e=>{const value=e.target.value;setStores(current=>({...current,[group.key]:value}));},
               className:'shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs text-gray-900 dark:text-gray-100'},
               catOptions.map(cat=>h('option',{key:cat,value:cat},cat)))
           )))
@@ -4168,7 +4180,7 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences,cardData=EM
     }).catch(()=>setCardError('ファイルを読み込めませんでした'));
   }
   function saveCardImport({statement,stores,confirm}){
-    onCardDataChange({stores:{...(cardData.stores||{}),...stores},statements:[...(cardData.statements||[]).filter(item=>item.payMonth!==statement.payMonth),statement].sort((a,b)=>a.payMonth.localeCompare(b.payMonth))});
+    onCardDataChange({stores:{...(cardData.stores||{}),...stores},statements:[...(cardData.statements||[]).filter(item=>!sameCardStatement(item,statement)),statement].sort((a,b)=>a.payMonth.localeCompare(b.payMonth))});
     if(confirm&&onConfirmCardAmount)onConfirmCardAmount(confirm);
     setCardImport(null);
     const t=todayD(),[year,month]=statement.payMonth.split('-').map(Number);
@@ -4215,7 +4227,9 @@ function AnalysisView({txs,budgets,onBudgetChange,skippedOccurrences,cardData=EM
           h('h3',{id:'category-analysis-title',className:'font-semibold text-gray-800 dark:text-gray-100'},'カテゴリ別支出'),
           h('span',{className:'text-xs text-gray-400'},`前月 ¥${previous.expense.toLocaleString()}`)
         ),
-        current.cardMonths>0&&h('p',{className:'-mt-2 mb-3 text-[11px] text-gray-500 dark:text-gray-400'},'カードの引き落としは、取り込んだ明細の内訳で数えています'),
+        current.cardMonths>0&&h('p',{className:'-mt-2 mb-3 text-[11px] text-gray-500 dark:text-gray-400'},current.pendingDebits.length
+          ?`カードは取り込んだ明細の内訳で数えています（引き落とし ${current.pendingDebits.map(date=>fmtDisp(date)).join('・')} 予定の分を含む）`
+          :'カードの引き落としは、取り込んだ明細の内訳で数えています'),
         shownCats.length===0&&h('p',{className:'text-sm text-gray-400'},'この月・前月の支出はまだありません'),
         h('div',{className:'space-y-3'},shownCats.map(cat=>{
           const amount=current.byCategory[cat]||0;
